@@ -1,5 +1,7 @@
 # Driftless Bundle Photometry
 
+**Version 0.1.0** · [What's new](WHATS_NEW.md)
+
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
 The application supports up to nine circular fiber ROIs, interleaved 405/470/565 nm

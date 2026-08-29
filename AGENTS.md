@@ -131,6 +131,9 @@ or electrical validation without the physical hardware and measurements.
 - Keep optional hardware imports lazy so simulator mode works without vendor SDKs.
 - Do not edit generated/vendor/legacy files unless the task explicitly targets them.
 - Do not commit recordings, build outputs, virtual environments, or secrets.
+- Keep `WHATS_NEW.md` current for every user-visible change. Record work under
+  `Unreleased` as it lands, including changes that have not shipped, and move those
+  entries into the matching version section when a version is released.
 - Use `ruff` for lint/format and `pytest` for tests.
 - Keep dependency versions bounded and test the exact NWB/PyNWB/NDX combination.
 

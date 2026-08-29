@@ -5,8 +5,10 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from .branding import logo_path
 from .main_window import MainWindow
 
 
@@ -19,6 +21,9 @@ def run_gui(
 ) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Driftless Bundle Photometry")
+    app.setApplicationDisplayName("Driftless Bundle Photometry")
+    with logo_path() as icon_path:
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow(
         output_directory=output_directory,
         default_duration_s=default_duration_s,

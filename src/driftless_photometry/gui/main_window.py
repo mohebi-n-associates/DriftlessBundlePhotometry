@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QThread, QTimer
-from PySide6.QtGui import QCloseEvent, QFont
+from PySide6.QtCore import QSize, Qt, QThread, QTimer
+from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from driftless_photometry import __version__
 from driftless_photometry.acquisition import AcquisitionProgress, AcquisitionRunResult
 from driftless_photometry.config import (
     ChannelConfig,
@@ -38,6 +39,7 @@ from driftless_photometry.config import (
     demo_config,
 )
 
+from .branding import logo_path
 from .worker import AcquisitionWorker
 
 _FIBER_COLORS = (
@@ -59,6 +61,23 @@ _WAVELENGTH_TITLES = {
 }
 
 
+class SummaryCard(QWidget):
+    """Compact acquisition-configuration summary."""
+
+    def __init__(self, value: str, caption: str) -> None:
+        super().__init__()
+        self.setObjectName("summaryCard")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(0)
+        self.value_label = QLabel(value)
+        self.value_label.setObjectName("summaryValue")
+        caption_label = QLabel(caption)
+        caption_label.setObjectName("summaryCaption")
+        layout.addWidget(self.value_label)
+        layout.addWidget(caption_label)
+
+
 class MainWindow(QMainWindow):
     """Simulator-backed GUI; physical adapters plug into the same acquisition engine."""
 
@@ -77,7 +96,10 @@ class MainWindow(QMainWindow):
             background="#081a2b",
             foreground="#9fc4dc",
         )
-        self.setWindowTitle("Driftless Bundle Photometry")
+        self.setWindowTitle(f"Driftless Bundle Photometry {__version__}")
+        with logo_path() as icon_path:
+            self._logo_pixmap = QPixmap(str(icon_path))
+            self.setWindowIcon(QIcon(self._logo_pixmap))
         self.resize(1500, 900)
         self.setMinimumSize(1180, 700)
         self._thread: QThread | None = None
@@ -93,13 +115,18 @@ class MainWindow(QMainWindow):
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(10, 8, 10, 8)
-        root_layout.setSpacing(6)
-        root_layout.addLayout(self._build_header())
+        root_layout.setContentsMargins(18, 14, 18, 14)
+        root_layout.setSpacing(12)
+        root_layout.addWidget(self._build_header())
         self.tabs = QTabWidget()
         self.tabs.addTab(
             self._scrollable(
-                self._build_acquire_tab(output_directory, default_duration_s, default_raw)
+                self._build_acquire_tab(
+                    output_directory,
+                    default_duration_s,
+                    default_raw,
+                    default_fibers,
+                )
             ),
             "Acquire",
         )
@@ -115,17 +142,40 @@ class MainWindow(QMainWindow):
         )
         self._rebuild_roi_items()
 
-    def _build_header(self) -> QHBoxLayout:
-        header = QHBoxLayout()
-        header.setContentsMargins(6, 0, 0, 0)
-        mark = QLabel("◉")
+    def _build_header(self) -> QWidget:
+        header_widget = QWidget()
+        header_widget.setObjectName("appHeader")
+        header = QHBoxLayout(header_widget)
+        header.setContentsMargins(14, 10, 14, 10)
+        header.setSpacing(11)
+        mark = QLabel()
         mark.setObjectName("brandMark")
-        mark.setFont(QFont("", 22, QFont.Weight.Bold))
-        wordmark = QLabel("Driftless  PHOTOMETRY")
+        mark.setFixedSize(52, 52)
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setPixmap(
+            self._logo_pixmap.scaled(
+                QSize(48, 48),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        identity = QWidget()
+        identity_layout = QVBoxLayout(identity)
+        identity_layout.setContentsMargins(0, 0, 0, 0)
+        identity_layout.setSpacing(1)
+        wordmark = QLabel("DRIFTLESS BUNDLE PHOTOMETRY")
         wordmark.setObjectName("wordmark")
+        strapline = QLabel("Trace-first acquisition  /  explicit timing  /  validated NWB")
+        strapline.setObjectName("strapline")
+        identity_layout.addWidget(wordmark)
+        identity_layout.addWidget(strapline)
         header.addWidget(mark)
-        header.addWidget(wordmark)
+        header.addWidget(identity)
         header.addStretch(1)
+        self.version_badge = QLabel(f"v{__version__}")
+        self.version_badge.setObjectName("versionBadge")
+        self.version_badge.setToolTip("Application version")
+        header.addWidget(self.version_badge)
         self.system_status = QLabel("READY")
         self.system_status.setObjectName("systemStatus")
         self.system_status.setProperty("state", "ready")
@@ -134,7 +184,7 @@ class MainWindow(QMainWindow):
         self.backend_badge.setObjectName("badge")
         self.backend_badge.setProperty("hardware", False)
         header.addWidget(self.backend_badge)
-        return header
+        return header_widget
 
     @staticmethod
     def _scrollable(widget: QWidget) -> QScrollArea:
@@ -149,17 +199,30 @@ class MainWindow(QMainWindow):
         output_directory: Path,
         duration_s: float,
         raw_capture: bool,
+        fiber_count: int,
     ) -> QWidget:
         page = QWidget()
         layout = QHBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setSpacing(14)
 
         controls = QWidget()
-        controls.setMinimumWidth(340)
-        controls.setMaximumWidth(430)
+        controls.setMinimumWidth(350)
+        controls.setMaximumWidth(440)
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(12)
+
+        setup_eyebrow = QLabel("SESSION SETUP")
+        setup_eyebrow.setObjectName("eyebrow")
+        setup_title = QLabel("Configure a recording")
+        setup_title.setObjectName("sectionTitle")
+        setup_copy = QLabel("Define the subject, excitation schedule, and retained data.")
+        setup_copy.setObjectName("hint")
+        setup_copy.setWordWrap(True)
+        controls_layout.addWidget(setup_eyebrow)
+        controls_layout.addWidget(setup_title)
+        controls_layout.addWidget(setup_copy)
 
         session_group = QGroupBox("Recording")
         session_form = QFormLayout(session_group)
@@ -225,6 +288,15 @@ class MainWindow(QMainWindow):
 
         live_group = QGroupBox("Live acquisition")
         live_layout = QVBoxLayout(live_group)
+        live_layout.setSpacing(10)
+        overview = QHBoxLayout()
+        self.channels_summary = SummaryCard("3", "ACTIVE CHANNELS")
+        self.fibers_summary = SummaryCard(str(fiber_count), "FIBER ROIS")
+        self.format_summary = SummaryCard("NWB", "SESSION OUTPUT")
+        overview.addWidget(self.channels_summary)
+        overview.addWidget(self.fibers_summary)
+        overview.addWidget(self.format_summary)
+        live_layout.addLayout(overview)
         status_row = QHBoxLayout()
         self.live_status = QLabel("Ready — configure the session, then start recording")
         self.live_status.setObjectName("liveStatus")
@@ -257,7 +329,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(live_group, stretch=1)
 
         self._settings_widgets = [session_group, channels_group, retention_group, browse]
+        for check in self.channel_checks.values():
+            check.toggled.connect(self._update_overview)
         return page
+
+    def _update_overview(self) -> None:
+        enabled = sum(check.isChecked() for check in self.channel_checks.values())
+        self.channels_summary.value_label.setText(str(enabled))
+        if hasattr(self, "fiber_count_spin"):
+            self.fibers_summary.value_label.setText(str(self.fiber_count_spin.value()))
 
     def _build_trace_workspace(self) -> pg.GraphicsLayoutWidget:
         traces_widget = pg.GraphicsLayoutWidget()
@@ -289,6 +369,7 @@ class MainWindow(QMainWindow):
         self.fiber_count_spin.setRange(1, 9)
         self.fiber_count_spin.setValue(fiber_count)
         self.fiber_count_spin.valueChanged.connect(self._rebuild_roi_items)
+        self.fiber_count_spin.valueChanged.connect(self._update_overview)
         fibers_form.addRow("Circular ROIs", self.fiber_count_spin)
         fibers_layout.addLayout(fibers_form)
         instructions = QLabel(
@@ -322,17 +403,32 @@ class MainWindow(QMainWindow):
     def _apply_theme(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow, QWidget { background: #0b1d31; color: #e8f7fa; }
-            QLabel#brandMark { color: #00d5e4; padding: 0 2px; }
-            QLabel#wordmark { color: #f4fcfd; font-weight: 700; font-size: 12pt; }
+            QMainWindow, QWidget { background: #081521; color: #e8f7fa; }
+            QWidget#appHeader {
+                background: #0d2132; border: 1px solid #203e52; border-radius: 12px;
+            }
+            QWidget#appHeader QWidget { background: transparent; border: none; }
+            QLabel#brandMark { background: transparent; }
+            QLabel#wordmark {
+                color: #f4fcfd; font-weight: 800; font-size: 12pt; letter-spacing: 1px;
+            }
+            QLabel#strapline { color: #6f91a6; font-size: 9pt; }
+            QLabel#eyebrow {
+                color: #43d6df; font-size: 8pt; font-weight: 800; letter-spacing: 2px;
+            }
+            QLabel#sectionTitle { color: #f4fcfd; font-size: 18pt; font-weight: 700; }
+            QLabel#versionBadge {
+                background: #102a3e; border: 1px solid #2b5167; border-radius: 10px;
+                color: #8cabbc; padding: 5px 10px; font-weight: 700;
+            }
             QGroupBox {
-                border: 1px solid #27445f; border-radius: 8px; margin-top: 12px;
-                padding: 10px; font-weight: 600;
+                background: #0c1d2b; border: 1px solid #203c50; border-radius: 10px;
+                margin-top: 13px; padding: 12px; font-weight: 700;
             }
             QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
             QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-                background: #102b43; border: 1px solid #315570; border-radius: 5px;
-                padding: 6px; color: #f4fcfd;
+                background: #10283a; border: 1px solid #31566d; border-radius: 6px;
+                padding: 7px; color: #f4fcfd; selection-background-color: #00aeba;
             }
             QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled,
             QDoubleSpinBox:disabled {
@@ -340,7 +436,7 @@ class MainWindow(QMainWindow):
             }
             QLabel:disabled, QCheckBox:disabled, QGroupBox:disabled { color: #5f7387; }
             QPushButton {
-                background: #173a55; border: 1px solid #315b78; border-radius: 6px;
+                background: #15374d; border: 1px solid #315b71; border-radius: 7px;
                 padding: 8px 14px;
             }
             QPushButton:hover { background: #205170; }
@@ -354,6 +450,11 @@ class MainWindow(QMainWindow):
             }
             QLabel#hint { color: #7694aa; }
             QLabel#liveStatus { font-weight: 700; color: #f2b134; }
+            QWidget#summaryCard {
+                background: #102638; border: 1px solid #23465b; border-radius: 8px;
+            }
+            QLabel#summaryValue { color: #f4fcfd; font-size: 15pt; font-weight: 800; }
+            QLabel#summaryCaption { color: #6f91a6; font-size: 7pt; font-weight: 700; }
             QLabel#badge { border-radius: 10px; padding: 5px 12px; font-weight: 800; }
             QLabel#badge[hardware="false"] { background: #b7e532; color: #0b1d31; }
             QLabel#systemStatus {
@@ -364,15 +465,22 @@ class MainWindow(QMainWindow):
             QLabel#systemStatus[state="saving"] { background: #d98324; color: #1a0f02; }
             QLabel#systemStatus[state="complete"] { background: #00aeba; color: #04151e; }
             QLabel#systemStatus[state="error"] { background: #e04450; color: #fff5f5; }
-            QTabWidget::pane { border: 1px solid #27445f; }
-            QTabBar::tab { background: #102b43; padding: 9px 18px; }
-            QTabBar::tab:selected { background: #00aeba; color: #071628; }
+            QTabWidget::pane {
+                border: 1px solid #203c50; border-radius: 9px; top: -1px;
+            }
+            QTabBar::tab {
+                background: #0d2132; border: 1px solid #203c50; padding: 10px 20px;
+                margin-right: 4px; border-top-left-radius: 7px; border-top-right-radius: 7px;
+            }
+            QTabBar::tab:selected {
+                background: #00aeba; color: #071628; font-weight: 800;
+            }
             QProgressBar {
                 border: 1px solid #315570; border-radius: 5px; text-align: center;
                 background: #102b43;
             }
             QProgressBar::chunk { background: #00bfd1; }
-            QStatusBar { color: #7694aa; border-top: 1px solid #27445f; }
+            QStatusBar { color: #7694aa; border-top: 1px solid #203c50; }
             QScrollArea { border: none; }
             """
         )
