@@ -11,7 +11,7 @@ from driftless_photometry.domain import (
     TraceSample,
     TTLEdge,
 )
-from driftless_photometry.storage import write_session_nwb
+from driftless_photometry.storage import write_session_nwbs
 
 
 def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
@@ -63,42 +63,62 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
 
 def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
     config, data, frames = _golden_data(tmp_path, raw_capture=True)
-    report = write_session_nwb(config, data, frames=frames, calibration_image=frames[0])
-    assert report.path.exists()
-    assert report.frame_count == 6
-    assert report.trace_sample_count == 6
-    assert report.ttl_edge_count == 2
-    assert validate(path=report.path) == []
-    assert not report.path.with_name(f"{report.path.stem}.partial.nwb").exists()
+    reports = write_session_nwbs(config, data, frames=frames, calibration_image=frames[0])
+    assert len(reports) == 2
+    assert {report.path.name for report in reports} == {
+        f"{config.session_id}__animal-01__fiber_01.nwb",
+        f"{config.session_id}__animal-02__fiber_02.nwb",
+    }
 
-    with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
-        nwbfile = io.read()
-        assert nwbfile.acquisition["camera_frames"].data.dtype == np.dtype("uint16")
-        assert nwbfile.acquisition["camera_frames"].data.shape == (6, 24, 32)
-        assert len(nwbfile.events["camera_frames"]) == 6
-        assert len(nwbfile.events["ttl_edges"]) == 2
-        assert len(nwbfile.processing["photometry"]["camera_rois"]) == 2
-        assert len(nwbfile.lab_meta_data["FiberPhotometry"].fiber_photometry_table) == 6
-        for wavelength in Wavelength:
-            assert nwbfile.acquisition[f"raw_fluorescence_{int(wavelength)}"].data.shape == (2, 2)
+    for roi_index, report in enumerate(reports):
+        assert report.path.exists()
+        assert report.frame_count == 6
+        assert report.trace_sample_count == 6
+        assert report.ttl_edge_count == 2
+        assert validate(path=report.path) == []
+        assert not report.path.with_name(f"{report.path.stem}.partial.nwb").exists()
+
+        with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
+            nwbfile = io.read()
+            assert nwbfile.subject.subject_id == config.rois[roi_index].animal_id
+            assert nwbfile.acquisition["camera_frames"].data.dtype == np.dtype("uint16")
+            assert nwbfile.acquisition["camera_frames"].data.shape == (6, 24, 32)
+            assert len(nwbfile.events["camera_frames"]) == 6
+            assert len(nwbfile.events["ttl_edges"]) == 2
+            assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
+            table = nwbfile.lab_meta_data["FiberPhotometry"].fiber_photometry_table
+            assert len(table) == 3
+            assert set(table.to_dataframe()["location"]) == {config.rois[roi_index].brain_region}
+            indicators = nwbfile.lab_meta_data["FiberPhotometry"].fiber_photometry_indicators
+            assert indicators.indicators["indicator_01"].label == config.rois[roi_index].sensor_type
+            for wavelength in Wavelength:
+                series = nwbfile.acquisition[f"raw_fluorescence_{int(wavelength)}"]
+                assert series.data.shape == (2, 1)
+                samples = data.traces[wavelength]
+                np.testing.assert_array_equal(
+                    series.data[:, 0],
+                    [sample.values[roi_index] for sample in samples],
+                )
 
 
 def test_nwb_without_raw_frames_retains_frame_provenance(tmp_path: Path) -> None:
     config, data, frames = _golden_data(tmp_path, raw_capture=False)
-    report = write_session_nwb(config, data, calibration_image=frames[0])
-    with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
-        nwbfile = io.read()
-        assert "camera_frames" not in nwbfile.acquisition
-        event_frame = nwbfile.events["camera_frames"].to_dataframe()
-        assert len(event_frame) == 6
-        assert not event_frame["raw_saved"].any()
-        assert set(event_frame["raw_image_index"]) == {-1}
+    reports = write_session_nwbs(config, data, calibration_image=frames[0])
+    assert len(reports) == 2
+    for report in reports:
+        with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
+            nwbfile = io.read()
+            assert "camera_frames" not in nwbfile.acquisition
+            event_frame = nwbfile.events["camera_frames"].to_dataframe()
+            assert len(event_frame) == 6
+            assert not event_frame["raw_saved"].any()
+            assert set(event_frame["raw_image_index"]) == {-1}
 
 
 def test_rejects_raw_frame_count_mismatch_before_writing(tmp_path: Path) -> None:
     config, data, frames = _golden_data(tmp_path, raw_capture=True)
     try:
-        write_session_nwb(config, data, frames=frames[:-1], calibration_image=frames[0])
+        write_session_nwbs(config, data, frames=frames[:-1], calibration_image=frames[0])
     except ValueError as error:
         assert "raw frame count" in str(error)
     else:  # pragma: no cover - assertion produces a clearer error than pytest.raises here

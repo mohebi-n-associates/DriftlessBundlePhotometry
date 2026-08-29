@@ -29,6 +29,7 @@ def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Pat
         on_state=states.append,
         on_progress=progress.append,
     )
+    assert len(result.reports) == 2
     assert result.report.frame_count == 6
     assert len(progress) == 6
     assert engine.state is AcquisitionState.READY
@@ -40,9 +41,12 @@ def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Pat
         AcquisitionState.READY,
     ]
     assert not list(tmp_path.glob("*.photometry-spool"))
-    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
-        nwbfile = io.read()
-        assert nwbfile.acquisition["camera_frames"].data.shape == (6, 24, 32)
+    for roi_index, report in enumerate(result.reports):
+        with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
+            nwbfile = io.read()
+            assert nwbfile.subject.subject_id == config.rois[roi_index].animal_id
+            assert nwbfile.acquisition["camera_frames"].data.shape == (6, 24, 32)
+            assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
 
 
 class _GapRig:
@@ -170,7 +174,7 @@ def test_finalizer_failure_preserves_complete_spool(
         del args, kwargs
         raise OSError("simulated finalizer disk failure")
 
-    monkeypatch.setattr("driftless_photometry.acquisition.write_session_nwb", fail_finalization)
+    monkeypatch.setattr("driftless_photometry.acquisition.write_session_nwbs", fail_finalization)
     engine = AcquisitionEngine(spool_chunk_size=2)
     with pytest.raises(OSError, match="simulated finalizer disk failure"):
         engine.run(config, SimulatedRig(config), duration_s=0.1)

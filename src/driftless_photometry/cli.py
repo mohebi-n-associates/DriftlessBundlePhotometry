@@ -48,7 +48,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "nwb_path": str(recovered.nwb.path),
+                    "nwb_paths": [str(report.path) for report in recovered.nwbs],
+                    "roi_files": len(recovered.nwbs),
                     "frames": recovered.nwb.frame_count,
                     "trace_samples": recovered.nwb.trace_sample_count,
                     "ttl_edges": recovered.nwb.ttl_edge_count,
@@ -83,7 +84,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         json.dumps(
             {
-                "nwb_path": str(result.report.path),
+                "nwb_paths": [str(report.path) for report in result.reports],
+                "roi_files": len(result.reports),
                 "frames": result.report.frame_count,
                 "trace_samples": result.report.trace_sample_count,
                 "ttl_edges": result.report.ttl_edge_count,

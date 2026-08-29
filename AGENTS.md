@@ -18,6 +18,7 @@ design evidence. They are not specifications to port verbatim.
 - The primary workflow is photometry traces, not an imaging dashboard.
 - Camera imagery is used for calibration, focus, ROI placement, and diagnostics.
 - Support 1–9 circular fiber ROIs with stable IDs, labels, positions, and radii.
+  Each ROI maps to one animal/subject and one independently valid NWB file.
 - Support up to three configured excitation wavelengths: 405, 470, and 565 nm.
 - Normal acquisition interleaves exactly one excitation wavelength per exposure.
   Do not combine wavelengths in one monochrome exposure unless a future hardware
@@ -51,19 +52,23 @@ behavior on disconnect or watchdog timeout.
 
 ## Canonical data contract
 
-The final scientific artifact is one self-contained NWB-HDF5 file per session.
-Temporary recovery journals/spools may be used during acquisition, but they are not
-the canonical deliverable.
+The final scientific artifacts are one self-contained NWB-HDF5 file per configured
+ROI/animal for each acquisition session. Temporary recovery journals/spools may be
+used during acquisition, but they are not the canonical deliverables. Shared timing,
+TTL, exposure, system-event, calibration, and optional raw-frame records are copied
+into every ROI file so each file is independently interpretable.
 
 Use a hybrid of core NWB and `ndx-fiber-photometry`:
 
-- `NWBFile`, `Subject`, `DeviceModel`, and `Device`: session and hardware provenance.
+- `NWBFile`, per-ROI `Subject`, `DeviceModel`, and `Device`: subject, session, and
+  hardware provenance.
 - `ndx-fiber-photometry`/`ndx-ophys-devices`: fibers, indicators, excitation
   sources, photodetector, filters, commanded voltage, and per-wavelength response
   series.
-- One raw `FiberPhotometryResponseSeries` per enabled wavelength, shaped
-  `[time, fiber]`, with explicit timestamps.
-- Core ROI table and calibration image: authoritative circular camera-space ROIs.
+- One raw `FiberPhotometryResponseSeries` per enabled wavelength in each file,
+  shaped `[time, 1]`, with explicit timestamps.
+- Core ROI table and calibration image: the authoritative circular camera-space ROI
+  represented by that file.
 - Core `ImageSeries`: optional embedded lossless chronological `uint16` frames.
 - Core `EventsTable`: TTL edges, camera exposures, excitation events, dropped frames,
   and system events.
@@ -74,9 +79,9 @@ Use NWB seconds on a shared session time base and preserve raw camera frame IDs 
 controller ticks for forensic reconstruction. Use stable `fiber_id` values to map
 camera ROIs to fiber-photometry table rows.
 
-Write to a partial path, drain and close all writers, validate, reopen and verify
-counts, then atomically promote to `.nwb`. Never label an unvalidated partial file
-as complete.
+Write every output to a partial path, drain and close all writers, validate, reopen
+and verify counts, then atomically promote each partial only after the complete ROI
+file set passes validation. Never label an unvalidated partial file as complete.
 
 ## Architecture boundaries
 

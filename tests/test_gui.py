@@ -25,7 +25,8 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
     )
     assert window.last_error is None
     assert window.last_result is not None
-    assert window.last_result.report.path.exists()
+    assert len(window.last_result.reports) == 2
+    assert all(report.path.exists() for report in window.last_result.reports)
     assert window.last_result.report.frame_count == 3
     assert window.start_button.isEnabled()
     assert not window.stop_button.isEnabled()
@@ -56,7 +57,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.1.1"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -75,3 +76,34 @@ def test_gui_overview_tracks_channel_and_fiber_configuration(qtbot, tmp_path: Pa
 
     assert window.channels_summary.value_label.text() == "2"
     assert window.fibers_summary.value_label.text() == "5"
+    assert window.format_summary.value_label.text() == "5"
+
+
+def test_gui_uses_voltage_sliders_and_per_roi_subject_metadata(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+
+    slider = next(iter(window.channel_voltages.values()))
+    assert slider.orientation() == Qt.Orientation.Horizontal
+    assert slider.minimum() == 0
+    assert slider.maximum() == 500
+    slider.setValue(175)
+    assert next(iter(window.channel_voltage_labels.values())).text() == "1.75 V"
+
+    assert window.roi_metadata_tabs.count() == 2
+    first = window._roi_metadata_editors[0]
+    second = window._roi_metadata_editors[1]
+    first.animal_id_edit.setText("mouse-A")
+    first.brain_region_edit.setText("NAc shell")
+    first.sensor_type_edit.setText("dLight1.3b")
+    second.animal_id_edit.setText("mouse-B")
+    second.brain_region_edit.setText("DMS")
+    second.sensor_type_edit.setText("GRAB-DA2m")
+
+    config = window._build_config()
+    assert config.experimenter == window.experimenter_edit.text()
+    assert config.channels[0].voltage_v == 1.75
+    assert config.rois[0].animal_id == "mouse-A"
+    assert config.rois[0].brain_region == "NAc shell"
+    assert config.rois[0].sensor_type == "dLight1.3b"
+    assert config.rois[1].animal_id == "mouse-B"

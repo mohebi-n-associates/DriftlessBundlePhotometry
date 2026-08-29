@@ -44,17 +44,24 @@ class EdgeSelection(StrEnum):
 
 
 class ROIConfig(BaseModel):
-    """A circular camera-space fiber region."""
+    """A circular camera-space fiber region and its subject metadata."""
 
     model_config = ConfigDict(frozen=True)
 
     fiber_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     label: str = Field(min_length=1, max_length=128)
+    animal_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
+    brain_region: str = Field(min_length=1, max_length=256)
+    sensor_type: str = Field(min_length=1, max_length=128)
+    subject_age: str | None = Field(
+        default=None,
+        min_length=2,
+        description="Optional ISO 8601 duration from birth at session start, for example P90D.",
+    )
+    subject_sex: Literal["M", "F", "U", "O"] = "U"
     center_x_px: float = Field(ge=0)
     center_y_px: float = Field(ge=0)
     radius_px: float = Field(gt=0)
-    location: str = Field(default="not specified", min_length=1, max_length=256)
-    indicator_label: str = Field(default="not specified", min_length=1, max_length=128)
 
 
 class ChannelConfig(BaseModel):
@@ -112,12 +119,6 @@ class SessionConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    subject_id: str = Field(min_length=1, max_length=128)
-    subject_age: str = Field(
-        min_length=2,
-        description="ISO 8601 duration from birth at session start, for example P90D.",
-    )
-    subject_sex: Literal["M", "F", "U", "O"]
     session_id: str = Field(min_length=1, max_length=128)
     session_description: str = Field(min_length=1)
     experimenter: str = Field(min_length=1)
@@ -135,6 +136,10 @@ class SessionConfig(BaseModel):
         fiber_ids = [roi.fiber_id for roi in self.rois]
         if len(fiber_ids) != len(set(fiber_ids)):
             raise ValueError("fiber_id values must be unique")
+
+        animal_ids = [roi.animal_id for roi in self.rois]
+        if len(animal_ids) != len(set(animal_ids)):
+            raise ValueError("animal_id values must be unique across ROIs")
 
         wavelengths = [channel.wavelength_nm for channel in self.channels]
         if len(wavelengths) != len(set(wavelengths)):
@@ -183,6 +188,11 @@ def demo_config(
         ROIConfig(
             fiber_id=f"fiber_{index + 1:02d}",
             label=f"Fiber {index + 1}",
+            animal_id=f"animal-{index + 1:02d}",
+            brain_region="not specified",
+            sensor_type="not specified",
+            subject_age="P90D",
+            subject_sex="U",
             center_x_px=(index % grid_columns + 1) * spacing_x,
             center_y_px=(index // grid_columns + 1) * spacing_y,
             radius_px=radius,
@@ -195,9 +205,6 @@ def demo_config(
     ttl_inputs = tuple(TTLInputConfig(line=line, label=f"behavior_{line}") for line in range(1, 5))
     started = datetime.now(UTC)
     return SessionConfig(
-        subject_id="demo-subject",
-        subject_age="P90D",
-        subject_sex="U",
         session_id=started.strftime("demo-%Y%m%dT%H%M%S-%fZ"),
         session_description="Synthetic multichannel fiber-photometry demonstration",
         experimenter="Simulator",

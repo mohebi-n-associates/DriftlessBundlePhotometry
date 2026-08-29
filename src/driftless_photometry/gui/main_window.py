@@ -11,6 +11,7 @@ from PySide6.QtCore import QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -76,6 +78,47 @@ class SummaryCard(QWidget):
         caption_label.setObjectName("summaryCaption")
         layout.addWidget(self.value_label)
         layout.addWidget(caption_label)
+
+
+class ROIMetadataEditor(QWidget):
+    """Editable subject and implant metadata for one camera ROI."""
+
+    def __init__(self, index: int) -> None:
+        super().__init__()
+        form = QFormLayout(self)
+        form.setContentsMargins(6, 8, 6, 8)
+        self.label_edit = QLineEdit(f"Fiber {index + 1}")
+        self.animal_id_edit = QLineEdit(f"animal-{index + 1:02d}")
+        self.brain_region_edit = QLineEdit("not specified")
+        self.sensor_type_edit = QLineEdit("not specified")
+        self.age_edit = QLineEdit("P90D")
+        self.age_edit.setPlaceholderText("ISO 8601, e.g. P90D")
+        self.sex_combo = QComboBox()
+        self.sex_combo.addItems(["U", "F", "M", "O"])
+        form.addRow("ROI label", self.label_edit)
+        form.addRow("Animal ID", self.animal_id_edit)
+        form.addRow("Brain region", self.brain_region_edit)
+        form.addRow("Sensor type", self.sensor_type_edit)
+        form.addRow("Animal age", self.age_edit)
+        form.addRow("Animal sex", self.sex_combo)
+
+    def values(self) -> dict[str, str]:
+        return {
+            "label": self.label_edit.text(),
+            "animal_id": self.animal_id_edit.text(),
+            "brain_region": self.brain_region_edit.text(),
+            "sensor_type": self.sensor_type_edit.text(),
+            "subject_age": self.age_edit.text(),
+            "subject_sex": self.sex_combo.currentText(),
+        }
+
+    def restore(self, values: dict[str, str]) -> None:
+        self.label_edit.setText(values["label"])
+        self.animal_id_edit.setText(values["animal_id"])
+        self.brain_region_edit.setText(values["brain_region"])
+        self.sensor_type_edit.setText(values["sensor_type"])
+        self.age_edit.setText(values["subject_age"])
+        self.sex_combo.setCurrentText(values["subject_sex"])
 
 
 class MainWindow(QMainWindow):
@@ -217,7 +260,10 @@ class MainWindow(QMainWindow):
         setup_eyebrow.setObjectName("eyebrow")
         setup_title = QLabel("Configure a recording")
         setup_title.setObjectName("sectionTitle")
-        setup_copy = QLabel("Define the subject, excitation schedule, and retained data.")
+        setup_copy = QLabel(
+            "Define shared recording settings here; assign each ROI to its animal "
+            "under Camera & fiber ROIs."
+        )
         setup_copy.setObjectName("hint")
         setup_copy.setWordWrap(True)
         controls_layout.addWidget(setup_eyebrow)
@@ -226,7 +272,6 @@ class MainWindow(QMainWindow):
 
         session_group = QGroupBox("Recording")
         session_form = QFormLayout(session_group)
-        self.subject_edit = QLineEdit("demo-subject")
         self.experimenter_edit = QLineEdit("Simulator")
         self.output_edit = QLineEdit(str(output_directory))
         browse = QPushButton("Browse…")
@@ -241,33 +286,46 @@ class MainWindow(QMainWindow):
         self.duration_spin.setDecimals(1)
         self.duration_spin.setSuffix(" s")
         self.duration_spin.setValue(duration_s)
-        session_form.addRow("Subject", self.subject_edit)
         session_form.addRow("Experimenter", self.experimenter_edit)
         session_form.addRow("Output root", output_row)
         session_form.addRow("Duration", self.duration_spin)
         controls_layout.addWidget(session_group)
 
         channels_group = QGroupBox("Excitation schedule")
-        channels_form = QFormLayout(channels_group)
+        channels_layout = QVBoxLayout(channels_group)
+        channels_layout.setSpacing(8)
         self.channel_checks: dict[Wavelength, QCheckBox] = {}
-        self.channel_voltages: dict[Wavelength, QDoubleSpinBox] = {}
+        self.channel_voltages: dict[Wavelength, QSlider] = {}
+        self.channel_voltage_labels: dict[Wavelength, QLabel] = {}
         for wavelength in Wavelength:
             check = QCheckBox(_WAVELENGTH_TITLES[wavelength])
             check.setChecked(True)
-            voltage = QDoubleSpinBox()
-            voltage.setRange(0.0, 5.0)
-            voltage.setDecimals(2)
-            voltage.setSingleStep(0.05)
-            voltage.setSuffix(" V")
-            voltage.setValue(1.0)
+            voltage = QSlider(Qt.Orientation.Horizontal)
+            voltage.setRange(0, 500)
+            voltage.setSingleStep(5)
+            voltage.setPageStep(25)
+            voltage.setTickInterval(50)
+            voltage.setValue(100)
+            voltage.setAccessibleName(f"{int(wavelength)} nanometer excitation voltage")
+            voltage_label = QLabel("1.00 V")
+            voltage_label.setObjectName("voltageReadout")
+            voltage_label.setMinimumWidth(54)
+            voltage.valueChanged.connect(
+                lambda value, label=voltage_label: label.setText(f"{value / 100:.2f} V")
+            )
             row = QWidget()
-            row_layout = QHBoxLayout(row)
+            row_layout = QVBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.addWidget(check, stretch=1)
+            row_layout.setSpacing(3)
+            heading = QHBoxLayout()
+            heading.addWidget(check, stretch=1)
+            heading.addWidget(voltage_label)
+            row_layout.addLayout(heading)
             row_layout.addWidget(voltage)
-            channels_form.addRow(row)
+            channels_layout.addWidget(row)
             self.channel_checks[wavelength] = check
             self.channel_voltages[wavelength] = voltage
+            self.channel_voltage_labels[wavelength] = voltage_label
         controls_layout.addWidget(channels_group)
 
         retention_group = QGroupBox("Data retention")
@@ -276,8 +334,9 @@ class MainWindow(QMainWindow):
         self.raw_checkbox.setChecked(raw_capture)
         retention_layout.addWidget(self.raw_checkbox)
         raw_hint = QLabel(
-            "ROI traces, exposure identity, TTL edges, and a calibration frame are "
-            "always retained in NWB. Raw frame retention is optional."
+            "Each ROI produces a separate animal NWB file. Exposure identity, TTL "
+            "edges, and a calibration frame are copied into every file. Raw frame "
+            "retention is optional and duplicates frames across those files."
         )
         raw_hint.setObjectName("hint")
         raw_hint.setWordWrap(True)
@@ -292,7 +351,7 @@ class MainWindow(QMainWindow):
         overview = QHBoxLayout()
         self.channels_summary = SummaryCard("3", "ACTIVE CHANNELS")
         self.fibers_summary = SummaryCard(str(fiber_count), "FIBER ROIS")
-        self.format_summary = SummaryCard("NWB", "SESSION OUTPUT")
+        self.format_summary = SummaryCard(str(fiber_count), "NWB FILES")
         overview.addWidget(self.channels_summary)
         overview.addWidget(self.fibers_summary)
         overview.addWidget(self.format_summary)
@@ -337,7 +396,9 @@ class MainWindow(QMainWindow):
         enabled = sum(check.isChecked() for check in self.channel_checks.values())
         self.channels_summary.value_label.setText(str(enabled))
         if hasattr(self, "fiber_count_spin"):
-            self.fibers_summary.value_label.setText(str(self.fiber_count_spin.value()))
+            fiber_count = self.fiber_count_spin.value()
+            self.fibers_summary.value_label.setText(str(fiber_count))
+            self.format_summary.value_label.setText(str(fiber_count))
 
     def _build_trace_workspace(self) -> pg.GraphicsLayoutWidget:
         traces_widget = pg.GraphicsLayoutWidget()
@@ -361,8 +422,8 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         fibers_group = QGroupBox("Fiber array")
-        fibers_group.setMinimumWidth(320)
-        fibers_group.setMaximumWidth(390)
+        fibers_group.setMinimumWidth(390)
+        fibers_group.setMaximumWidth(470)
         fibers_layout = QVBoxLayout(fibers_group)
         fibers_form = QFormLayout()
         self.fiber_count_spin = QSpinBox()
@@ -380,6 +441,13 @@ class MainWindow(QMainWindow):
         instructions.setObjectName("hint")
         instructions.setWordWrap(True)
         fibers_layout.addWidget(instructions)
+        metadata_title = QLabel("ONE ANIMAL AND NWB FILE PER ROI")
+        metadata_title.setObjectName("eyebrow")
+        fibers_layout.addWidget(metadata_title)
+        self.roi_metadata_tabs = QTabWidget()
+        self.roi_metadata_tabs.setMinimumHeight(280)
+        self._roi_metadata_editors: list[ROIMetadataEditor] = []
+        fibers_layout.addWidget(self.roi_metadata_tabs)
         self.roi_summary = QLabel()
         self.roi_summary.setWordWrap(True)
         fibers_layout.addWidget(self.roi_summary)
@@ -398,6 +466,7 @@ class MainWindow(QMainWindow):
         camera_layout.addWidget(self.calibration_plot)
         layout.addWidget(camera_group, stretch=1)
         self._settings_widgets.append(fibers_group)
+        self._rebuild_roi_metadata(fiber_count)
         return page
 
     def _apply_theme(self) -> None:
@@ -455,6 +524,16 @@ class MainWindow(QMainWindow):
             }
             QLabel#summaryValue { color: #f4fcfd; font-size: 15pt; font-weight: 800; }
             QLabel#summaryCaption { color: #6f91a6; font-size: 7pt; font-weight: 700; }
+            QLabel#voltageReadout { color: #43d6df; font-weight: 800; }
+            QSlider::groove:horizontal {
+                height: 6px; background: #17384d; border: 1px solid #31566d;
+                border-radius: 3px;
+            }
+            QSlider::sub-page:horizontal { background: #00aeba; border-radius: 3px; }
+            QSlider::handle:horizontal {
+                background: #e8f7fa; border: 2px solid #00aeba; width: 16px;
+                margin: -6px 0; border-radius: 8px;
+            }
             QLabel#badge { border-radius: 10px; padding: 5px 12px; font-weight: 800; }
             QLabel#badge[hardware="false"] { background: #b7e532; color: #0b1d31; }
             QLabel#systemStatus {
@@ -498,9 +577,28 @@ class MainWindow(QMainWindow):
         if selected:
             self.output_edit.setText(selected)
 
+    def _rebuild_roi_metadata(self, fiber_count: int) -> None:
+        if not hasattr(self, "roi_metadata_tabs"):
+            return
+        existing = [editor.values() for editor in self._roi_metadata_editors]
+        selected = min(self.roi_metadata_tabs.currentIndex(), fiber_count - 1)
+        while self.roi_metadata_tabs.count():
+            page = self.roi_metadata_tabs.widget(0)
+            self.roi_metadata_tabs.removeTab(0)
+            page.deleteLater()
+        self._roi_metadata_editors = []
+        for index in range(fiber_count):
+            editor = ROIMetadataEditor(index)
+            if index < len(existing):
+                editor.restore(existing[index])
+            self._roi_metadata_editors.append(editor)
+            self.roi_metadata_tabs.addTab(editor, f"ROI {index + 1}")
+        self.roi_metadata_tabs.setCurrentIndex(max(0, selected))
+
     def _rebuild_roi_items(self) -> None:
         if not hasattr(self, "calibration_plot"):
             return
+        self._rebuild_roi_metadata(self.fiber_count_spin.value())
         for item in self._roi_items:
             self.calibration_plot.removeItem(item)
         self._roi_items.clear()
@@ -553,19 +651,25 @@ class MainWindow(QMainWindow):
             ChannelConfig(
                 wavelength_nm=wavelength,
                 enabled=self.channel_checks[wavelength].isChecked(),
-                voltage_v=self.channel_voltages[wavelength].value(),
+                voltage_v=self.channel_voltages[wavelength].value() / 100.0,
             )
             for wavelength in Wavelength
         )
         rois: list[ROIConfig] = []
         for index, item in enumerate(self._roi_items):
+            metadata = self._roi_metadata_editors[index]
             position = item.pos()
             size = item.size()
             radius = min(float(size.x()), float(size.y())) / 2.0
             rois.append(
                 ROIConfig(
                     fiber_id=f"fiber_{index + 1:02d}",
-                    label=f"Fiber {index + 1}",
+                    label=metadata.label_edit.text().strip(),
+                    animal_id=metadata.animal_id_edit.text().strip(),
+                    brain_region=metadata.brain_region_edit.text().strip(),
+                    sensor_type=metadata.sensor_type_edit.text().strip(),
+                    subject_age=metadata.age_edit.text().strip() or None,
+                    subject_sex=metadata.sex_combo.currentText(),
                     center_x_px=float(position.x()) + radius,
                     center_y_px=float(position.y()) + radius,
                     radius_px=radius,
@@ -573,7 +677,6 @@ class MainWindow(QMainWindow):
             )
         payload = base.model_dump()
         payload.update(
-            subject_id=self.subject_edit.text().strip(),
             experimenter=self.experimenter_edit.text().strip(),
             channels=channels,
             rois=tuple(rois),
@@ -676,9 +779,12 @@ class MainWindow(QMainWindow):
         self.last_result = result
         self.progress_bar.setValue(1000)
         self.progress_bar.setFormat("100%")
-        self.live_status.setText("Saved and validated")
+        file_count = len(result.reports)
+        self.live_status.setText(f"Saved and validated {file_count} ROI NWB files")
         self._set_system_status("COMPLETE", "complete")
-        self.statusBar().showMessage(f"Saved and validated: {result.report.path}")
+        self.statusBar().showMessage(
+            f"Saved {file_count} validated ROI NWB files in {result.report.path.parent}"
+        )
 
     def _on_failed(self, traceback_text: str) -> None:
         self.last_error = traceback_text

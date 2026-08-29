@@ -43,15 +43,18 @@ def test_incomplete_spool_recovers_to_marked_valid_nwb(tmp_path: Path) -> None:
     assert result.acquisition_was_complete is False
     assert result.spool_removed is True
     assert not spool.path.exists()
-    with NWBHDF5IO(result.nwb.path, mode="r", load_namespaces=True) as io:
-        nwbfile = io.read()
-        events = nwbfile.events["system_events"].to_dataframe()["event"].tolist()
-        assert events == [
-            "recording_started",
-            "recording_stopped",
-            "spool_recovered_incomplete_acquisition",
-        ]
-        assert nwbfile.acquisition["camera_frames"].data.shape == (3, 24, 32)
+    assert len(result.nwbs) == 2
+    for roi_index, report in enumerate(result.nwbs):
+        with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
+            nwbfile = io.read()
+            assert nwbfile.subject.subject_id == config.rois[roi_index].animal_id
+            events = nwbfile.events["system_events"].to_dataframe()["event"].tolist()
+            assert events == [
+                "recording_started",
+                "recording_stopped",
+                "spool_recovered_incomplete_acquisition",
+            ]
+            assert nwbfile.acquisition["camera_frames"].data.shape == (3, 24, 32)
 
 
 def test_recovery_can_retain_complete_spool(tmp_path: Path) -> None:

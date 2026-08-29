@@ -4,7 +4,8 @@
 
 This application acquires camera frames from the proximal face of a fiber bundle,
 coordinates interleaved excitation, extracts circular-ROI fluorescence signals,
-timestamps behavioral TTL edges, and produces a validated NWB session.
+timestamps behavioral TTL edges, and produces one validated NWB file per ROI and
+animal.
 
 The main display is a live trace workspace. The image view is a calibration and
 diagnostic tool rather than the primary acquisition interface.
@@ -24,7 +25,7 @@ Camera worker ----------> uint16 frames -------------------+
 
 TTL interrupt records -------------------------------------> event stream
 
-trace + event + optional frame streams --> NWB finalizer --> validate --> session.nwb
+trace + event + optional frame streams --> per-ROI NWB finalizer --> validate --> ROI files
 ```
 
 The controller provides sequence identity and deterministic timing. The acquisition
@@ -67,7 +68,12 @@ the same contracts.
 - TTL edges, camera exposure, and excitation gates are demonstrated on one clock.
 - Disconnect, watchdog, disk-full, stop, and application-close tests leave LEDs off.
 
-## NWB organization
+## Per-ROI NWB organization
+
+Every configured ROI maps to one animal and one self-contained NWB file. The file
+contains that ROI's single-column fluorescence series and subject metadata. Shared
+session timing, TTL edges, exposure provenance, calibration imagery, and optional
+raw frames are copied into each file so it remains independently interpretable.
 
 ```text
 NWBFile

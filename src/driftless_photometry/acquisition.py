@@ -18,7 +18,7 @@ from driftless_photometry.storage import (
     NWBWriteReport,
     SessionSpool,
     load_session_spool,
-    write_session_nwb,
+    write_session_nwbs,
 )
 
 
@@ -31,8 +31,14 @@ class AcquisitionProgress:
 
 @dataclass(frozen=True, slots=True)
 class AcquisitionRunResult:
-    report: NWBWriteReport
+    reports: tuple[NWBWriteReport, ...]
     stopped_by_request: bool
+
+    @property
+    def report(self) -> NWBWriteReport:
+        """Return the first ROI report for compatibility with single-ROI callers."""
+
+        return self.reports[0]
 
 
 ProgressCallback = Callable[[AcquisitionProgress], None]
@@ -145,7 +151,7 @@ class AcquisitionEngine:
             loaded = load_session_spool(spool.path)
             if not loaded.complete:
                 raise RuntimeError("spool did not reach a complete state")
-            report = write_session_nwb(
+            reports = write_session_nwbs(
                 config,
                 loaded.data,
                 frames=loaded.frames,
@@ -154,7 +160,7 @@ class AcquisitionEngine:
             spool.cleanup()
             self._transition(AcquisitionState.READY, on_state)
             return AcquisitionRunResult(
-                report=report,
+                reports=reports,
                 stopped_by_request=self._stop_requested.is_set(),
             )
         except BaseException:

@@ -1,13 +1,13 @@
 # Driftless Bundle Photometry
 
-**Version 0.1.0** · [What's new](WHATS_NEW.md)
+**Version 0.1.1** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
 The application supports up to nine circular fiber ROIs, interleaved 405/470/565 nm
-excitation, four edge-recording TTL inputs, optional lossless raw frames, and a
-self-contained NWB-HDF5 session output. Windows is the physical-hardware target;
-the simulator and GUI demo are cross-platform.
+excitation, four edge-recording TTL inputs, optional lossless raw frames, and one
+self-contained NWB-HDF5 output per ROI and animal. Windows is the physical-hardware
+target; the simulator and GUI demo are cross-platform.
 
 ## Current implementation
 
@@ -18,7 +18,8 @@ the simulator and GUI demo are cross-platform.
 - Bounded, checksummed, chunked session spools that survive interruption and disk or
   finalizer errors.
 - Canonical NWB finalization using PyNWB, `ndx-fiber-photometry`, and
-  `ndx-ophys-devices`, including strict validation and round-trip verification.
+  `ndx-ophys-devices`, including a separate subject, brain region, sensor type, and
+  validated file for every ROI.
 - Trace-first PySide6/pyqtgraph desktop demo with a separate calibration image and
   draggable circular fiber ROIs.
 - Versioned/checksummed controller protocol, fail-safe lifecycle guard, and

@@ -6,6 +6,18 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.1 - 2026-08-29
+
+### Added
+
+- Each ROI now has its own animal ID, brain region, sensor type, age, and sex.
+- Every acquisition writes one validated NWB file per ROI and animal, with a
+  single-column fluorescence series and shared timing, TTL, and frame provenance.
+- Excitation voltage controls are now 0–5 V slider bars with live numeric readouts.
+- The calibration workspace now provides a separate subject metadata tab for every
+  ROI while keeping the experimenter as session-level metadata.
 - Added the short `dbf` command for launching the GUI, running simulations,
   recovering spools, and checking the installed version.
 - Added Conda installation instructions using a short `dbf` environment name and a

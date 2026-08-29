@@ -1,7 +1,7 @@
 """Session storage and NWB finalization."""
 
 from .frames import FrameStream
-from .nwb import NWBWriteReport, write_session_nwb
+from .nwb import NWBWriteReport, write_session_nwb, write_session_nwbs
 from .recovery import RecoveryReport, recover_session_spool
 from .spool import (
     LoadedSpool,
@@ -22,4 +22,5 @@ __all__ = [
     "recover_session_spool",
     "remove_session_spool",
     "write_session_nwb",
+    "write_session_nwbs",
 ]
