@@ -7,6 +7,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+from driftless_photometry import __version__
 from driftless_photometry.acquisition import AcquisitionEngine
 from driftless_photometry.config import demo_config
 from driftless_photometry.hardware import SimulatedRig
@@ -15,6 +16,7 @@ from driftless_photometry.storage import recover_session_spool
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Driftless Bundle Photometry")
+    parser.add_argument("--version", action="version", version=f"DBF {__version__}")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--headless", action="store_true", help="run a simulated recording")
     mode.add_argument("--demo", action="store_true", help="open the desktop GUI demo")

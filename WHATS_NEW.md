@@ -6,7 +6,12 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-- No changes yet.
+- Added the short `dbf` command for launching the GUI, running simulations,
+  recovering spools, and checking the installed version.
+- Added Conda installation instructions using a short `dbf` environment name and a
+  working GitHub-based pip install while the first PyPI release is pending.
+- Added a reusable `environment.yml` for creating the supported Python 3.13 Conda
+  environment.
 
 ## 0.1.0 - 2026-08-29
 

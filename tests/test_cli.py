@@ -1,9 +1,17 @@
 import json
 from pathlib import Path
 
+import pytest
 from pynwb import NWBHDF5IO
 
-from driftless_photometry.cli import main
+from driftless_photometry.cli import build_parser, main
+
+
+def test_cli_reports_short_name_and_version(capsys) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        build_parser().parse_args(["--version"])
+
+    assert capsys.readouterr().out == "DBF 0.1.0\n"
 
 
 def test_headless_cli_writes_machine_readable_result(tmp_path: Path, capsys) -> None:

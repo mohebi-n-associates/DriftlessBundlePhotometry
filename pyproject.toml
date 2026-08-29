@@ -35,6 +35,7 @@ dev = [
 ]
 
 [project.scripts]
+dbf = "driftless_photometry.cli:main"
 driftless-photometry = "driftless_photometry.cli:main"
 
 [tool.hatch.build.targets.wheel]

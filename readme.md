@@ -33,32 +33,81 @@ safety measurements. Simulator success is not evidence of physical validation.
 The historical MATLAB, Arduino, and Bonsai sources remain under `old mescoscope/`
 for reference and are not runtime dependencies.
 
-## Development setup
+## Installation with Conda
+
+Use `dbf` as the short environment and command name. The distribution keeps the
+full `driftless-bundle-photometry` name for PyPI, and Python imports remain under
+`driftless_photometry`.
+
+Create and activate a clean Conda environment:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/python -m pytest
+conda create --name dbf python=3.13 pip -y
+conda activate dbf
+python -m pip install --upgrade pip
+```
+
+Until the first PyPI release is published, install the current version directly
+from GitHub, including the desktop GUI dependencies:
+
+```bash
+python -m pip install "driftless-bundle-photometry[gui] @ git+https://github.com/mohebi-n-associates/DriftlessBundlePhotometry.git@main"
+```
+
+After the package is published on PyPI, the equivalent installation will be:
+
+```bash
+python -m pip install "driftless-bundle-photometry[gui]"
+```
+
+Confirm the installation and launch the GUI:
+
+```bash
+dbf --version
+dbf --demo
+```
+
+The long command remains available as `driftless-photometry`. Run a headless
+simulated acquisition with:
+
+```bash
+dbf --headless --duration 5 --raw
+```
+
+On Windows and macOS, the Conda commands are the same. Physical camera operation is
+supported on Windows; macOS supports the simulator and GUI demo.
+
+## Development installation
+
+Clone the repository, create the same short Conda environment, and install it in
+editable mode with the development tools:
+
+```bash
+git clone https://github.com/mohebi-n-associates/DriftlessBundlePhotometry.git
+cd DriftlessBundlePhotometry
+conda env create --file environment.yml
+conda activate dbf
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+python -m pytest
 ```
 
 Run a headless simulated acquisition:
 
 ```bash
-.venv/bin/python -m driftless_photometry --headless --duration 5 --raw
+dbf --headless --duration 5 --raw
 ```
 
 Run the GUI demo:
 
 ```bash
-.venv/bin/python -m driftless_photometry --demo
+dbf --demo
 ```
 
 Recover all committed data from a complete or interrupted spool:
 
 ```bash
-.venv/bin/python -m driftless_photometry \
-  --recover-spool path/to/session.photometry-spool
+dbf --recover-spool path/to/session.photometry-spool
 ```
 
 Successful recovery validates the NWB before removing the spool. Add `--keep-spool`
@@ -68,10 +117,10 @@ in the NWB system event table.
 Run the release gates:
 
 ```bash
-.venv/bin/python -m pytest --cov=driftless_photometry --cov-report=term-missing
-.venv/bin/python -m ruff check .
-.venv/bin/python -m ruff format --check .
-.venv/bin/python -m pip wheel . --no-deps --wheel-dir dist
+python -m pytest --cov=driftless_photometry --cov-report=term-missing
+python -m ruff check .
+python -m ruff format --check .
+python -m pip wheel . --no-deps --wheel-dir dist
 ```
 
 See [the architecture](docs/architecture.md) and the synchronized agent contracts
