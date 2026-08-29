@@ -73,6 +73,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.start_button.objectName() == "record"
     assert window.stop_button.objectName() == "attention"
     assert "QPushButton#attention:disabled" in window.styleSheet()
+    assert "QScrollBar::handle:vertical" in window.styleSheet()
 
 
 def test_gui_removes_stepper_buttons_from_every_spin_box(qtbot, tmp_path: Path) -> None:

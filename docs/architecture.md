@@ -64,6 +64,10 @@ the same contracts.
   wavelengths. Visibility and Absolute/dF/F controls are display state; each dF/F
   baseline is calculated independently per ROI and wavelength and is not persisted
   as raw data.
+- ROI rows receive one explicit shared numeric x-range rather than relying on
+  geometry-dependent plot linking. The trace canvas routes wheel input to the parent
+  page; dominant-axis drag boxes zoom x or y only, and double-click restores the
+  selected horizon plus automatic y-ranges.
 - A versioned JSON settings model round-trips every validated configuration field and
   is applied to the GUI as one unit. Startup defaults use the operator's visible
   Documents folder rather than a repository or hidden application directory.

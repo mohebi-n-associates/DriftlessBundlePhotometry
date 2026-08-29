@@ -116,7 +116,9 @@ acquisition and time base feeding them have passed integrated validation.
 **Progress after 0.1.4:** The versioned v1 JSON format, complete GUI save/load/default
 workflow, redirected-Windows-Documents location, exact NWB settings snapshots, and
 warning-based legacy NWB import are implemented with round-trip tests. Explicit
-future-format migrations and broader provenance remain in this phase.
+future-format migrations and broader provenance remain in this phase. The live trace
+workspace also has exact cross-ROI x-range synchronization, dominant-axis drag-box
+zoom, double-click reset, wheel-to-page routing, and bounded rendering tests.
 
 ### Goal
 

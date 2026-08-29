@@ -24,6 +24,11 @@ version, move its completed entries into a dated version section.
 - Removed the small increment/decrement stepper buttons from every numeric input in
   the GUI. Values remain directly editable, and excitation voltages retain their
   dedicated sliders.
+- The mouse wheel over the main trace display now scrolls the Acquire page instead
+  of zooming a graph. Page scrollbars use a slimmer dark style without arrow buttons.
+- Every ROI row now uses exactly the same numeric x-axis range. Drag a horizontal box
+  for time-only zoom, drag a vertical box for y-only zoom, and double-click any row to
+  reset all trace zoom to the selected time horizon and automatic y-ranges.
 
 ## 0.1.4 - 2026-08-29
 

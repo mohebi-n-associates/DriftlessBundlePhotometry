@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from array import array
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -58,6 +59,7 @@ from driftless_photometry.settings import (
 )
 
 from .branding import logo_path
+from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
 from .trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
@@ -184,6 +186,7 @@ class MainWindow(QMainWindow):
         self._trace_values: dict[tuple[Wavelength, int], array] = {}
         self._trace_roi_count = 0
         self._trace_horizon_s: float | None = HORIZONS[0][1]
+        self._trace_manual_x_range: tuple[float, float] | None = None
         self._trace_first_s: float | None = None
         self._trace_latest_s: float | None = None
         self._last_trace_render_s: dict[Wavelength, float] = {}
@@ -461,6 +464,12 @@ class MainWindow(QMainWindow):
         self.trace_span_hint.setObjectName("hint")
         horizon_row.addSpacing(8)
         horizon_row.addWidget(self.trace_span_hint)
+        self.trace_interaction_hint = QLabel(
+            "Drag horizontally or vertically to zoom; double-click to reset"
+        )
+        self.trace_interaction_hint.setObjectName("hint")
+        horizon_row.addSpacing(8)
+        horizon_row.addWidget(self.trace_interaction_hint)
         horizon_row.addStretch(1)
         live_layout.addLayout(horizon_row)
         trace_options = QHBoxLayout()
@@ -550,20 +559,29 @@ class MainWindow(QMainWindow):
             self.fibers_summary.value_label.setText(str(fiber_count))
             self.format_summary.value_label.setText(str(fiber_count))
 
-    def _build_trace_workspace(self) -> pg.GraphicsLayoutWidget:
-        self.trace_workspace = pg.GraphicsLayoutWidget()
+    def _build_trace_workspace(self) -> ScrollableTraceWorkspace:
+        self.trace_workspace = ScrollableTraceWorkspace()
         self.trace_plots: dict[int, pg.PlotItem] = {}
+        self.trace_view_boxes: dict[int, TraceViewBox] = {}
         return self.trace_workspace
 
     def _configure_trace_plots(self, rois: tuple[ROIConfig, ...]) -> None:
         self.trace_workspace.clear()
         self.trace_workspace.setMinimumHeight(max(380, 150 * len(rois)))
         self.trace_plots = {}
+        self.trace_view_boxes = {}
+        self._trace_manual_x_range = None
         self._trace_roi_count = len(rois)
         self._curves.clear()
         display_mode = self.trace_mode_combo.currentData()
         for row, roi in enumerate(rois):
-            plot = self.trace_workspace.addPlot(row=row, col=0)
+            view_box = TraceViewBox()
+            view_box.range_selected.connect(self._on_trace_range_selected)
+            view_box.reset_requested.connect(self._reset_trace_zoom)
+            view_box.sigRangeChangedManually.connect(
+                lambda mask, index=row: self._on_trace_range_changed_manually(index, mask)
+            )
+            plot = self.trace_workspace.addPlot(row=row, col=0, viewBox=view_box)
             plot.setTitle(
                 f"ROI {row + 1} - {roi.label} / {roi.animal_id}",
                 color="#e8f7fa",
@@ -580,6 +598,7 @@ class MainWindow(QMainWindow):
                 plot.addLegend(offset=(10, 5), colCount=3)
             plot.setClipToView(True)
             self.trace_plots[row] = plot
+            self.trace_view_boxes[row] = view_box
 
     def _build_wavelength_images_tab(self) -> QWidget:
         page = QWidget()
@@ -650,8 +669,8 @@ class MainWindow(QMainWindow):
         fibers_layout.addLayout(fibers_form)
         instructions = QLabel(
             "Drag a circle to move its fiber ROI. Drag its handle to resize it. "
-            "Fiber colors are reused in every live trace so identity remains consistent "
-            "across excitation wavelengths."
+            "Each ROI has its own live trace row; wavelength colors remain consistent "
+            "across every row."
         )
         instructions.setObjectName("hint")
         instructions.setWordWrap(True)
@@ -781,6 +800,22 @@ class MainWindow(QMainWindow):
             QProgressBar::chunk { background: #00bfd1; }
             QStatusBar { color: #7694aa; border-top: 1px solid #203c50; }
             QScrollArea { border: none; }
+            QScrollBar:vertical {
+                background: #0d1f31; width: 12px; margin: 0; border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background: #315570; min-height: 28px; border-radius: 5px; margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover { background: #4c7893; }
+            QScrollBar:horizontal {
+                background: #0d1f31; height: 12px; margin: 0; border-radius: 6px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #315570; min-width: 28px; border-radius: 5px; margin: 2px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #4c7893; }
+            QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+            QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
             """
         )
 
@@ -1148,6 +1183,7 @@ class MainWindow(QMainWindow):
         self._trace_times = {wavelength: array("d") for wavelength in Wavelength}
         self._trace_values.clear()
         self._trace_horizon_s = HORIZONS[0][1]
+        self._trace_manual_x_range = None
         for seconds, button in self.horizon_buttons.items():
             button.setChecked(seconds == self._trace_horizon_s)
         self._trace_first_s = None
@@ -1166,8 +1202,38 @@ class MainWindow(QMainWindow):
 
     def _set_trace_horizon(self, seconds: float | None) -> None:
         self._trace_horizon_s = seconds
+        self._trace_manual_x_range = None
         for value, button in self.horizon_buttons.items():
             button.setChecked(value == seconds)
+        for plot in self.trace_plots.values():
+            plot.enableAutoRange(axis="y", enable=True)
+        self._refresh_all_trace_curves()
+
+    def _on_trace_range_selected(
+        self,
+        axis: str,
+        low: float,
+        high: float,
+    ) -> None:
+        if axis != "x" or high <= low:
+            return
+        self._trace_manual_x_range = (low, high)
+        self._set_all_trace_x_ranges(low, high)
+        self._refresh_all_trace_curves()
+
+    def _on_trace_range_changed_manually(self, row: int, mask: Sequence[bool]) -> None:
+        if not bool(mask[0]):
+            return
+        low, high = self.trace_plots[row].viewRange()[0]
+        self._trace_manual_x_range = (low, high)
+        self._set_all_trace_x_ranges(low, high)
+
+    def _set_all_trace_x_ranges(self, low: float, high: float) -> None:
+        for plot in self.trace_plots.values():
+            plot.setXRange(low, high, padding=0.0)
+
+    def _reset_trace_zoom(self) -> None:
+        self._trace_manual_x_range = None
         for plot in self.trace_plots.values():
             plot.enableAutoRange(axis="y", enable=True)
         self._refresh_all_trace_curves()
@@ -1217,7 +1283,7 @@ class MainWindow(QMainWindow):
         return start, stop
 
     def _refresh_trace_wavelength(self, wavelength: Wavelength) -> None:
-        visible = self._visible_trace_range()
+        visible = self._trace_manual_x_range or self._visible_trace_range()
         if visible is None:
             return
         start_s, stop_s = visible
@@ -1226,14 +1292,15 @@ class MainWindow(QMainWindow):
             return
         times = np.frombuffer(time_buffer, dtype=np.float64)
         first_index = int(np.searchsorted(times, start_s, side="left"))
-        selected_times = times[first_index:]
+        stop_index = int(np.searchsorted(times, stop_s, side="right"))
+        selected_times = times[first_index:stop_index]
         budget = self._trace_point_budget()
         for index in range(self._trace_roi_count):
             all_values = np.frombuffer(
                 self._trace_values[(wavelength, index)],
                 dtype=np.float32,
             )
-            values = all_values[first_index:]
+            values = all_values[first_index:stop_index]
             if self.trace_mode_combo.currentData() == "dff":
                 baseline_stop_s = times[0] + self.trace_baseline_spin.value()
                 baseline_stop = max(1, int(np.searchsorted(times, baseline_stop_s, side="right")))
@@ -1255,8 +1322,7 @@ class MainWindow(QMainWindow):
                 display_values,
                 connect="finite",
             )
-        for plot in self.trace_plots.values():
-            plot.setXRange(start_s, stop_s, padding=0.0)
+        self._set_all_trace_x_ranges(start_s, stop_s)
 
     def _refresh_all_trace_curves(self) -> None:
         for wavelength in Wavelength:
@@ -1299,10 +1365,9 @@ class MainWindow(QMainWindow):
         self._trace_latest_s = sample.timestamp_s
         available_span = sample.timestamp_s - self._trace_first_s + 1 / 30
         self._update_trace_horizon_availability(available_span)
-        visible = self._visible_trace_range()
+        visible = self._trace_manual_x_range or self._visible_trace_range()
         if visible is not None:
-            for plot in self.trace_plots.values():
-                plot.setXRange(*visible, padding=0.0)
+            self._set_all_trace_x_ranges(*visible)
         if (
             sample.timestamp_s - self._last_trace_render_s[sample.wavelength_nm]
             >= _TRACE_REFRESH_INTERVAL_S

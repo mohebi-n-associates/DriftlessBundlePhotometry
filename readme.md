@@ -29,6 +29,9 @@ target; the simulator and GUI demo are cross-platform.
 - One live plot row per ROI with overlaid 405, 470, and 565 nm traces, independent
   wavelength visibility controls, and Absolute or display-only dF/F views with a
   configurable per-ROI/per-wavelength median baseline window.
+- Synchronized numeric time axes across all ROI rows, horizontal/vertical drag-box
+  zoom, double-click zoom reset, and page scrolling—not graph zoom—under the mouse
+  wheel.
 - Clean numeric entry fields without embedded increment/decrement stepper buttons.
 - Versioned, human-readable JSON settings with GUI actions to save, load, set startup
   defaults, and restore the complete setup from a previous DBF NWB recording.
