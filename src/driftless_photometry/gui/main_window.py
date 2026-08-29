@@ -10,6 +10,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -202,10 +203,15 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.tabs)
         self.setCentralWidget(root)
         self._apply_theme()
+        self._remove_spin_box_buttons()
         self.statusBar().showMessage(
             "Ready — simulator mode; no physical camera or controller connected"
         )
         self._rebuild_roi_items()
+
+    def _remove_spin_box_buttons(self) -> None:
+        for spin_box in self.findChildren(QAbstractSpinBox):
+            spin_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
 
     def _build_header(self) -> QWidget:
         header_widget = QWidget()

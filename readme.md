@@ -29,6 +29,7 @@ target; the simulator and GUI demo are cross-platform.
 - One live plot row per ROI with overlaid 405, 470, and 565 nm traces, independent
   wavelength visibility controls, and Absolute or display-only dF/F views with a
   configurable per-ROI/per-wavelength median baseline window.
+- Clean numeric entry fields without embedded increment/decrement stepper buttons.
 - A raw uint16 reference frame and fixed-scale ROI-annotated diagnostic view for
   every wavelength observed in a recording are saved inside each ROI NWB file.
 - Versioned/checksummed controller protocol, fail-safe lifecycle guard, and

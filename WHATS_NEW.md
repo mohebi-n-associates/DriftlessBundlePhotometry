@@ -6,7 +6,11 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-No changes yet.
+### Changed
+
+- Removed the small increment/decrement stepper buttons from every numeric input in
+  the GUI. Values remain directly editable, and excitation voltages retain their
+  dedicated sliders.
 
 ## 0.1.4 - 2026-08-29
 

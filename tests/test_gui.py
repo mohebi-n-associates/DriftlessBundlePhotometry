@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QAbstractSpinBox
 
 from driftless_photometry import __version__
 from driftless_photometry.config import Wavelength, demo_config
@@ -71,6 +72,18 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.start_button.objectName() == "record"
     assert window.stop_button.objectName() == "attention"
     assert "QPushButton#attention:disabled" in window.styleSheet()
+
+
+def test_gui_removes_stepper_buttons_from_every_spin_box(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path)
+    qtbot.addWidget(window)
+
+    spin_boxes = window.findChildren(QAbstractSpinBox)
+    assert spin_boxes
+    assert all(
+        spin_box.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
+        for spin_box in spin_boxes
+    )
 
 
 def test_gui_overview_tracks_channel_and_fiber_configuration(qtbot, tmp_path: Path) -> None:
