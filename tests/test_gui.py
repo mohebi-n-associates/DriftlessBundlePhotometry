@@ -57,6 +57,10 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     qtbot.addWidget(window)
     window.show()
 
+    assert window.size().width() == 2300
+    assert window.size().height() == 1300
+    assert window.minimumWidth() == 1408
+    assert window.minimumHeight() == 792
     assert window.tabs.count() == 3
     assert window.tabs.tabText(0) == "Acquire"
     assert window.tabs.tabText(1) == "Camera & fiber ROIs"
@@ -67,7 +71,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.1.4"
+    assert __version__ == "0.1.5"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"

@@ -9,7 +9,7 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.1.4
+**Current baseline:** 0.1.5
 
 **Last updated:** 2026-08-29
 
@@ -40,7 +40,7 @@ validation.
 
 ```mermaid
 flowchart LR
-    P0[Phase 0<br/>0.1.4 software baseline] --> P1[Phase 1<br/>reliability and CI]
+    P0[Phase 0<br/>0.1.5 software baseline] --> P1[Phase 1<br/>reliability and CI]
     P1 --> P2[Phase 2<br/>replay, simulator UX, and test harness]
     P2 --> P3[Phase 3<br/>timing controller]
     P2 --> P4[Phase 4<br/>camera integration]
@@ -68,9 +68,9 @@ acquisition and time base feeding them have passed integrated validation.
 | 7 | Reproducible derived analysis and QC | Planned | Phases 5 and 6 |
 | 8 | Installable, documented, release-quality product | Planned | All earlier gates |
 
-## Phase 0 — 0.1.4 software baseline
+## Phase 0 — 0.1.5 software baseline
 
-**Status: Complete as the 0.1.4 baseline; known contract gaps move to Phase 1**
+**Status: Complete as the 0.1.5 baseline; known contract gaps move to Phase 1**
 
 ### Delivered
 
@@ -92,6 +92,10 @@ acquisition and time base feeding them have passed integrated validation.
 - One independently scaled trace row per ROI, with wavelength overlays, per-color
   visibility controls, and Absolute or display-only dF/F rendering based on an
   explicit per-ROI/per-wavelength baseline window.
+- Exact cross-ROI x-range synchronization, dominant-axis drag-box zoom,
+  double-click reset, wheel-to-page routing, and styled page scrollbars.
+- Versioned complete JSON save/load/default settings, redirected Windows Documents
+  discovery, exact NWB settings snapshots, and warning-based legacy NWB import.
 - Recoverable per-wavelength camera references and derived ROI-annotated diagnostic
   images embedded in every per-ROI NWB output.
 - A versioned controller codec, lifecycle guard, and single-owner serial transport
@@ -113,7 +117,7 @@ acquisition and time base feeding them have passed integrated validation.
 
 **Status: Next**
 
-**Progress after 0.1.4:** The versioned v1 JSON format, complete GUI save/load/default
+**0.1.5 foundation:** The versioned v1 JSON format, complete GUI save/load/default
 workflow, redirected-Windows-Documents location, exact NWB settings snapshots, and
 warning-based legacy NWB import are implemented with round-trip tests. Explicit
 future-format migrations and broader provenance remain in this phase. The live trace

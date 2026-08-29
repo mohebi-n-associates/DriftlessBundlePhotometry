@@ -6,6 +6,10 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.5 - 2026-08-29
+
 ### Added
 
 - Added complete, versioned JSON configuration files covering session metadata,
@@ -21,6 +25,8 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- The main window now opens at the same 2300 × 1300 size as DriftlessFLIP, with the
+  same 1408 × 792 minimum size.
 - Removed the small increment/decrement stepper buttons from every numeric input in
   the GUI. Values remain directly editable, and excitation voltages retain their
   dedicated sliders.

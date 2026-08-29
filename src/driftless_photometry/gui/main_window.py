@@ -175,8 +175,8 @@ class MainWindow(QMainWindow):
         with logo_path() as icon_path:
             self._logo_pixmap = QPixmap(str(icon_path))
             self.setWindowIcon(QIcon(self._logo_pixmap))
-        self.resize(1500, 900)
-        self.setMinimumSize(1180, 700)
+        self.resize(2300, 1300)
+        self.setMinimumSize(1408, 792)
         self._thread: QThread | None = None
         self._worker: AcquisitionWorker | None = None
         self._close_pending = False
