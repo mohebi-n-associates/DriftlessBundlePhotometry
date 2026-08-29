@@ -6,6 +6,12 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.3 - 2026-08-29
+
+### Added
+
 - Added 15 s, 1 min, 10 min, 1 h, and Full live-trace display horizons modeled on
   DriftlessFLIP, with clear availability state during a recording.
 - Live traces now use display-only, power-of-two anchored min/max decimation with a
