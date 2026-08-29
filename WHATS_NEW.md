@@ -6,6 +6,10 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.4 - 2026-08-29
+
 ### Added
 
 - Live fluorescence is now arranged as one plot row per ROI, with the 405, 470,
