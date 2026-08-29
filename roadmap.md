@@ -9,7 +9,8 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.1.0  
+**Current baseline:** 0.1.0
+
 **Last updated:** 2026-08-29
 
 ## How to use this roadmap
