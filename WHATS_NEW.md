@@ -15,6 +15,9 @@ version, move its completed entries into a dated version section.
 - Added a living development roadmap covering reliability, controller and camera
   integration, one-clock rig validation, operator workflows, replay and analysis,
   quality control, and release engineering.
+- Added Thorlabs Python camera API integration notes covering SDK ownership,
+  discovery, configuration, hardware triggering, frame polling and buffer lifetime,
+  cleanup, error handling, and the remaining CS505MU bench-validation questions.
 
 ## 0.1.0 - 2026-08-29
 

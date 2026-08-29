@@ -129,6 +129,10 @@ or electrical validation without the physical hardware and measurements.
 - Use `pathlib.Path`; never add machine-specific absolute paths.
 - Public behavior changes require tests. Bugs receive regression tests.
 - Keep optional hardware imports lazy so simulator mode works without vendor SDKs.
+- Before implementing or changing the Thorlabs camera adapter, read
+  `docs/thorlabs-camera-python-api.md`; it records the vendor API lifecycle, DBF
+  integration decisions, and the boundary between documented behavior and required
+  CS505MU bench validation.
 - Do not edit generated/vendor/legacy files unless the task explicitly targets them.
 - Do not commit recordings, build outputs, virtual environments, or secrets.
 - Keep `WHATS_NEW.md` current for every user-visible change. Record work under
