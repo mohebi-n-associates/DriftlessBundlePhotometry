@@ -156,6 +156,7 @@ class AcquisitionEngine:
                 loaded.data,
                 frames=loaded.frames,
                 calibration_image=loaded.calibration_image,
+                wavelength_images=loaded.wavelength_images,
             )
             spool.cleanup()
             self._transition(AcquisitionState.READY, on_state)

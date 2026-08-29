@@ -21,6 +21,8 @@ Camera worker ----------> uint16 frames -------------------+
                               |
                               +--> circular ROI extractor --> trace/QC stream
                               |
+                              +--> per-wavelength reference image spool
+                              |
                               +--> optional bounded raw-frame spool
 
 TTL interrupt records -------------------------------------> event stream
@@ -74,6 +76,8 @@ Every configured ROI maps to one animal and one self-contained NWB file. The fil
 contains that ROI's single-column fluorescence series and subject metadata. Shared
 session timing, TTL edges, exposure provenance, calibration imagery, and optional
 raw frames are copied into each file so it remains independently interpretable.
+For every wavelength observed, it also contains the original unnormalized uint16
+reference frame and a derived fixed-scale RGB view with that file's ROI outlined.
 
 ```text
 NWBFile
@@ -91,6 +95,7 @@ NWBFile
 └── processing/photometry
     ├── camera_rois
     ├── calibration_images
+    ├── wavelength_roi_images      # raw reference + annotated view per wavelength
     └── future derived signals/QC
 ```
 

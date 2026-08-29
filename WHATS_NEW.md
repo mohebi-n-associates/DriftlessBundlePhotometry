@@ -8,6 +8,17 @@ version, move its completed entries into a dated version section.
 
 No changes yet.
 
+## 0.1.2 - 2026-08-29
+
+### Added
+
+- Added a dedicated live camera tab with independent, continuously updated panels
+  for 405, 470, and 565 nm exposures.
+- Acquisition spools now preserve a representative original uint16 frame for every
+  wavelength observed, including when full raw-frame retention is disabled.
+- Every ROI/animal NWB file now includes the original per-wavelength reference
+  frames and derived fixed-scale RGB copies with that file's ROI outlined.
+
 ## 0.1.1 - 2026-08-29
 
 ### Added

@@ -63,7 +63,14 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
 
 def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
     config, data, frames = _golden_data(tmp_path, raw_capture=True)
-    reports = write_session_nwbs(config, data, frames=frames, calibration_image=frames[0])
+    wavelength_images = {wavelength: frames[index] for index, wavelength in enumerate(Wavelength)}
+    reports = write_session_nwbs(
+        config,
+        data,
+        frames=frames,
+        calibration_image=frames[0],
+        wavelength_images=wavelength_images,
+    )
     assert len(reports) == 2
     assert {report.path.name for report in reports} == {
         f"{config.session_id}__animal-01__fiber_01.nwb",
@@ -86,6 +93,15 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
             assert len(nwbfile.events["camera_frames"]) == 6
             assert len(nwbfile.events["ttl_edges"]) == 2
             assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
+            images = nwbfile.processing["photometry"]["wavelength_roi_images"].images
+            assert len(images) == 6
+            for wavelength in Wavelength:
+                raw = images[f"raw_reference_{int(wavelength)}nm"].data
+                overlay = images[f"roi_overlay_{int(wavelength)}nm"].data
+                np.testing.assert_array_equal(raw, wavelength_images[wavelength])
+                assert overlay.dtype == np.dtype("uint8")
+                assert overlay.shape == (24, 32, 3)
+                assert np.any(overlay[:, :, 0] != overlay[:, :, 1])
             table = nwbfile.lab_meta_data["FiberPhotometry"].fiber_photometry_table
             assert len(table) == 3
             assert set(table.to_dataframe()["location"]) == {config.rois[roi_index].brain_region}
@@ -103,7 +119,13 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
 
 def test_nwb_without_raw_frames_retains_frame_provenance(tmp_path: Path) -> None:
     config, data, frames = _golden_data(tmp_path, raw_capture=False)
-    reports = write_session_nwbs(config, data, calibration_image=frames[0])
+    wavelength_images = {wavelength: frames[index] for index, wavelength in enumerate(Wavelength)}
+    reports = write_session_nwbs(
+        config,
+        data,
+        calibration_image=frames[0],
+        wavelength_images=wavelength_images,
+    )
     assert len(reports) == 2
     for report in reports:
         with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
@@ -113,6 +135,7 @@ def test_nwb_without_raw_frames_retains_frame_provenance(tmp_path: Path) -> None
             assert len(event_frame) == 6
             assert not event_frame["raw_saved"].any()
             assert set(event_frame["raw_image_index"]) == {-1}
+            assert "wavelength_roi_images" in nwbfile.processing["photometry"].data_interfaces
 
 
 def test_rejects_raw_frame_count_mismatch_before_writing(tmp_path: Path) -> None:

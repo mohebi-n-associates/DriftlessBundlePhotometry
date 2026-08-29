@@ -2,7 +2,12 @@ import numpy as np
 import pytest
 
 from driftless_photometry.config import ROIConfig
-from driftless_photometry.roi import circular_mask, extract_circular_rois, roi_bounding_box
+from driftless_photometry.roi import (
+    circular_mask,
+    extract_circular_rois,
+    render_annotated_rois,
+    roi_bounding_box,
+)
 
 
 def test_extracts_mean_without_mutating_source() -> None:
@@ -67,3 +72,26 @@ def test_bounding_box_clamps_to_frame() -> None:
         ),
     )
     assert roi_bounding_box(rois, (20, 20), margin_px=2) == (0, 0, 20, 20)
+
+
+def test_roi_annotation_is_fixed_scale_and_does_not_mutate_source() -> None:
+    roi = ROIConfig(
+        fiber_id="f1",
+        label="Fiber 1",
+        animal_id="animal-01",
+        brain_region="NAc",
+        sensor_type="dLight1.3b",
+        center_x_px=5,
+        center_y_px=5,
+        radius_px=3,
+    )
+    frame = np.full((12, 12), 2048, dtype=np.uint16)
+    original = frame.copy()
+
+    annotated = render_annotated_rois(frame, (roi,), bit_depth=12)
+
+    assert annotated.dtype == np.uint8
+    assert annotated.shape == (12, 12, 3)
+    np.testing.assert_array_equal(frame, original)
+    np.testing.assert_array_equal(annotated[5, 5], [127, 127, 127])
+    np.testing.assert_array_equal(annotated[5, 8], [67, 214, 223])

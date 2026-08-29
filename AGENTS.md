@@ -26,6 +26,9 @@ design evidence. They are not specifications to port verbatim.
 - The total camera frame rate is shared across enabled wavelengths.
 - Raw camera frames are optional. When retained, preserve original `uint16` values;
   never normalize them per frame.
+- Preserve one original `uint16` camera reference for every wavelength observed,
+  even when full raw-frame retention is disabled. ROI-annotated display copies are
+  derived diagnostic images with fixed bit-depth scaling and never replace raw data.
 - Support four behavior TTL inputs and retain both rising and falling edges.
 - Never infer wavelength solely from frame parity/modulo. Persist an explicit
   controller sequence and excitation identity for every camera exposure.
@@ -67,8 +70,9 @@ Use a hybrid of core NWB and `ndx-fiber-photometry`:
   series.
 - One raw `FiberPhotometryResponseSeries` per enabled wavelength in each file,
   shaped `[time, 1]`, with explicit timestamps.
-- Core ROI table and calibration image: the authoritative circular camera-space ROI
-  represented by that file.
+- Core ROI table, calibration image, and per-wavelength camera references: the
+  authoritative circular camera-space ROI represented by that file, plus derived
+  fixed-scale RGB views with the ROI outlined.
 - Core `ImageSeries`: optional embedded lossless chronological `uint16` frames.
 - Core `EventsTable`: TTL edges, camera exposures, excitation events, dropped frames,
   and system events.

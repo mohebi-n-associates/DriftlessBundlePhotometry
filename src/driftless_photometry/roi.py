@@ -10,6 +10,18 @@ from numpy.typing import NDArray
 
 from .config import ROIConfig
 
+_ANNOTATION_COLORS: tuple[tuple[int, int, int], ...] = (
+    (67, 214, 223),
+    (183, 229, 50),
+    (242, 177, 52),
+    (224, 68, 80),
+    (155, 122, 246),
+    (255, 126, 182),
+    (86, 203, 157),
+    (83, 155, 245),
+    (238, 139, 74),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ROIExtraction:
@@ -74,3 +86,34 @@ def roi_bounding_box(
     right = min(width, ceil(max(roi.center_x_px + roi.radius_px for roi in rois)) + margin_px)
     bottom = min(height, ceil(max(roi.center_y_px + roi.radius_px for roi in rois)) + margin_px)
     return left, top, right - left, bottom - top
+
+
+def render_annotated_rois(
+    frame: NDArray[np.uint16],
+    rois: tuple[ROIConfig, ...],
+    *,
+    bit_depth: int,
+) -> NDArray[np.uint8]:
+    """Render fixed-scale RGB diagnostic imagery with colored circular ROI outlines.
+
+    The source frame is never mutated or normalized per frame. Counts are mapped to
+    8-bit grayscale using the configured camera bit depth, then the derived RGB copy
+    receives a three-pixel-wide outline for every ROI.
+    """
+
+    if frame.dtype != np.uint16 or frame.ndim != 2:
+        raise TypeError("frame must be a two-dimensional uint16 array")
+    if not 1 <= bit_depth <= 16:
+        raise ValueError("bit_depth must be between 1 and 16")
+    maximum = (1 << bit_depth) - 1
+    scaled = np.minimum(frame, maximum).astype(np.uint32)
+    grayscale = ((scaled * 255) // maximum).astype(np.uint8)
+    annotated = np.repeat(grayscale[:, :, np.newaxis], 3, axis=2)
+    yy, xx = np.ogrid[: frame.shape[0], : frame.shape[1]]
+    for index, roi in enumerate(rois):
+        distance_sq = (xx - roi.center_x_px) ** 2 + (yy - roi.center_y_px) ** 2
+        inner_radius = max(0.0, roi.radius_px - 1.5)
+        outer_radius = roi.radius_px + 1.5
+        outline = (distance_sq >= inner_radius**2) & (distance_sq <= outer_radius**2)
+        annotated[outline] = _ANNOTATION_COLORS[index % len(_ANNOTATION_COLORS)]
+    return annotated

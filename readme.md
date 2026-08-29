@@ -1,6 +1,6 @@
 # Driftless Bundle Photometry
 
-**Version 0.1.1** · [What's new](WHATS_NEW.md)
+**Version 0.1.2** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
@@ -21,7 +21,10 @@ target; the simulator and GUI demo are cross-platform.
   `ndx-ophys-devices`, including a separate subject, brain region, sensor type, and
   validated file for every ROI.
 - Trace-first PySide6/pyqtgraph desktop demo with a separate calibration image and
-  draggable circular fiber ROIs.
+  draggable circular fiber ROIs, plus separate live camera panels for 405, 470, and
+  565 nm exposures.
+- A raw uint16 reference frame and fixed-scale ROI-annotated diagnostic view for
+  every wavelength observed in a recording are saved inside each ROI NWB file.
 - Versioned/checksummed controller protocol, fail-safe lifecycle guard, and
   single-owner serial transport that sends a best-effort `STOP` on close.
 - Lazy Thorlabs SDK detection that does not break simulator mode on macOS.

@@ -70,6 +70,7 @@ class LoadedSpool:
     data: AcquisitionData
     frames: FrameStream | None
     calibration_image: np.ndarray
+    wavelength_images: dict[Wavelength, np.ndarray]
     complete: bool
 
 
@@ -99,7 +100,7 @@ class SessionSpool:
         self._queue: queue.Queue[_Work] = queue.Queue(maxsize=queue_size)
         self._error: BaseException | None = None
         self._closed = False
-        self._calibration_submitted = False
+        self._wavelengths_submitted: set[Wavelength] = set()
         self._manifest = {
             "schema_version": _SPOOL_SCHEMA_VERSION,
             "complete": False,
@@ -108,6 +109,7 @@ class SessionSpool:
             "ttl_edge_count": 0,
             "chunks": [],
             "calibration_image": None,
+            "wavelength_images": {},
         }
         _atomic_write_json(self.path / "config.json", config.model_dump(mode="json"))
         self._write_manifest()
@@ -122,12 +124,10 @@ class SessionSpool:
         self._ensure_open()
         if packet.frame_id != sample.frame_id or packet.exposure.sequence != sample.sequence:
             raise ValueError("frame and trace sample identities do not match")
-        image = (
-            packet.image.copy()
-            if self.config.camera.raw_capture or not self._calibration_submitted
-            else None
-        )
-        self._calibration_submitted = True
+        wavelength = sample.wavelength_nm
+        retain_reference = wavelength not in self._wavelengths_submitted
+        image = packet.image.copy() if self.config.camera.raw_capture or retain_reference else None
+        self._wavelengths_submitted.add(wavelength)
         work = _FrameWork(
             frame_id=packet.frame_id,
             timestamp_s=sample.timestamp_s,
@@ -254,6 +254,15 @@ class SessionSpool:
             if calibration is None:
                 raise SpoolError("first frame image is required for calibration recovery")
             self._commit_calibration(calibration)
+        for item in items:
+            wavelength_key = str(item.wavelength_nm)
+            if wavelength_key in self._manifest["wavelength_images"]:
+                continue
+            if item.image is None:
+                raise SpoolError(
+                    f"first {item.wavelength_nm} nm frame is required for wavelength recovery"
+                )
+            self._commit_wavelength_image(item.wavelength_nm, item.image)
         self._write_manifest()
 
     def _commit_calibration(self, image: np.ndarray) -> None:
@@ -267,6 +276,19 @@ class SessionSpool:
         self._manifest["calibration_image"] = {
             "file": calibration_path.name,
             "sha256": _sha256(calibration_path),
+        }
+
+    def _commit_wavelength_image(self, wavelength_nm: int, image: np.ndarray) -> None:
+        image_path = self.path / f"wavelength_{wavelength_nm}_reference.npy"
+        temporary = image_path.with_suffix(".npy.tmp")
+        with temporary.open("wb") as stream:
+            np.save(stream, image.astype(np.uint16, copy=False), allow_pickle=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, image_path)
+        self._manifest["wavelength_images"][str(wavelength_nm)] = {
+            "file": image_path.name,
+            "sha256": _sha256(image_path),
         }
 
     def _write_manifest(self) -> None:
@@ -350,6 +372,15 @@ def load_session_spool(path: Path) -> LoadedSpool:
     if _sha256(calibration_path) != calibration_entry["sha256"]:
         raise SpoolError("calibration image checksum mismatch")
     calibration_image = np.load(calibration_path, allow_pickle=False)
+    wavelength_images: dict[Wavelength, np.ndarray] = {}
+    for wavelength_text, image_entry in manifest.get("wavelength_images", {}).items():
+        wavelength = Wavelength(int(wavelength_text))
+        image_path = path / image_entry["file"]
+        if _sha256(image_path) != image_entry["sha256"]:
+            raise SpoolError(f"{int(wavelength)} nm reference image checksum mismatch")
+        wavelength_images[wavelength] = np.load(image_path, allow_pickle=False)
+    if not wavelength_images and data.frame_wavelengths_nm:
+        wavelength_images[Wavelength(data.frame_wavelengths_nm[0])] = calibration_image.copy()
     frames = None
     if raw_chunk_paths:
         if first_frame is None or last_frame is None:
@@ -379,6 +410,7 @@ def load_session_spool(path: Path) -> LoadedSpool:
         data=data,
         frames=frames,
         calibration_image=calibration_image,
+        wavelength_images=wavelength_images,
         complete=bool(manifest["complete"]),
     )
 

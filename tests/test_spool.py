@@ -49,6 +49,9 @@ def test_spool_commits_and_round_trips(tmp_path: Path, raw_capture: bool) -> Non
     assert loaded.data.frame_ids == [1, 2, 3, 4, 5]
     assert len(loaded.data.ttl_edges) == 1
     np.testing.assert_array_equal(loaded.calibration_image, images[0])
+    assert set(loaded.wavelength_images) == set(Wavelength)
+    for index, wavelength in enumerate(Wavelength):
+        np.testing.assert_array_equal(loaded.wavelength_images[wavelength], images[index])
     if raw_capture:
         assert loaded.frames is not None
         np.testing.assert_array_equal(loaded.frames.to_array(), np.stack(images))
@@ -76,6 +79,25 @@ def test_spool_detects_corrupted_committed_chunk(tmp_path: Path) -> None:
     with chunk.open("ab") as stream:
         stream.write(b"corrupt")
     with pytest.raises(SpoolError, match="checksum mismatch"):
+        load_session_spool(spool.path)
+
+
+def test_spool_detects_corrupted_wavelength_reference(tmp_path: Path) -> None:
+    config = demo_config(
+        tmp_path,
+        fiber_count=2,
+        raw_capture=False,
+        width_px=32,
+        height_px=24,
+    )
+    spool = SessionSpool(config, chunk_size=3)
+    _submit_frames(spool, 3)
+    spool.close()
+    reference = spool.path / "wavelength_470_reference.npy"
+    with reference.open("ab") as stream:
+        stream.write(b"corrupt")
+
+    with pytest.raises(SpoolError, match="470 nm reference image checksum mismatch"):
         load_session_spool(spool.path)
 
 

@@ -153,6 +153,7 @@ class MainWindow(QMainWindow):
         self._trace_times: dict[Wavelength, deque[float]] = {}
         self._trace_values: dict[tuple[Wavelength, int], deque[float]] = {}
         self._image_item = pg.ImageItem()
+        self._image_display_maximum = (1 << 12) - 1
         self.last_result: AcquisitionRunResult | None = None
         self.last_error: str | None = None
 
@@ -177,6 +178,7 @@ class MainWindow(QMainWindow):
             self._scrollable(self._build_calibration_tab(default_fibers)),
             "Camera & fiber ROIs",
         )
+        self.tabs.addTab(self._build_wavelength_images_tab(), "Live wavelength images")
         root_layout.addWidget(self.tabs)
         self.setCentralWidget(root)
         self._apply_theme()
@@ -335,8 +337,9 @@ class MainWindow(QMainWindow):
         retention_layout.addWidget(self.raw_checkbox)
         raw_hint = QLabel(
             "Each ROI produces a separate animal NWB file. Exposure identity, TTL "
-            "edges, and a calibration frame are copied into every file. Raw frame "
-            "retention is optional and duplicates frames across those files."
+            "edges, per-wavelength camera references, and ROI-annotated views are "
+            "copied into every file. Full raw-frame retention is optional and "
+            "duplicates frames across those files."
         )
         raw_hint.setObjectName("hint")
         raw_hint.setWordWrap(True)
@@ -414,6 +417,55 @@ class MainWindow(QMainWindow):
                 plot.addLegend(offset=(10, 5), colCount=3)
             self.trace_plots[wavelength] = plot
         return traces_widget
+
+    def _build_wavelength_images_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setSpacing(10)
+        title = QLabel("Live camera frames by excitation wavelength")
+        title.setObjectName("sectionTitle")
+        copy = QLabel(
+            "Each panel holds the latest frame received for that explicit wavelength. "
+            "The acquisition trace and saved frame identity use the same controller record."
+        )
+        copy.setObjectName("hint")
+        copy.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(copy)
+
+        panels = QHBoxLayout()
+        panels.setSpacing(10)
+        self.wavelength_image_items: dict[Wavelength, pg.ImageItem] = {}
+        self.wavelength_image_plots: dict[Wavelength, pg.PlotWidget] = {}
+        self.wavelength_frame_labels: dict[Wavelength, QLabel] = {}
+        for wavelength in Wavelength:
+            group = QGroupBox(_WAVELENGTH_TITLES[wavelength])
+            group_layout = QVBoxLayout(group)
+            plot = pg.PlotWidget()
+            plot.setAspectLocked(True)
+            plot.invertY(True)
+            plot.showGrid(x=True, y=True, alpha=0.15)
+            plot.setLabel("bottom", "Camera x", units="px")
+            plot.setLabel("left", "Camera y", units="px")
+            image_item = pg.ImageItem()
+            image_item.setImage(
+                np.zeros((256, 256), dtype=np.uint16),
+                autoLevels=False,
+                levels=(0, (1 << 12) - 1),
+            )
+            plot.addItem(image_item)
+            status = QLabel("Waiting for recording")
+            status.setObjectName("hint")
+            status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            group_layout.addWidget(plot, stretch=1)
+            group_layout.addWidget(status)
+            panels.addWidget(group, stretch=1)
+            self.wavelength_image_items[wavelength] = image_item
+            self.wavelength_image_plots[wavelength] = plot
+            self.wavelength_frame_labels[wavelength] = status
+        layout.addLayout(panels, stretch=1)
+        return page
 
     def _build_calibration_tab(self, fiber_count: int) -> QWidget:
         page = QWidget()
@@ -694,6 +746,7 @@ class MainWindow(QMainWindow):
         self.last_result = None
         self.last_error = None
         self._prepare_trace_curves(config)
+        self._prepare_wavelength_images(config)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("0%")
         self.frame_counter.setText("0 frames")
@@ -743,8 +796,33 @@ class MainWindow(QMainWindow):
                 self._curves[(wavelength, index)] = curve
                 self._trace_values[(wavelength, index)] = deque(maxlen=2000)
 
+    def _prepare_wavelength_images(self, config: SessionConfig) -> None:
+        enabled = {channel.wavelength_nm for channel in config.enabled_channels}
+        self._image_display_maximum = (1 << config.camera.bit_depth) - 1
+        blank = np.zeros((config.camera.height_px, config.camera.width_px), dtype=np.uint16)
+        for wavelength in Wavelength:
+            self.wavelength_image_items[wavelength].setImage(
+                blank,
+                autoLevels=False,
+                levels=(0, self._image_display_maximum),
+            )
+            plot = self.wavelength_image_plots[wavelength]
+            plot.setXRange(0, config.camera.width_px, padding=0.02)
+            plot.setYRange(0, config.camera.height_px, padding=0.02)
+            self.wavelength_frame_labels[wavelength].setText(
+                "Waiting for first frame" if wavelength in enabled else "Channel disabled"
+            )
+
     def _on_progress(self, progress: AcquisitionProgress) -> None:
         sample = progress.sample
+        self.wavelength_image_items[sample.wavelength_nm].setImage(
+            progress.image,
+            autoLevels=False,
+            levels=(0, self._image_display_maximum),
+        )
+        self.wavelength_frame_labels[sample.wavelength_nm].setText(
+            f"Frame {progress.frame_count:,} · {sample.timestamp_s:.3f} s"
+        )
         times = self._trace_times[sample.wavelength_nm]
         times.append(sample.timestamp_s)
         for index, value in enumerate(sample.values):
@@ -755,7 +833,7 @@ class MainWindow(QMainWindow):
             self._image_item.setImage(
                 progress.image,
                 autoLevels=False,
-                levels=(0, (1 << 12) - 1),
+                levels=(0, self._image_display_maximum),
             )
         fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self.duration_spin.value())
         progress_value = round(fraction * 1000)

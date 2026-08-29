@@ -33,6 +33,9 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
     assert window.system_status.text() == "COMPLETE"
     assert window.system_status.property("state") == "complete"
     assert window.progress_bar.value() == 1000
+    for wavelength in window.wavelength_image_items:
+        assert window.wavelength_image_items[wavelength].image.shape == (256, 256)
+        assert window.wavelength_frame_labels[wavelength].text().startswith("Frame ")
 
 
 def test_gui_roi_count_rebuilds_calibration_circles(qtbot, tmp_path: Path) -> None:
@@ -49,15 +52,16 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     qtbot.addWidget(window)
     window.show()
 
-    assert window.tabs.count() == 2
+    assert window.tabs.count() == 3
     assert window.tabs.tabText(0) == "Acquire"
     assert window.tabs.tabText(1) == "Camera & fiber ROIs"
+    assert window.tabs.tabText(2) == "Live wavelength images"
     assert window.system_status.text() == "READY"
     assert window.system_status.property("state") == "ready"
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.1.1"
+    assert __version__ == "0.1.2"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"

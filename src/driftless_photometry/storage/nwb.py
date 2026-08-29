@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,11 +33,12 @@ from nwbinspector import Importance, inspect_nwbfile
 from pynwb import NWBHDF5IO, NWBFile, validate
 from pynwb.base import Images
 from pynwb.file import EventsTable, Subject
-from pynwb.image import GrayscaleImage, ImageSeries
+from pynwb.image import GrayscaleImage, ImageSeries, RGBImage
 
 from driftless_photometry import __version__
 from driftless_photometry.config import ROIConfig, SessionConfig, Wavelength
 from driftless_photometry.domain import AcquisitionData
+from driftless_photometry.roi import render_annotated_rois
 
 from .frames import FrameStream
 
@@ -93,6 +95,7 @@ def _validate_inputs(
     data: AcquisitionData,
     frames: NDArray[np.uint16] | FrameStream | None,
     calibration_image: NDArray[np.uint16] | None,
+    wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
 ) -> None:
     frame_count = len(data.frame_ids)
     parallel_lengths = {
@@ -130,6 +133,17 @@ def _validate_inputs(
             raise TypeError("calibration image must be a uint16 [y, x] array")
         if tuple(calibration_image.shape) != (config.camera.height_px, config.camera.width_px):
             raise ValueError("calibration image shape does not match configured camera shape")
+
+    enabled_wavelengths = {channel.wavelength_nm for channel in config.enabled_channels}
+    for wavelength, image in (wavelength_images or {}).items():
+        if wavelength not in enabled_wavelengths:
+            raise ValueError(f"{int(wavelength)} nm reference image is not an enabled channel")
+        if image.dtype != np.uint16 or image.ndim != 2:
+            raise TypeError("wavelength reference images must be uint16 [y, x] arrays")
+        if tuple(image.shape) != (config.camera.height_px, config.camera.width_px):
+            raise ValueError(
+                f"{int(wavelength)} nm reference image shape does not match configured camera"
+            )
 
     expected_roi_count = len(config.rois)
     for wavelength, samples in data.traces.items():
@@ -330,6 +344,7 @@ def _add_rois_and_calibration(
     nwbfile: NWBFile,
     config: SessionConfig,
     calibration_image: NDArray[np.uint16] | None,
+    wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
     roi_index: int,
 ) -> None:
     module = nwbfile.create_processing_module(
@@ -373,6 +388,45 @@ def _add_rois_and_calibration(
             ],
         )
         module.add(calibration_images)
+
+    if wavelength_images:
+        diagnostic_images: list[GrayscaleImage | RGBImage] = []
+        for wavelength in sorted(wavelength_images, key=int):
+            image = wavelength_images[wavelength]
+            diagnostic_images.extend(
+                (
+                    GrayscaleImage(
+                        name=f"raw_reference_{int(wavelength)}nm",
+                        data=image,
+                        description=(
+                            f"Original unnormalized uint16 camera frame captured during a "
+                            f"{int(wavelength)} nm exposure."
+                        ),
+                    ),
+                    RGBImage(
+                        name=f"roi_overlay_{int(wavelength)}nm",
+                        data=render_annotated_rois(
+                            image,
+                            (roi,),
+                            bit_depth=config.camera.bit_depth,
+                        ),
+                        description=(
+                            f"Derived fixed-scale RGB view of the {int(wavelength)} nm "
+                            f"reference frame with ROI {roi.fiber_id} outlined."
+                        ),
+                    ),
+                )
+            )
+        module.add(
+            Images(
+                name="wavelength_roi_images",
+                description=(
+                    "One original camera reference and one derived ROI-annotated view for "
+                    "each excitation wavelength observed during this recording."
+                ),
+                images=diagnostic_images,
+            )
+        )
 
 
 def _add_events(
@@ -522,6 +576,7 @@ def _round_trip_verify(
     config: SessionConfig,
     data: AcquisitionData,
     frames: NDArray[np.uint16] | FrameStream | None,
+    wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
     roi_index: int,
 ) -> None:
     with NWBHDF5IO(path, mode="r", load_namespaces=True) as io:
@@ -533,6 +588,15 @@ def _round_trip_verify(
             data.ttl_edges
         ):
             raise RuntimeError("NWB round-trip TTL event count mismatch")
+        if wavelength_images:
+            stored_images = nwbfile.processing["photometry"]["wavelength_roi_images"].images
+            for wavelength, expected in wavelength_images.items():
+                raw_name = f"raw_reference_{int(wavelength)}nm"
+                overlay_name = f"roi_overlay_{int(wavelength)}nm"
+                if not np.array_equal(stored_images[raw_name].data, expected):
+                    raise RuntimeError(f"NWB round-trip reference mismatch for {raw_name}")
+                if stored_images[overlay_name].data.shape != (*expected.shape, 3):
+                    raise RuntimeError(f"NWB round-trip overlay shape mismatch for {overlay_name}")
         if frames is not None:
             stored = nwbfile.acquisition["camera_frames"].data
             if isinstance(frames, FrameStream):
@@ -595,6 +659,7 @@ def _write_roi_partial_nwb(
     *,
     frames: NDArray[np.uint16] | FrameStream | None = None,
     calibration_image: NDArray[np.uint16] | None = None,
+    wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None = None,
     additional_system_events: tuple[str, ...] = (),
 ) -> NWBWriteReport:
     """Write and validate one ROI's partial NWB without promoting it."""
@@ -606,7 +671,13 @@ def _write_roi_partial_nwb(
 
     nwbfile = _create_nwbfile(config, roi)
     _add_photometry_metadata_and_traces(nwbfile, config, data, roi_index)
-    _add_rois_and_calibration(nwbfile, config, calibration_image, roi_index)
+    _add_rois_and_calibration(
+        nwbfile,
+        config,
+        calibration_image,
+        wavelength_images,
+        roi_index,
+    )
     _add_events(nwbfile, data, additional_system_events)
     _add_raw_frames(nwbfile, config, data, frames)
 
@@ -630,7 +701,7 @@ def _write_roi_partial_nwb(
     if inspector_messages:
         raise RuntimeError("NWB Inspector found critical issues: " + "; ".join(inspector_messages))
 
-    _round_trip_verify(partial_path, config, data, frames, roi_index)
+    _round_trip_verify(partial_path, config, data, frames, wavelength_images, roi_index)
     trace_sample_count = sum(len(samples) for samples in data.traces.values())
     return NWBWriteReport(
         path=final_path,
@@ -648,11 +719,12 @@ def write_session_nwbs(
     *,
     frames: NDArray[np.uint16] | FrameStream | None = None,
     calibration_image: NDArray[np.uint16] | None = None,
+    wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None = None,
     additional_system_events: tuple[str, ...] = (),
 ) -> tuple[NWBWriteReport, ...]:
     """Write one self-contained, validated NWB file per configured ROI and animal."""
 
-    _validate_inputs(config, data, frames, calibration_image)
+    _validate_inputs(config, data, frames, calibration_image, wavelength_images)
     output_directory = config.output_directory.expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     paths = [_roi_output_paths(config, roi) for roi in config.rois]
@@ -668,6 +740,7 @@ def write_session_nwbs(
             roi_index,
             frames=frames,
             calibration_image=calibration_image,
+            wavelength_images=wavelength_images,
             additional_system_events=additional_system_events,
         )
         for roi_index in range(len(config.rois))
@@ -683,6 +756,7 @@ def write_session_nwb(
     *,
     frames: NDArray[np.uint16] | FrameStream | None = None,
     calibration_image: NDArray[np.uint16] | None = None,
+    wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None = None,
     additional_system_events: tuple[str, ...] = (),
 ) -> NWBWriteReport:
     """Compatibility helper for callers that configure exactly one ROI."""
@@ -694,5 +768,6 @@ def write_session_nwb(
         data,
         frames=frames,
         calibration_image=calibration_image,
+        wavelength_images=wavelength_images,
         additional_system_events=additional_system_events,
     )[0]

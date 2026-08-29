@@ -42,6 +42,7 @@ def recover_session_spool(path: Path, *, keep_spool: bool = False) -> RecoveryRe
         loaded.data,
         frames=loaded.frames,
         calibration_image=loaded.calibration_image,
+        wavelength_images=loaded.wavelength_images,
         additional_system_events=(recovery_event,),
     )
     if not keep_spool:

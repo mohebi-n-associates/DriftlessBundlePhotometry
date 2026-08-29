@@ -9,7 +9,7 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.1.1
+**Current baseline:** 0.1.2
 
 **Last updated:** 2026-08-29
 
@@ -40,7 +40,7 @@ validation.
 
 ```mermaid
 flowchart LR
-    P0[Phase 0<br/>0.1.1 software baseline] --> P1[Phase 1<br/>reliability and CI]
+    P0[Phase 0<br/>0.1.2 software baseline] --> P1[Phase 1<br/>reliability and CI]
     P1 --> P2[Phase 2<br/>replay, simulator UX, and test harness]
     P2 --> P3[Phase 3<br/>timing controller]
     P2 --> P4[Phase 4<br/>camera integration]
@@ -68,9 +68,9 @@ acquisition and time base feeding them have passed integrated validation.
 | 7 | Reproducible derived analysis and QC | Planned | Phases 5 and 6 |
 | 8 | Installable, documented, release-quality product | Planned | All earlier gates |
 
-## Phase 0 — 0.1.1 software baseline
+## Phase 0 — 0.1.2 software baseline
 
-**Status: Complete as the 0.1.1 baseline; known contract gaps move to Phase 1**
+**Status: Complete as the 0.1.2 baseline; known contract gaps move to Phase 1**
 
 ### Delivered
 
@@ -85,7 +85,10 @@ acquisition and time base feeding them have passed integrated validation.
 - NWB finalization, PyNWB validation, NWB Inspector checks, reopen verification, and
   atomic promotion of one validated file per ROI and animal.
 - A trace-first PySide6/pyqtgraph demo with draggable calibration ROIs, per-ROI
-  subject metadata, and slider-based excitation voltage controls.
+  subject metadata, slider-based excitation voltage controls, and independent live
+  camera panels for each excitation wavelength.
+- Recoverable per-wavelength camera references and derived ROI-annotated diagnostic
+  images embedded in every per-ROI NWB output.
 - A versioned controller codec, lifecycle guard, and single-owner serial transport
   tested against fake serial devices.
 - Source and wheel installation, a Conda environment definition, and the short
