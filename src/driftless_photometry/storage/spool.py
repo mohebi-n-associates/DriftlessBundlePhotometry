@@ -1,0 +1,419 @@
+"""Append-safe, committed acquisition spool used before NWB finalization."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import queue
+import shutil
+import threading
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import IO
+
+import numpy as np
+
+from driftless_photometry.config import SessionConfig, Wavelength
+from driftless_photometry.domain import (
+    AcquisitionData,
+    DroppedFrameEvent,
+    FramePacket,
+    TraceSample,
+    TTLEdge,
+)
+
+from .frames import FrameStream
+from .nwb import _safe_filename
+
+_SPOOL_SCHEMA_VERSION = 1
+
+
+class SpoolError(RuntimeError):
+    """Base class for spool integrity and writer errors."""
+
+
+class SpoolBackpressureError(SpoolError):
+    """Raised when the bounded writer queue cannot accept data in time."""
+
+
+@dataclass(frozen=True, slots=True)
+class _FrameWork:
+    frame_id: int
+    timestamp_s: float
+    sequence: int
+    controller_tick_us: int
+    wavelength_nm: int
+    values: np.ndarray
+    saturation_fractions: np.ndarray
+    image: np.ndarray | None
+
+
+@dataclass(frozen=True, slots=True)
+class _TTLWork:
+    edge: TTLEdge
+
+
+@dataclass(frozen=True, slots=True)
+class _StopWork:
+    complete: bool
+
+
+_Work = _FrameWork | _TTLWork | _StopWork
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedSpool:
+    path: Path
+    config: SessionConfig
+    data: AcquisitionData
+    frames: FrameStream | None
+    calibration_image: np.ndarray
+    complete: bool
+
+
+class SessionSpool:
+    """Single-owner background writer for recoverable acquisition chunks."""
+
+    def __init__(
+        self,
+        config: SessionConfig,
+        *,
+        chunk_size: int = 16,
+        queue_size: int = 64,
+        submit_timeout_s: float = 2.0,
+    ) -> None:
+        if chunk_size <= 0 or queue_size <= 0 or submit_timeout_s <= 0:
+            raise ValueError("chunk_size, queue_size, and submit timeout must be positive")
+        self.config = config
+        self.path = config.output_directory.expanduser().resolve() / (
+            f"{_safe_filename(config.session_id)}.photometry-spool"
+        )
+        if self.path.exists():
+            raise FileExistsError(f"session spool already exists: {self.path}")
+        self.path.mkdir(parents=True)
+        (self.path / "chunks").mkdir()
+        self._chunk_size = chunk_size
+        self._submit_timeout_s = submit_timeout_s
+        self._queue: queue.Queue[_Work] = queue.Queue(maxsize=queue_size)
+        self._error: BaseException | None = None
+        self._closed = False
+        self._calibration_submitted = False
+        self._manifest = {
+            "schema_version": _SPOOL_SCHEMA_VERSION,
+            "complete": False,
+            "raw_capture": config.camera.raw_capture,
+            "frame_count": 0,
+            "ttl_edge_count": 0,
+            "chunks": [],
+            "calibration_image": None,
+        }
+        _atomic_write_json(self.path / "config.json", config.model_dump(mode="json"))
+        self._write_manifest()
+        self._thread = threading.Thread(
+            target=self._worker,
+            name=f"spool-{config.session_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit_frame(self, packet: FramePacket, sample: TraceSample) -> None:
+        self._ensure_open()
+        if packet.frame_id != sample.frame_id or packet.exposure.sequence != sample.sequence:
+            raise ValueError("frame and trace sample identities do not match")
+        image = (
+            packet.image.copy()
+            if self.config.camera.raw_capture or not self._calibration_submitted
+            else None
+        )
+        self._calibration_submitted = True
+        work = _FrameWork(
+            frame_id=packet.frame_id,
+            timestamp_s=sample.timestamp_s,
+            sequence=sample.sequence,
+            controller_tick_us=sample.controller_tick_us,
+            wavelength_nm=int(sample.wavelength_nm),
+            values=sample.values.astype(np.float32, copy=True),
+            saturation_fractions=sample.saturation_fractions.astype(np.float32, copy=True),
+            image=image,
+        )
+        self._put(work)
+
+    def submit_ttl(self, edge: TTLEdge) -> None:
+        self._ensure_open()
+        self._put(_TTLWork(edge=edge))
+
+    def close(self, *, complete: bool = True) -> None:
+        if self._closed:
+            return
+        self._enqueue_stop(_StopWork(complete=complete))
+        self._thread.join()
+        self._closed = True
+        self._raise_if_error()
+
+    def abort(self) -> None:
+        self.close(complete=False)
+
+    def cleanup(self) -> None:
+        if not self._closed:
+            raise SpoolError("cannot clean up an open spool")
+        remove_session_spool(self.path)
+
+    def _ensure_open(self) -> None:
+        self._raise_if_error()
+        if self._closed:
+            raise SpoolError("session spool is closed")
+
+    def _put(self, work: _Work) -> None:
+        try:
+            self._queue.put(work, timeout=self._submit_timeout_s)
+        except queue.Full as error:
+            raise SpoolBackpressureError("bounded spool queue is full") from error
+        self._raise_if_error()
+
+    def _enqueue_stop(self, work: _StopWork) -> None:
+        while True:
+            self._raise_if_error()
+            try:
+                self._queue.put(work, timeout=0.1)
+                return
+            except queue.Full:
+                continue
+
+    def _raise_if_error(self) -> None:
+        if self._error is not None:
+            raise SpoolError("background spool writer failed") from self._error
+
+    def _worker(self) -> None:
+        frame_buffer: list[_FrameWork] = []
+        ttl_path = self.path / "ttl_edges.jsonl"
+        try:
+            with ttl_path.open("a", encoding="utf-8") as ttl_file:
+                while True:
+                    work = self._queue.get()
+                    if isinstance(work, _FrameWork):
+                        frame_buffer.append(work)
+                        if len(frame_buffer) >= self._chunk_size:
+                            self._commit_chunk(frame_buffer)
+                            frame_buffer.clear()
+                    elif isinstance(work, _TTLWork):
+                        self._write_ttl(ttl_file, work.edge)
+                    else:
+                        if frame_buffer:
+                            self._commit_chunk(frame_buffer)
+                        ttl_file.flush()
+                        os.fsync(ttl_file.fileno())
+                        self._manifest["complete"] = work.complete
+                        self._write_manifest()
+                        self._queue.task_done()
+                        return
+                    self._queue.task_done()
+        except BaseException as error:
+            self._error = error
+
+    def _write_ttl(self, ttl_file: IO[str], edge: TTLEdge) -> None:
+        ttl_file.write(json.dumps(asdict(edge), separators=(",", ":")) + "\n")
+        ttl_file.flush()
+        self._manifest["ttl_edge_count"] = int(self._manifest["ttl_edge_count"]) + 1
+
+    def _commit_chunk(self, items: list[_FrameWork]) -> None:
+        chunk_index = len(self._manifest["chunks"])
+        chunk_name = f"chunk_{chunk_index:06d}.npz"
+        chunk_path = self.path / "chunks" / chunk_name
+        temporary = chunk_path.with_suffix(".npz.tmp")
+        arrays: dict[str, np.ndarray] = {
+            "frame_ids": np.asarray([item.frame_id for item in items], dtype=np.uint64),
+            "timestamps_s": np.asarray([item.timestamp_s for item in items], dtype=np.float64),
+            "sequences": np.asarray([item.sequence for item in items], dtype=np.uint64),
+            "controller_ticks_us": np.asarray(
+                [item.controller_tick_us for item in items], dtype=np.uint64
+            ),
+            "wavelengths_nm": np.asarray([item.wavelength_nm for item in items], dtype=np.uint16),
+            "values": np.stack([item.values for item in items]).astype(np.float32, copy=False),
+            "saturation_fractions": np.stack([item.saturation_fractions for item in items]).astype(
+                np.float32, copy=False
+            ),
+        }
+        if self.config.camera.raw_capture:
+            arrays["frames"] = np.stack([item.image for item in items]).astype(
+                np.uint16, copy=False
+            )
+        with temporary.open("wb") as stream:
+            np.savez(stream, **arrays)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, chunk_path)
+        checksum = _sha256(chunk_path)
+        self._manifest["chunks"].append(
+            {"file": f"chunks/{chunk_name}", "count": len(items), "sha256": checksum}
+        )
+        self._manifest["frame_count"] = int(self._manifest["frame_count"]) + len(items)
+        if self._manifest["calibration_image"] is None:
+            calibration = items[0].image
+            if calibration is None:
+                raise SpoolError("first frame image is required for calibration recovery")
+            self._commit_calibration(calibration)
+        self._write_manifest()
+
+    def _commit_calibration(self, image: np.ndarray) -> None:
+        calibration_path = self.path / "calibration_frame.npy"
+        temporary = calibration_path.with_suffix(".npy.tmp")
+        with temporary.open("wb") as stream:
+            np.save(stream, image.astype(np.uint16, copy=False), allow_pickle=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, calibration_path)
+        self._manifest["calibration_image"] = {
+            "file": calibration_path.name,
+            "sha256": _sha256(calibration_path),
+        }
+
+    def _write_manifest(self) -> None:
+        _atomic_write_json(self.path / "manifest.json", self._manifest)
+
+
+def load_session_spool(path: Path) -> LoadedSpool:
+    """Load and checksum all committed chunks, including an incomplete spool."""
+
+    path = path.expanduser().resolve()
+    manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != _SPOOL_SCHEMA_VERSION:
+        raise SpoolError("unsupported spool schema version")
+    config = SessionConfig.model_validate_json((path / "config.json").read_text(encoding="utf-8"))
+    data = AcquisitionData()
+    raw_chunk_paths: list[Path] = []
+    first_frame: np.ndarray | None = None
+    last_frame: np.ndarray | None = None
+    global_saved_index = 0
+    expected_sequence = 0
+    for entry in manifest["chunks"]:
+        chunk_path = path / entry["file"]
+        if _sha256(chunk_path) != entry["sha256"]:
+            raise SpoolError(f"spool chunk checksum mismatch: {chunk_path.name}")
+        with np.load(chunk_path, allow_pickle=False) as chunk:
+            count = len(chunk["frame_ids"])
+            if count != entry["count"]:
+                raise SpoolError(f"spool chunk count mismatch: {chunk_path.name}")
+            if config.camera.raw_capture:
+                raw_chunk_paths.append(chunk_path)
+                if first_frame is None:
+                    first_frame = chunk["frames"][0].astype(np.uint16, copy=True)
+                last_frame = chunk["frames"][-1].astype(np.uint16, copy=True)
+            for index in range(count):
+                wavelength = Wavelength(int(chunk["wavelengths_nm"][index]))
+                sample = TraceSample(
+                    timestamp_s=float(chunk["timestamps_s"][index]),
+                    frame_id=int(chunk["frame_ids"][index]),
+                    sequence=int(chunk["sequences"][index]),
+                    controller_tick_us=int(chunk["controller_ticks_us"][index]),
+                    wavelength_nm=wavelength,
+                    values=chunk["values"][index].astype(np.float32, copy=True),
+                    saturation_fractions=chunk["saturation_fractions"][index].astype(
+                        np.float32, copy=True
+                    ),
+                )
+                if sample.sequence < expected_sequence:
+                    raise SpoolError("controller sequences are not strictly increasing")
+                if sample.sequence > expected_sequence:
+                    data.dropped_frames.append(
+                        DroppedFrameEvent(
+                            timestamp_s=sample.timestamp_s,
+                            expected_sequence=expected_sequence,
+                            observed_sequence=sample.sequence,
+                            missing_count=sample.sequence - expected_sequence,
+                        )
+                    )
+                expected_sequence = sample.sequence + 1
+                data.traces[wavelength].append(sample)
+                data.frame_ids.append(sample.frame_id)
+                data.frame_timestamps_s.append(sample.timestamp_s)
+                data.frame_sequences.append(sample.sequence)
+                data.frame_ticks_us.append(sample.controller_tick_us)
+                data.frame_wavelengths_nm.append(int(wavelength))
+                data.frame_saved_indices.append(
+                    global_saved_index if config.camera.raw_capture else -1
+                )
+                if config.camera.raw_capture:
+                    global_saved_index += 1
+
+    ttl_path = path / "ttl_edges.jsonl"
+    if ttl_path.exists():
+        for line in ttl_path.read_text(encoding="utf-8").splitlines():
+            if line:
+                data.ttl_edges.append(TTLEdge(**json.loads(line)))
+
+    calibration_entry = manifest.get("calibration_image")
+    if not calibration_entry:
+        raise SpoolError("spool has no committed calibration image")
+    calibration_path = path / calibration_entry["file"]
+    if _sha256(calibration_path) != calibration_entry["sha256"]:
+        raise SpoolError("calibration image checksum mismatch")
+    calibration_image = np.load(calibration_path, allow_pickle=False)
+    frames = None
+    if raw_chunk_paths:
+        if first_frame is None or last_frame is None:
+            raise SpoolError("raw spool has no readable frame endpoints")
+        chunk_paths = tuple(raw_chunk_paths)
+
+        def iter_frames() -> Iterator[np.ndarray]:
+            for raw_chunk_path in chunk_paths:
+                with np.load(raw_chunk_path, allow_pickle=False) as chunk:
+                    for frame in chunk["frames"]:
+                        yield frame.astype(np.uint16, copy=True)
+
+        frames = FrameStream(
+            count=len(data.frame_ids),
+            frame_shape=(config.camera.height_px, config.camera.width_px),
+            iterator_factory=iter_frames,
+            first_frame=first_frame,
+            last_frame=last_frame,
+        )
+    if len(data.frame_ids) != manifest["frame_count"]:
+        raise SpoolError("manifest frame count does not match committed chunks")
+    if len(data.ttl_edges) != manifest["ttl_edge_count"]:
+        raise SpoolError("manifest TTL count does not match edge log")
+    return LoadedSpool(
+        path=path,
+        config=config,
+        data=data,
+        frames=frames,
+        calibration_image=calibration_image,
+        complete=bool(manifest["complete"]),
+    )
+
+
+def remove_session_spool(path: Path) -> None:
+    """Remove only a recognizable session spool after successful recovery/finalization."""
+
+    resolved = path.expanduser().resolve()
+    manifest_path = resolved / "manifest.json"
+    config_path = resolved / "config.json"
+    if (
+        resolved.name.endswith(".photometry-spool")
+        and manifest_path.is_file()
+        and config_path.is_file()
+    ):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("schema_version") == _SPOOL_SCHEMA_VERSION:
+            shutil.rmtree(resolved)
+            return
+    raise SpoolError(f"refusing to remove unrecognized spool path: {resolved}")
+
+
+def _atomic_write_json(path: Path, value: object) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
