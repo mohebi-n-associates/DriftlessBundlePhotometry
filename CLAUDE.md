@@ -134,6 +134,9 @@ or electrical validation without the physical hardware and measurements.
 - Keep `WHATS_NEW.md` current for every user-visible change. Record work under
   `Unreleased` as it lands, including changes that have not shipped, and move those
   entries into the matching version section when a version is released.
+- Use `roadmap.md` as the living development sequence. Update it when phase scope,
+  dependencies, status, or exit criteria change, and never mark a phase complete
+  without the evidence required by its exit criteria.
 - Use `ruff` for lint/format and `pytest` for tests.
 - Keep dependency versions bounded and test the exact NWB/PyNWB/NDX combination.
 

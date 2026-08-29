@@ -125,4 +125,5 @@ python -m pip wheel . --no-deps --wheel-dir dist
 
 See [the architecture](docs/architecture.md) and the synchronized agent contracts
 in `AGENTS.md` and `CLAUDE.md`. The planned hardware wire contract is documented in
-[the controller protocol](docs/controller-protocol.md).
+[the controller protocol](docs/controller-protocol.md). Development priorities,
+dependencies, and phase exit criteria are maintained in [the roadmap](roadmap.md).

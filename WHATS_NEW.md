@@ -12,6 +12,9 @@ version, move its completed entries into a dated version section.
   working GitHub-based pip install while the first PyPI release is pending.
 - Added a reusable `environment.yml` for creating the supported Python 3.13 Conda
   environment.
+- Added a living development roadmap covering reliability, controller and camera
+  integration, one-clock rig validation, operator workflows, replay and analysis,
+  quality control, and release engineering.
 
 ## 0.1.0 - 2026-08-29
 
