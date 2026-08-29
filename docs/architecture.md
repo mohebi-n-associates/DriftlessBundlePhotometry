@@ -58,6 +58,8 @@ the same contracts.
 
 - PySide6 GUI configures a session and runs the same headless engine in a worker.
 - pyqtgraph renders live traces and a limited-rate calibration image.
+- Live trace horizons use a screen-width point budget and anchored min/max
+  decimation; the display path never changes acquisition or stored samples.
 - UI remains responsive during recording and finalization.
 - macOS offscreen smoke test and manual demo pass.
 

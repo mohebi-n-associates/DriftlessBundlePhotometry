@@ -102,6 +102,10 @@ file set passes validation. Never label an unvalidated partial file as complete.
 Device-owning objects have one owner thread. HDF5/NWB writes have one writer owner.
 Use bounded queues. The GUI thread must never poll hardware, write frames, or block on
 acquisition loops.
+Live plots may window and aggregate for display, but this must be explicitly
+display-only. Point count must remain bounded by screen resolution rather than session
+duration, brief extrema must remain visible, and acquired or stored samples must never
+be discarded by a rendering optimization.
 
 State transitions are explicit:
 

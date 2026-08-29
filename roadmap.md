@@ -161,6 +161,8 @@ system before connecting it to physical devices.
      clock residuals, and finalization progress.
    - Establish tested bounds for simulator throughput, raw-frame retention, and
      spool growth.
+   - Keep live trace rendering bounded by display width through selectable horizons
+     and extrema-preserving aggregation, independent of recording duration.
 
 ### Exit criteria
 

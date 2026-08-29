@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from array import array
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +10,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -42,7 +43,15 @@ from driftless_photometry.config import (
 )
 
 from .branding import logo_path
+from .trace_display import (
+    HORIZONS,
+    MAX_DISPLAY_POINTS,
+    compact_duration,
+    downsample_min_max,
+)
 from .worker import AcquisitionWorker
+
+_TRACE_REFRESH_INTERVAL_S = 0.1
 
 _FIBER_COLORS = (
     "#00d5e4",
@@ -150,8 +159,12 @@ class MainWindow(QMainWindow):
         self._close_pending = False
         self._roi_items: list[pg.CircleROI] = []
         self._curves: dict[tuple[Wavelength, int], pg.PlotDataItem] = {}
-        self._trace_times: dict[Wavelength, deque[float]] = {}
-        self._trace_values: dict[tuple[Wavelength, int], deque[float]] = {}
+        self._trace_times: dict[Wavelength, array] = {}
+        self._trace_values: dict[tuple[Wavelength, int], array] = {}
+        self._trace_horizon_s: float | None = HORIZONS[0][1]
+        self._trace_first_s: float | None = None
+        self._trace_latest_s: float | None = None
+        self._last_trace_render_s: dict[Wavelength, float] = {}
         self._image_item = pg.ImageItem()
         self._image_display_maximum = (1 << 12) - 1
         self.last_result: AcquisitionRunResult | None = None
@@ -359,6 +372,26 @@ class MainWindow(QMainWindow):
         overview.addWidget(self.fibers_summary)
         overview.addWidget(self.format_summary)
         live_layout.addLayout(overview)
+        horizon_row = QHBoxLayout()
+        horizon_row.addWidget(QLabel("Display"))
+        self.horizon_group = QButtonGroup(self)
+        self.horizon_group.setExclusive(True)
+        self.horizon_buttons: dict[float | None, QPushButton] = {}
+        for index, (label, seconds) in enumerate(HORIZONS):
+            button = QPushButton(label)
+            button.setObjectName("horizon")
+            button.setCheckable(True)
+            button.setChecked(seconds == self._trace_horizon_s)
+            button.clicked.connect(lambda _checked, value=seconds: self._set_trace_horizon(value))
+            self.horizon_group.addButton(button, index)
+            self.horizon_buttons[seconds] = button
+            horizon_row.addWidget(button)
+        self.trace_span_hint = QLabel("No trace data yet")
+        self.trace_span_hint.setObjectName("hint")
+        horizon_row.addSpacing(8)
+        horizon_row.addWidget(self.trace_span_hint)
+        horizon_row.addStretch(1)
+        live_layout.addLayout(horizon_row)
         status_row = QHBoxLayout()
         self.live_status = QLabel("Ready — configure the session, then start recording")
         self.live_status.setObjectName("liveStatus")
@@ -415,6 +448,7 @@ class MainWindow(QMainWindow):
                 plot.setLabel("bottom", "Session time", units="s")
             if row == 0:
                 plot.addLegend(offset=(10, 5), colCount=3)
+            plot.setClipToView(True)
             self.trace_plots[wavelength] = plot
         return traces_widget
 
@@ -563,6 +597,11 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background: #205170; }
             QPushButton#record { background: #4fd18b; color: #05261a; font-weight: 700; }
             QPushButton#record:hover { background: #66dd9c; }
+            QPushButton#horizon { padding: 6px 12px; }
+            QPushButton#horizon:checked {
+                background: #00aeba; color: #071628; border-color: #43d6df;
+                font-weight: 800;
+            }
             QPushButton#attention { background: #d98324; color: #1a0f02; font-weight: 700; }
             QPushButton#attention:hover { background: #eb9438; }
             QPushButton:disabled { color: #61778a; background: #13283a; }
@@ -785,8 +824,14 @@ class MainWindow(QMainWindow):
             if plot.legend is not None:
                 plot.legend.clear()
         self._curves.clear()
-        self._trace_times = {wavelength: deque(maxlen=2000) for wavelength in Wavelength}
+        self._trace_times = {wavelength: array("d") for wavelength in Wavelength}
         self._trace_values.clear()
+        self._trace_horizon_s = HORIZONS[0][1]
+        for seconds, button in self.horizon_buttons.items():
+            button.setChecked(seconds == self._trace_horizon_s)
+        self._trace_first_s = None
+        self._trace_latest_s = None
+        self._last_trace_render_s = {wavelength: -np.inf for wavelength in Wavelength}
         for wavelength in Wavelength:
             for index, roi in enumerate(config.rois):
                 curve = self.trace_plots[wavelength].plot(
@@ -794,7 +839,76 @@ class MainWindow(QMainWindow):
                     pen=pg.mkPen(_FIBER_COLORS[index], width=1.7),
                 )
                 self._curves[(wavelength, index)] = curve
-                self._trace_values[(wavelength, index)] = deque(maxlen=2000)
+                self._trace_values[(wavelength, index)] = array("f")
+        self._update_trace_horizon_availability(0.0)
+
+    def _set_trace_horizon(self, seconds: float | None) -> None:
+        self._trace_horizon_s = seconds
+        for value, button in self.horizon_buttons.items():
+            button.setChecked(value == seconds)
+        for plot in self.trace_plots.values():
+            plot.enableAutoRange(axis="y", enable=True)
+        self._refresh_all_trace_curves()
+
+    def _update_trace_horizon_availability(self, duration_s: float) -> None:
+        self.trace_span_hint.setText(f"{compact_duration(duration_s)} available (this recording)")
+        for label, seconds in HORIZONS:
+            button = self.horizon_buttons[seconds]
+            available = seconds is None or seconds <= duration_s or seconds == self._trace_horizon_s
+            button.setEnabled(available)
+            button.setToolTip(
+                ""
+                if available
+                else f"{label} needs {seconds:g} s of data; {duration_s:g} s is available."
+            )
+
+    def _trace_point_budget(self, wavelength: Wavelength) -> int:
+        plot = self.trace_plots[wavelength]
+        ratio = self.devicePixelRatioF() or 1.0
+        return min(MAX_DISPLAY_POINTS, max(256, int(plot.width() * ratio * 2)))
+
+    def _visible_trace_range(self) -> tuple[float, float] | None:
+        if self._trace_first_s is None or self._trace_latest_s is None:
+            return None
+        stop = max(self._trace_latest_s, self._trace_first_s + 1 / 30)
+        start = self._trace_first_s
+        if self._trace_horizon_s is not None:
+            start = max(start, stop - self._trace_horizon_s)
+        return start, stop
+
+    def _refresh_trace_wavelength(self, wavelength: Wavelength) -> None:
+        visible = self._visible_trace_range()
+        if visible is None:
+            return
+        start_s, stop_s = visible
+        time_buffer = self._trace_times[wavelength]
+        if not time_buffer:
+            return
+        times = np.frombuffer(time_buffer, dtype=np.float64)
+        first_index = int(np.searchsorted(times, start_s, side="left"))
+        selected_times = times[first_index:]
+        budget = self._trace_point_budget(wavelength)
+        for index in range(len(self._trace_values) // len(Wavelength)):
+            values = np.frombuffer(
+                self._trace_values[(wavelength, index)],
+                dtype=np.float32,
+            )[first_index:]
+            display_times, display_values = downsample_min_max(
+                selected_times,
+                values,
+                first_index=first_index,
+                max_points=budget,
+            )
+            self._curves[(wavelength, index)].setData(
+                display_times,
+                display_values,
+                connect="finite",
+            )
+        self.trace_plots[wavelength].setXRange(start_s, stop_s, padding=0.0)
+
+    def _refresh_all_trace_curves(self) -> None:
+        for wavelength in Wavelength:
+            self._refresh_trace_wavelength(wavelength)
 
     def _prepare_wavelength_images(self, config: SessionConfig) -> None:
         enabled = {channel.wavelength_nm for channel in config.enabled_channels}
@@ -828,7 +942,21 @@ class MainWindow(QMainWindow):
         for index, value in enumerate(sample.values):
             values = self._trace_values[(sample.wavelength_nm, index)]
             values.append(float(value))
-            self._curves[(sample.wavelength_nm, index)].setData(list(times), list(values))
+        if self._trace_first_s is None:
+            self._trace_first_s = sample.timestamp_s
+        self._trace_latest_s = sample.timestamp_s
+        available_span = sample.timestamp_s - self._trace_first_s + 1 / 30
+        self._update_trace_horizon_availability(available_span)
+        visible = self._visible_trace_range()
+        if visible is not None:
+            for plot in self.trace_plots.values():
+                plot.setXRange(*visible, padding=0.0)
+        if (
+            sample.timestamp_s - self._last_trace_render_s[sample.wavelength_nm]
+            >= _TRACE_REFRESH_INTERVAL_S
+        ):
+            self._refresh_trace_wavelength(sample.wavelength_nm)
+            self._last_trace_render_s[sample.wavelength_nm] = sample.timestamp_s
         if progress.frame_count == 1 or progress.frame_count % 5 == 0:
             self._image_item.setImage(
                 progress.image,
@@ -855,6 +983,7 @@ class MainWindow(QMainWindow):
 
     def _on_completed(self, result: AcquisitionRunResult) -> None:
         self.last_result = result
+        self._refresh_all_trace_curves()
         self.progress_bar.setValue(1000)
         self.progress_bar.setFormat("100%")
         file_count = len(result.reports)

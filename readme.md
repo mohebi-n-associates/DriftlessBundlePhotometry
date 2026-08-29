@@ -23,6 +23,9 @@ target; the simulator and GUI demo are cross-platform.
 - Trace-first PySide6/pyqtgraph desktop demo with a separate calibration image and
   draggable circular fiber ROIs, plus separate live camera panels for 405, 470, and
   565 nm exposures.
+- Selectable 15 s, 1 min, 10 min, 1 h, and Full trace horizons with display-only
+  extrema-preserving decimation, keeping long recordings responsive without changing
+  acquired or stored samples.
 - A raw uint16 reference frame and fixed-scale ROI-annotated diagnostic view for
   every wavelength observed in a recording are saved inside each ROI NWB file.
 - Versioned/checksummed controller protocol, fail-safe lifecycle guard, and
