@@ -65,6 +65,12 @@ _FIBER_COLORS = (
     "#d5e45c",
 )
 
+_WAVELENGTH_COLORS = {
+    Wavelength.CONTROL_405: "#66c2ff",
+    Wavelength.GREEN_470: "#4fd18b",
+    Wavelength.RED_565: "#e05fa0",
+}
+
 _WAVELENGTH_TITLES = {
     Wavelength.CONTROL_405: "405 nm — isosbestic control",
     Wavelength.GREEN_470: "470 nm — green signal",
@@ -161,6 +167,7 @@ class MainWindow(QMainWindow):
         self._curves: dict[tuple[Wavelength, int], pg.PlotDataItem] = {}
         self._trace_times: dict[Wavelength, array] = {}
         self._trace_values: dict[tuple[Wavelength, int], array] = {}
+        self._trace_roi_count = 0
         self._trace_horizon_s: float | None = HORIZONS[0][1]
         self._trace_first_s: float | None = None
         self._trace_latest_s: float | None = None
@@ -392,6 +399,43 @@ class MainWindow(QMainWindow):
         horizon_row.addWidget(self.trace_span_hint)
         horizon_row.addStretch(1)
         live_layout.addLayout(horizon_row)
+        trace_options = QHBoxLayout()
+        trace_options.addWidget(QLabel("Show"))
+        self.trace_wavelength_checks: dict[Wavelength, QCheckBox] = {}
+        for wavelength in Wavelength:
+            check = QCheckBox(f"{int(wavelength)} nm")
+            check.setChecked(True)
+            check.setStyleSheet(f"color: {_WAVELENGTH_COLORS[wavelength]}; font-weight: 700;")
+            check.toggled.connect(self._apply_trace_visibility)
+            self.trace_wavelength_checks[wavelength] = check
+            trace_options.addWidget(check)
+        trace_options.addSpacing(12)
+        trace_options.addWidget(QLabel("Y axis"))
+        self.trace_mode_combo = QComboBox()
+        self.trace_mode_combo.addItem("Absolute", "absolute")
+        self.trace_mode_combo.addItem("dF/F", "dff")
+        self.trace_mode_combo.currentIndexChanged.connect(self._apply_trace_mode)
+        trace_options.addWidget(self.trace_mode_combo)
+        trace_options.addWidget(QLabel("Baseline"))
+        self.trace_baseline_spin = QDoubleSpinBox()
+        self.trace_baseline_spin.setRange(0.1, 3600.0)
+        self.trace_baseline_spin.setDecimals(1)
+        self.trace_baseline_spin.setSingleStep(1.0)
+        self.trace_baseline_spin.setSuffix(" s")
+        self.trace_baseline_spin.setValue(5.0)
+        self.trace_baseline_spin.setToolTip(
+            "dF/F uses the median of the first N seconds separately for every "
+            "ROI and wavelength. This changes display only."
+        )
+        self.trace_baseline_spin.valueChanged.connect(self._apply_trace_mode)
+        trace_options.addWidget(self.trace_baseline_spin)
+        self.trace_baseline_hint = QLabel("median F0 per ROI and wavelength")
+        self.trace_baseline_hint.setObjectName("hint")
+        self.trace_baseline_spin.setEnabled(False)
+        self.trace_baseline_hint.setEnabled(False)
+        trace_options.addWidget(self.trace_baseline_hint)
+        trace_options.addStretch(1)
+        live_layout.addLayout(trace_options)
         status_row = QHBoxLayout()
         self.live_status = QLabel("Ready — configure the session, then start recording")
         self.live_status.setObjectName("liveStatus")
@@ -437,20 +481,35 @@ class MainWindow(QMainWindow):
             self.format_summary.value_label.setText(str(fiber_count))
 
     def _build_trace_workspace(self) -> pg.GraphicsLayoutWidget:
-        traces_widget = pg.GraphicsLayoutWidget()
-        self.trace_plots: dict[Wavelength, pg.PlotItem] = {}
-        for row, wavelength in enumerate(Wavelength):
-            plot = traces_widget.addPlot(row=row, col=0)
-            plot.setTitle(_WAVELENGTH_TITLES[wavelength], color="#e8f7fa", size="10pt")
+        self.trace_workspace = pg.GraphicsLayoutWidget()
+        self.trace_plots: dict[int, pg.PlotItem] = {}
+        return self.trace_workspace
+
+    def _configure_trace_plots(self, rois: tuple[ROIConfig, ...]) -> None:
+        self.trace_workspace.clear()
+        self.trace_workspace.setMinimumHeight(max(380, 150 * len(rois)))
+        self.trace_plots = {}
+        self._trace_roi_count = len(rois)
+        self._curves.clear()
+        display_mode = self.trace_mode_combo.currentData()
+        for row, roi in enumerate(rois):
+            plot = self.trace_workspace.addPlot(row=row, col=0)
+            plot.setTitle(
+                f"ROI {row + 1} - {roi.label} / {roi.animal_id}",
+                color="#e8f7fa",
+                size="10pt",
+            )
             plot.showGrid(x=True, y=True, alpha=0.22)
-            plot.setLabel("left", "Fluorescence", units="counts")
-            if row == len(Wavelength) - 1:
+            if display_mode == "dff":
+                plot.setLabel("left", "dF/F", units="%")
+            else:
+                plot.setLabel("left", "Fluorescence", units="counts")
+            if row == len(rois) - 1:
                 plot.setLabel("bottom", "Session time", units="s")
             if row == 0:
                 plot.addLegend(offset=(10, 5), colCount=3)
             plot.setClipToView(True)
-            self.trace_plots[wavelength] = plot
-        return traces_widget
+            self.trace_plots[row] = plot
 
     def _build_wavelength_images_tab(self) -> QWidget:
         page = QWidget()
@@ -697,6 +756,7 @@ class MainWindow(QMainWindow):
             Path(self.output_edit.text() or "."),
             fiber_count=self.fiber_count_spin.value(),
         )
+        self._configure_trace_plots(preview.rois)
         blank = np.zeros((preview.camera.height_px, preview.camera.width_px), dtype=np.uint16)
         self._image_item.setImage(blank, autoLevels=False, levels=(0, 4095))
         for index, roi in enumerate(preview.rois):
@@ -819,11 +879,7 @@ class MainWindow(QMainWindow):
             self._worker.request_stop()
 
     def _prepare_trace_curves(self, config: SessionConfig) -> None:
-        for plot in self.trace_plots.values():
-            plot.clear()
-            if plot.legend is not None:
-                plot.legend.clear()
-        self._curves.clear()
+        self._configure_trace_plots(config.rois)
         self._trace_times = {wavelength: array("d") for wavelength in Wavelength}
         self._trace_values.clear()
         self._trace_horizon_s = HORIZONS[0][1]
@@ -832,12 +888,13 @@ class MainWindow(QMainWindow):
         self._trace_first_s = None
         self._trace_latest_s = None
         self._last_trace_render_s = {wavelength: -np.inf for wavelength in Wavelength}
-        for wavelength in Wavelength:
-            for index, roi in enumerate(config.rois):
-                curve = self.trace_plots[wavelength].plot(
-                    name=roi.label if wavelength is Wavelength.CONTROL_405 else None,
-                    pen=pg.mkPen(_FIBER_COLORS[index], width=1.7),
+        for index, _roi in enumerate(config.rois):
+            for wavelength in Wavelength:
+                curve = self.trace_plots[index].plot(
+                    name=f"{int(wavelength)} nm" if index == 0 else None,
+                    pen=pg.mkPen(_WAVELENGTH_COLORS[wavelength], width=1.8),
                 )
+                curve.setVisible(self.trace_wavelength_checks[wavelength].isChecked())
                 self._curves[(wavelength, index)] = curve
                 self._trace_values[(wavelength, index)] = array("f")
         self._update_trace_horizon_availability(0.0)
@@ -847,6 +904,22 @@ class MainWindow(QMainWindow):
         for value, button in self.horizon_buttons.items():
             button.setChecked(value == seconds)
         for plot in self.trace_plots.values():
+            plot.enableAutoRange(axis="y", enable=True)
+        self._refresh_all_trace_curves()
+
+    def _apply_trace_visibility(self, *_args: object) -> None:
+        for (wavelength, _index), curve in self._curves.items():
+            curve.setVisible(self.trace_wavelength_checks[wavelength].isChecked())
+
+    def _apply_trace_mode(self, *_args: object) -> None:
+        is_dff = self.trace_mode_combo.currentData() == "dff"
+        self.trace_baseline_spin.setEnabled(is_dff)
+        self.trace_baseline_hint.setEnabled(is_dff)
+        for plot in self.trace_plots.values():
+            if is_dff:
+                plot.setLabel("left", "dF/F", units="%")
+            else:
+                plot.setLabel("left", "Fluorescence", units="counts")
             plot.enableAutoRange(axis="y", enable=True)
         self._refresh_all_trace_curves()
 
@@ -862,8 +935,10 @@ class MainWindow(QMainWindow):
                 else f"{label} needs {seconds:g} s of data; {duration_s:g} s is available."
             )
 
-    def _trace_point_budget(self, wavelength: Wavelength) -> int:
-        plot = self.trace_plots[wavelength]
+    def _trace_point_budget(self) -> int:
+        plot = next(iter(self.trace_plots.values()), None)
+        if plot is None:
+            return 256
         ratio = self.devicePixelRatioF() or 1.0
         return min(MAX_DISPLAY_POINTS, max(256, int(plot.width() * ratio * 2)))
 
@@ -887,12 +962,23 @@ class MainWindow(QMainWindow):
         times = np.frombuffer(time_buffer, dtype=np.float64)
         first_index = int(np.searchsorted(times, start_s, side="left"))
         selected_times = times[first_index:]
-        budget = self._trace_point_budget(wavelength)
-        for index in range(len(self._trace_values) // len(Wavelength)):
-            values = np.frombuffer(
+        budget = self._trace_point_budget()
+        for index in range(self._trace_roi_count):
+            all_values = np.frombuffer(
                 self._trace_values[(wavelength, index)],
                 dtype=np.float32,
-            )[first_index:]
+            )
+            values = all_values[first_index:]
+            if self.trace_mode_combo.currentData() == "dff":
+                baseline_stop_s = times[0] + self.trace_baseline_spin.value()
+                baseline_stop = max(1, int(np.searchsorted(times, baseline_stop_s, side="right")))
+                baseline_values = all_values[:baseline_stop]
+                finite = baseline_values[np.isfinite(baseline_values)]
+                baseline = float(np.median(finite)) if len(finite) else np.nan
+                if np.isfinite(baseline) and abs(baseline) > np.finfo(np.float32).eps:
+                    values = (values.astype(np.float64) - baseline) / baseline * 100.0
+                else:
+                    values = np.full(len(values), np.nan, dtype=np.float64)
             display_times, display_values = downsample_min_max(
                 selected_times,
                 values,
@@ -904,7 +990,8 @@ class MainWindow(QMainWindow):
                 display_values,
                 connect="finite",
             )
-        self.trace_plots[wavelength].setXRange(start_s, stop_s, padding=0.0)
+        for plot in self.trace_plots.values():
+            plot.setXRange(start_s, stop_s, padding=0.0)
 
     def _refresh_all_trace_curves(self) -> None:
         for wavelength in Wavelength:

@@ -34,6 +34,9 @@ design evidence. They are not specifications to port verbatim.
   controller sequence and excitation identity for every camera exposure.
 - Preserve raw data. Corrections, fitted controls, dF/F, z-scores, and QC outputs
   are separate derived datasets.
+- Live Absolute/dF/F views and per-wavelength visibility are presentation state.
+  Calculate dF/F baselines independently per ROI and wavelength, keep their window
+  explicit, and never overwrite raw samples with a display transformation.
 - Never silently drop data. Queue pressure, dropped frames, malformed device
   messages, clock discontinuities, and writer failures must be observable.
 

@@ -60,6 +60,10 @@ the same contracts.
 - pyqtgraph renders live traces and a limited-rate calibration image.
 - Live trace horizons use a screen-width point budget and anchored min/max
   decimation; the display path never changes acquisition or stored samples.
+- Live traces use one independently scaled row per ROI and overlay the enabled
+  wavelengths. Visibility and Absolute/dF/F controls are display state; each dF/F
+  baseline is calculated independently per ROI and wavelength and is not persisted
+  as raw data.
 - UI remains responsive during recording and finalization.
 - macOS offscreen smoke test and manual demo pass.
 

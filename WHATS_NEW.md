@@ -6,7 +6,15 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Live fluorescence is now arranged as one plot row per ROI, with the 405, 470,
+  and 565 nm traces overlaid so fibers with very different signal ranges no longer
+  distort one another's y-axis.
+- Added independent 405, 470, and 565 nm visibility controls and an Absolute/dF/F
+  display selector. dF/F uses a configurable initial-window median baseline computed
+  separately for every ROI and wavelength; the transformation is display-only and
+  never changes acquired or stored samples.
 
 ## 0.1.3 - 2026-08-29
 

@@ -1,8 +1,11 @@
+from array import array
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt
 
 from driftless_photometry import __version__
+from driftless_photometry.config import Wavelength, demo_config
 from driftless_photometry.gui.main_window import MainWindow
 
 
@@ -56,6 +59,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.tabs.tabText(0) == "Acquire"
     assert window.tabs.tabText(1) == "Camera & fiber ROIs"
     assert window.tabs.tabText(2) == "Live wavelength images"
+    assert len(window.trace_plots) == 3
     assert window.system_status.text() == "READY"
     assert window.system_status.property("state") == "ready"
     assert window.backend_badge.text() == "Simulator"
@@ -81,6 +85,7 @@ def test_gui_overview_tracks_channel_and_fiber_configuration(qtbot, tmp_path: Pa
     assert window.channels_summary.value_label.text() == "2"
     assert window.fibers_summary.value_label.text() == "5"
     assert window.format_summary.value_label.text() == "5"
+    assert len(window.trace_plots) == 5
 
 
 def test_gui_uses_voltage_sliders_and_per_roi_subject_metadata(qtbot, tmp_path: Path) -> None:
@@ -111,3 +116,53 @@ def test_gui_uses_voltage_sliders_and_per_roi_subject_metadata(qtbot, tmp_path: 
     assert config.rois[0].brain_region == "NAc shell"
     assert config.rois[0].sensor_type == "dLight1.3b"
     assert config.rois[1].animal_id == "mouse-B"
+
+
+def test_gui_overlays_wavelengths_per_roi_with_visibility_controls(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    config = demo_config(tmp_path, fiber_count=2)
+    window._prepare_trace_curves(config)
+
+    assert len(window.trace_plots) == 2
+    assert len(window._curves) == 6
+    assert all(len(plot.listDataItems()) == 3 for plot in window.trace_plots.values())
+    assert "animal-01" in window.trace_plots[0].titleLabel.text
+
+    window.trace_wavelength_checks[Wavelength.GREEN_470].setChecked(False)
+    assert all(
+        not window._curves[(Wavelength.GREEN_470, roi_index)].isVisible() for roi_index in range(2)
+    )
+    assert all(
+        window._curves[(Wavelength.CONTROL_405, roi_index)].isVisible() for roi_index in range(2)
+    )
+
+
+def test_gui_dff_normalizes_each_roi_and_wavelength_independently(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    config = demo_config(tmp_path, fiber_count=1)
+    window._prepare_trace_curves(config)
+    times = np.asarray([0.0, 1.0, 2.0], dtype=np.float64)
+    baselines = {
+        Wavelength.CONTROL_405: 100.0,
+        Wavelength.GREEN_470: 1_000.0,
+        Wavelength.RED_565: 10_000.0,
+    }
+    for wavelength, baseline in baselines.items():
+        window._trace_times[wavelength] = array("d", times)
+        window._trace_values[(wavelength, 0)] = array("f", [baseline, baseline, baseline * 1.1])
+    window._trace_first_s = 0.0
+    window._trace_latest_s = 2.0
+    window.trace_baseline_spin.setValue(0.5)
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff"))
+
+    assert window.trace_baseline_spin.isEnabled()
+    for wavelength in Wavelength:
+        _, displayed = window._curves[(wavelength, 0)].getData()
+        np.testing.assert_allclose(displayed, [0.0, 0.0, 10.0], atol=1e-5)
+
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("absolute"))
+    assert not window.trace_baseline_spin.isEnabled()
+    _, absolute = window._curves[(Wavelength.RED_565, 0)].getData()
+    np.testing.assert_allclose(absolute, [10_000.0, 10_000.0, 11_000.0])

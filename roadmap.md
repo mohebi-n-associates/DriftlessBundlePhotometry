@@ -89,6 +89,9 @@ acquisition and time base feeding them have passed integrated validation.
   camera panels for each excitation wavelength.
 - Selectable live-trace horizons with screen-width-bounded, extrema-preserving
   display aggregation for long recordings.
+- One independently scaled trace row per ROI, with wavelength overlays, per-color
+  visibility controls, and Absolute or display-only dF/F rendering based on an
+  explicit per-ROI/per-wavelength baseline window.
 - Recoverable per-wavelength camera references and derived ROI-annotated diagnostic
   images embedded in every per-ROI NWB output.
 - A versioned controller codec, lifecycle guard, and single-owner serial transport
