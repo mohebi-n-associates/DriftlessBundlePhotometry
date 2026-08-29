@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from array import array
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -119,6 +119,8 @@ class ROIMetadataEditor(QWidget):
         super().__init__()
         form = QFormLayout(self)
         form.setContentsMargins(6, 8, 6, 8)
+        self.enabled_check = QCheckBox("Include in acquisition and NWB output")
+        self.enabled_check.setChecked(True)
         self.label_edit = QLineEdit(f"Fiber {index + 1}")
         self.animal_id_edit = QLineEdit(f"animal-{index + 1:02d}")
         self.brain_region_edit = QLineEdit("not specified")
@@ -127,6 +129,7 @@ class ROIMetadataEditor(QWidget):
         self.age_edit.setPlaceholderText("ISO 8601, e.g. P90D")
         self.sex_combo = QComboBox()
         self.sex_combo.addItems(["U", "F", "M", "O"])
+        form.addRow("Enabled", self.enabled_check)
         form.addRow("ROI label", self.label_edit)
         form.addRow("Animal ID", self.animal_id_edit)
         form.addRow("Brain region", self.brain_region_edit)
@@ -134,8 +137,9 @@ class ROIMetadataEditor(QWidget):
         form.addRow("Animal age", self.age_edit)
         form.addRow("Animal sex", self.sex_combo)
 
-    def values(self) -> dict[str, str]:
+    def values(self) -> dict[str, str | bool]:
         return {
+            "enabled": self.enabled_check.isChecked(),
             "label": self.label_edit.text(),
             "animal_id": self.animal_id_edit.text(),
             "brain_region": self.brain_region_edit.text(),
@@ -144,13 +148,14 @@ class ROIMetadataEditor(QWidget):
             "subject_sex": self.sex_combo.currentText(),
         }
 
-    def restore(self, values: dict[str, str]) -> None:
-        self.label_edit.setText(values["label"])
-        self.animal_id_edit.setText(values["animal_id"])
-        self.brain_region_edit.setText(values["brain_region"])
-        self.sensor_type_edit.setText(values["sensor_type"])
-        self.age_edit.setText(values["subject_age"])
-        self.sex_combo.setCurrentText(values["subject_sex"])
+    def restore(self, values: Mapping[str, str | bool]) -> None:
+        self.enabled_check.setChecked(bool(values["enabled"]))
+        self.label_edit.setText(str(values["label"]))
+        self.animal_id_edit.setText(str(values["animal_id"]))
+        self.brain_region_edit.setText(str(values["brain_region"]))
+        self.sensor_type_edit.setText(str(values["sensor_type"]))
+        self.age_edit.setText(str(values["subject_age"]))
+        self.sex_combo.setCurrentText(str(values["subject_sex"]))
 
 
 class MainWindow(QMainWindow):
@@ -423,7 +428,7 @@ class MainWindow(QMainWindow):
         self.raw_checkbox.setChecked(raw_capture)
         retention_layout.addWidget(self.raw_checkbox)
         raw_hint = QLabel(
-            "Each ROI produces a separate animal NWB file. Exposure identity, TTL "
+            "Each enabled ROI produces a separate animal NWB file. Exposure identity, TTL "
             "edges, per-wavelength camera references, and ROI-annotated views are "
             "copied into every file. Full raw-frame retention is optional and "
             "duplicates frames across those files."
@@ -556,8 +561,12 @@ class MainWindow(QMainWindow):
         self.channels_summary.value_label.setText(str(enabled))
         if hasattr(self, "fiber_count_spin"):
             fiber_count = self.fiber_count_spin.value()
-            self.fibers_summary.value_label.setText(str(fiber_count))
-            self.format_summary.value_label.setText(str(fiber_count))
+            active_count = sum(
+                editor.enabled_check.isChecked()
+                for editor in getattr(self, "_roi_metadata_editors", ())
+            )
+            self.fibers_summary.value_label.setText(f"{active_count}/{fiber_count}")
+            self.format_summary.value_label.setText(str(active_count))
 
     def _build_trace_workspace(self) -> ScrollableTraceWorkspace:
         self.trace_workspace = ScrollableTraceWorkspace()
@@ -952,6 +961,7 @@ class MainWindow(QMainWindow):
         for editor, roi in zip(self._roi_metadata_editors, config.rois, strict=True):
             editor.restore(
                 {
+                    "enabled": roi.enabled,
                     "label": roi.label,
                     "animal_id": roi.animal_id,
                     "brain_region": roi.brain_region,
@@ -988,8 +998,27 @@ class MainWindow(QMainWindow):
             if index < len(existing):
                 editor.restore(existing[index])
             self._roi_metadata_editors.append(editor)
-            self.roi_metadata_tabs.addTab(editor, f"ROI {index + 1}")
+            editor.enabled_check.toggled.connect(
+                lambda checked, roi_index=index: self._on_roi_enabled_changed(roi_index, checked)
+            )
+            suffix = "" if editor.enabled_check.isChecked() else " (off)"
+            self.roi_metadata_tabs.addTab(editor, f"ROI {index + 1}{suffix}")
         self.roi_metadata_tabs.setCurrentIndex(max(0, selected))
+
+    def _on_roi_enabled_changed(self, index: int, checked: bool) -> None:
+        if index < self.roi_metadata_tabs.count():
+            suffix = "" if checked else " (off)"
+            self.roi_metadata_tabs.setTabText(index, f"ROI {index + 1}{suffix}")
+        if index < len(self._roi_items):
+            self._roi_items[index].setOpacity(1.0 if checked else 0.25)
+        try:
+            rois = self._roi_configs_from_controls()
+        except ValueError:
+            pass
+        else:
+            self._configure_trace_plots(tuple(roi for roi in rois if roi.enabled))
+        self._update_roi_summary()
+        self._update_overview()
 
     def _rebuild_roi_items(self) -> None:
         if not hasattr(self, "calibration_plot"):
@@ -1002,7 +1031,12 @@ class MainWindow(QMainWindow):
             width_px=camera.width_px,
             height_px=camera.height_px,
         )
-        self._set_roi_items(preview.rois, camera)
+        preview_rois = tuple(
+            roi.model_copy(update={"enabled": editor.enabled_check.isChecked()})
+            for roi, editor in zip(preview.rois, self._roi_metadata_editors, strict=True)
+        )
+        self._set_roi_items(preview_rois, camera)
+        self._update_overview()
 
     def _set_roi_items(
         self,
@@ -1012,7 +1046,7 @@ class MainWindow(QMainWindow):
         for item in self._roi_items:
             self.calibration_plot.removeItem(item)
         self._roi_items.clear()
-        self._configure_trace_plots(rois)
+        self._configure_trace_plots(tuple(roi for roi in rois if roi.enabled))
         blank = np.zeros((camera.height_px, camera.width_px), dtype=np.uint16)
         self._image_item.setImage(
             blank,
@@ -1030,6 +1064,7 @@ class MainWindow(QMainWindow):
                 resizable=True,
             )
             circle.setZValue(10)
+            circle.setOpacity(1.0 if roi.enabled else 0.25)
             circle.sigRegionChangeFinished.connect(self._update_roi_summary)
             self.calibration_plot.addItem(circle)
             self._roi_items.append(circle)
@@ -1045,30 +1080,16 @@ class MainWindow(QMainWindow):
             radius = min(float(size.x()), float(size.y())) / 2.0
             center_x = float(position.x()) + radius
             center_y = float(position.y()) + radius
+            enabled = self._roi_metadata_editors[index].enabled_check.isChecked()
+            state = "enabled" if enabled else "disabled"
             rows.append(
                 f'<span style="color:{_FIBER_COLORS[index]}">●</span> '
-                f"Fiber {index + 1}: x {center_x:.1f}, y {center_y:.1f}, r {radius:.1f} px"
+                f"Fiber {index + 1} ({state}): x {center_x:.1f}, y {center_y:.1f}, "
+                f"r {radius:.1f} px"
             )
         self.roi_summary.setText("<br>".join(rows))
 
-    def _build_config(self) -> SessionConfig:
-        output = Path(self.output_edit.text()).expanduser()
-        configured_channels = {
-            wavelength: ChannelConfig(wavelength_nm=wavelength) for wavelength in Wavelength
-        }
-        configured_channels.update(
-            {channel.wavelength_nm: channel for channel in self._session_template.channels}
-        )
-        channels = tuple(
-            ChannelConfig(
-                wavelength_nm=wavelength,
-                enabled=self.channel_checks[wavelength].isChecked(),
-                voltage_v=self.channel_voltages[wavelength].value() / 100.0,
-                role=configured_channels[wavelength].role,
-                emission_wavelength_nm=configured_channels[wavelength].emission_wavelength_nm,
-            )
-            for wavelength in Wavelength
-        )
+    def _roi_configs_from_controls(self) -> tuple[ROIConfig, ...]:
         rois: list[ROIConfig] = []
         used_fiber_ids: set[str] = set()
         for index, item in enumerate(self._roi_items):
@@ -1092,6 +1113,7 @@ class MainWindow(QMainWindow):
             rois.append(
                 ROIConfig(
                     fiber_id=fiber_id,
+                    enabled=metadata.enabled_check.isChecked(),
                     label=metadata.label_edit.text().strip(),
                     animal_id=metadata.animal_id_edit.text().strip(),
                     brain_region=metadata.brain_region_edit.text().strip(),
@@ -1103,6 +1125,27 @@ class MainWindow(QMainWindow):
                     radius_px=radius,
                 )
             )
+        return tuple(rois)
+
+    def _build_config(self) -> SessionConfig:
+        output = Path(self.output_edit.text()).expanduser()
+        configured_channels = {
+            wavelength: ChannelConfig(wavelength_nm=wavelength) for wavelength in Wavelength
+        }
+        configured_channels.update(
+            {channel.wavelength_nm: channel for channel in self._session_template.channels}
+        )
+        channels = tuple(
+            ChannelConfig(
+                wavelength_nm=wavelength,
+                enabled=self.channel_checks[wavelength].isChecked(),
+                voltage_v=self.channel_voltages[wavelength].value() / 100.0,
+                role=configured_channels[wavelength].role,
+                emission_wavelength_nm=configured_channels[wavelength].emission_wavelength_nm,
+            )
+            for wavelength in Wavelength
+        )
+        rois = self._roi_configs_from_controls()
         visible_wavelengths = tuple(
             wavelength
             for wavelength, check in self.trace_wavelength_checks.items()
@@ -1127,7 +1170,7 @@ class MainWindow(QMainWindow):
                 update={"raw_capture": self.raw_checkbox.isChecked()}
             ),
             channels=channels,
-            rois=tuple(rois),
+            rois=rois,
             lab=self.lab_edit.text().strip() or None,
             institution=self.institution_edit.text().strip() or None,
             display=display,
@@ -1179,7 +1222,7 @@ class MainWindow(QMainWindow):
             self._worker.request_stop()
 
     def _prepare_trace_curves(self, config: SessionConfig) -> None:
-        self._configure_trace_plots(config.rois)
+        self._configure_trace_plots(config.enabled_rois)
         self._trace_times = {wavelength: array("d") for wavelength in Wavelength}
         self._trace_values.clear()
         self._trace_horizon_s = HORIZONS[0][1]
@@ -1189,7 +1232,7 @@ class MainWindow(QMainWindow):
         self._trace_first_s = None
         self._trace_latest_s = None
         self._last_trace_render_s = {wavelength: -np.inf for wavelength in Wavelength}
-        for index, _roi in enumerate(config.rois):
+        for index, _roi in enumerate(config.enabled_rois):
             for wavelength in Wavelength:
                 curve = self.trace_plots[index].plot(
                     name=f"{int(wavelength)} nm" if index == 0 else None,

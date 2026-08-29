@@ -107,6 +107,7 @@ def test_gui_loads_complete_default_settings_at_startup(qtbot, tmp_path: Path) -
         ),
         base.rois[1].model_copy(
             update={
+                "enabled": False,
                 "animal_id": "mouse-B",
                 "brain_region": "DMS",
                 "sensor_type": "GRAB-DA2m",
@@ -159,6 +160,7 @@ def test_gui_loads_complete_default_settings_at_startup(qtbot, tmp_path: Path) -
     assert window.fiber_count_spin.value() == 2
     assert window._roi_metadata_editors[0].animal_id_edit.text() == "mouse-A"
     assert window._roi_metadata_editors[1].brain_region_edit.text() == "DMS"
+    assert not window._roi_metadata_editors[1].enabled_check.isChecked()
     assert window.trace_mode_combo.currentData() == "dff"
     assert window._trace_horizon_s == 600.0
     assert not window.trace_wavelength_checks[Wavelength.GREEN_470].isChecked()
@@ -172,14 +174,32 @@ def test_gui_overview_tracks_channel_and_fiber_configuration(qtbot, tmp_path: Pa
     qtbot.addWidget(window)
 
     assert window.channels_summary.value_label.text() == "3"
-    assert window.fibers_summary.value_label.text() == "3"
+    assert window.fibers_summary.value_label.text() == "3/3"
     next(iter(window.channel_checks.values())).setChecked(False)
     window.fiber_count_spin.setValue(5)
 
     assert window.channels_summary.value_label.text() == "2"
-    assert window.fibers_summary.value_label.text() == "5"
+    assert window.fibers_summary.value_label.text() == "5/5"
     assert window.format_summary.value_label.text() == "5"
     assert len(window.trace_plots) == 5
+
+
+def test_gui_enables_and_disables_each_roi_independently(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=3)
+    qtbot.addWidget(window)
+
+    second = window._roi_metadata_editors[1]
+    second.enabled_check.setChecked(False)
+    config = window._build_config()
+
+    assert [roi.enabled for roi in config.rois] == [True, False, True]
+    assert config.enabled_rois == (config.rois[0], config.rois[2])
+    assert window.roi_metadata_tabs.tabText(1) == "ROI 2 (off)"
+    assert window._roi_items[1].opacity() == 0.25
+    assert "Fiber 2 (disabled)" in window.roi_summary.text()
+    assert window.fibers_summary.value_label.text() == "2/3"
+    assert window.format_summary.value_label.text() == "2"
+    assert len(window.trace_plots) == 2
 
 
 def test_gui_uses_voltage_sliders_and_per_roi_subject_metadata(qtbot, tmp_path: Path) -> None:

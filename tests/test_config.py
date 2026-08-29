@@ -17,8 +17,19 @@ from driftless_photometry.config import (
 def test_demo_config_has_requested_fibers_and_channels(tmp_path: Path) -> None:
     config = demo_config(tmp_path, fiber_count=9, raw_capture=True)
     assert len(config.rois) == 9
+    assert config.enabled_rois == config.rois
     assert [channel.wavelength_nm for channel in config.enabled_channels] == list(Wavelength)
     assert config.camera.raw_capture is True
+
+
+def test_requires_at_least_one_enabled_roi(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=2)
+    payload = config.model_dump()
+    for roi in payload["rois"]:
+        roi["enabled"] = False
+
+    with pytest.raises(ValidationError, match="at least one ROI must be enabled"):
+        SessionConfig.model_validate(payload)
 
 
 def test_rejects_duplicate_fibers(tmp_path: Path) -> None:

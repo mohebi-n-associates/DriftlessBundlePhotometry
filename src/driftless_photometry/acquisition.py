@@ -114,7 +114,7 @@ class AcquisitionEngine:
                     raise RuntimeError("camera frame shape changed during acquisition")
                 extracted = extract_circular_rois(
                     packet.image,
-                    config.rois,
+                    config.enabled_rois,
                     bit_depth=config.camera.bit_depth,
                 )
                 sample = TraceSample(

@@ -6,7 +6,11 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Every ROI can now be enabled or disabled independently. Disabled definitions remain
+  available in JSON/default settings and embedded recording settings, while only
+  enabled ROIs are extracted, plotted, and written as per-animal NWB files.
 
 ## 0.1.5 - 2026-08-29
 

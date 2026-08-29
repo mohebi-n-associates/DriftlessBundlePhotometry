@@ -8,6 +8,7 @@ from pynwb import NWBHDF5IO
 from driftless_photometry.acquisition import AcquisitionEngine
 from driftless_photometry.config import demo_config
 from driftless_photometry.hardware import RigPacket, SimulatedRig
+from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
 
 
@@ -47,6 +48,34 @@ def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Pat
             assert nwbfile.subject.subject_id == config.rois[roi_index].animal_id
             assert nwbfile.acquisition["camera_frames"].data.shape == (6, 24, 32)
             assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
+
+
+def test_headless_engine_records_only_enabled_rois(tmp_path: Path) -> None:
+    base = demo_config(tmp_path, fiber_count=2, width_px=32, height_px=24)
+    config = base.model_copy(
+        update={
+            "rois": (
+                base.rois[0].model_copy(update={"enabled": False}),
+                base.rois[1],
+            )
+        }
+    )
+    progress = []
+
+    result = AcquisitionEngine(spool_chunk_size=2).run(
+        config,
+        SimulatedRig(config, seed=11),
+        duration_s=0.1,
+        on_progress=progress.append,
+    )
+
+    assert len(result.reports) == 1
+    assert all(len(item.sample.values) == 1 for item in progress)
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        assert io.read().subject.subject_id == config.rois[1].animal_id
+    restored, warnings = configuration_from_nwb(result.report.path)
+    assert restored == config
+    assert warnings == []
 
 
 class _GapRig:

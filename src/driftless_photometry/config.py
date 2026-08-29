@@ -49,6 +49,7 @@ class ROIConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     fiber_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    enabled: bool = True
     label: str = Field(min_length=1, max_length=128)
     animal_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
     brain_region: str = Field(min_length=1, max_length=256)
@@ -159,6 +160,8 @@ class SessionConfig(BaseModel):
         animal_ids = [roi.animal_id for roi in self.rois]
         if len(animal_ids) != len(set(animal_ids)):
             raise ValueError("animal_id values must be unique across ROIs")
+        if not any(roi.enabled for roi in self.rois):
+            raise ValueError("at least one ROI must be enabled")
 
         wavelengths = [channel.wavelength_nm for channel in self.channels]
         if len(wavelengths) != len(set(wavelengths)):
@@ -184,6 +187,10 @@ class SessionConfig(BaseModel):
     @property
     def enabled_channels(self) -> tuple[ChannelConfig, ...]:
         return tuple(channel for channel in self.channels if channel.enabled)
+
+    @property
+    def enabled_rois(self) -> tuple[ROIConfig, ...]:
+        return tuple(roi for roi in self.rois if roi.enabled)
 
 
 def demo_config(

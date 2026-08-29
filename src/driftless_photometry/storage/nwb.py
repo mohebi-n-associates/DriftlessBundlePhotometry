@@ -146,7 +146,7 @@ def _validate_inputs(
                 f"{int(wavelength)} nm reference image shape does not match configured camera"
             )
 
-    expected_roi_count = len(config.rois)
+    expected_roi_count = len(config.enabled_rois)
     for wavelength, samples in data.traces.items():
         previous_timestamp = -np.inf
         for sample in samples:
@@ -204,7 +204,7 @@ def _add_photometry_metadata_and_traces(
     data: AcquisitionData,
     roi_index: int,
 ) -> None:
-    roi = config.rois[roi_index]
+    roi = config.enabled_rois[roi_index]
     camera_model = PhotodetectorModel(
         name="cs505mu_photodetector_model",
         manufacturer="Thorlabs",
@@ -375,7 +375,7 @@ def _add_rois_and_calibration(
         ("radius_px", "Circle radius in pixels."),
     ):
         roi_table.add_column(name=name, description=description)
-    roi = config.rois[roi_index]
+    roi = config.enabled_rois[roi_index]
     roi_table.add_row(
         fiber_id=roi.fiber_id,
         label=roi.label,
@@ -676,7 +676,7 @@ def _write_roi_partial_nwb(
 ) -> NWBWriteReport:
     """Write and validate one ROI's partial NWB without promoting it."""
 
-    roi = config.rois[roi_index]
+    roi = config.enabled_rois[roi_index]
     output_directory = config.output_directory.expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     final_path, partial_path = _roi_output_paths(config, roi)
@@ -734,12 +734,12 @@ def write_session_nwbs(
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None = None,
     additional_system_events: tuple[str, ...] = (),
 ) -> tuple[NWBWriteReport, ...]:
-    """Write one self-contained, validated NWB file per configured ROI and animal."""
+    """Write one self-contained, validated NWB file per enabled ROI and animal."""
 
     _validate_inputs(config, data, frames, calibration_image, wavelength_images)
     output_directory = config.output_directory.expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
-    paths = [_roi_output_paths(config, roi) for roi in config.rois]
+    paths = [_roi_output_paths(config, roi) for roi in config.enabled_rois]
     collisions = [path for pair in paths for path in pair if path.exists()]
     if collisions:
         rendered = ", ".join(str(path) for path in collisions)
@@ -755,7 +755,7 @@ def write_session_nwbs(
             wavelength_images=wavelength_images,
             additional_system_events=additional_system_events,
         )
-        for roi_index in range(len(config.rois))
+        for roi_index in range(len(config.enabled_rois))
     )
     for report, (_, partial_path) in zip(reports, paths, strict=True):
         os.replace(partial_path, report.path)
@@ -773,7 +773,7 @@ def write_session_nwb(
 ) -> NWBWriteReport:
     """Compatibility helper for callers that configure exactly one ROI."""
 
-    if len(config.rois) != 1:
+    if len(config.enabled_rois) != 1:
         raise ValueError("write_session_nwb requires exactly one ROI; use write_session_nwbs")
     return write_session_nwbs(
         config,

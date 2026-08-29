@@ -18,6 +18,7 @@ from driftless_photometry.settings import (
 def test_complete_json_settings_round_trip(tmp_path: Path) -> None:
     original = demo_config(tmp_path / "recordings", fiber_count=2, raw_capture=True)
     payload = original.model_dump()
+    payload["rois"][1]["enabled"] = False
     payload.update(
         recording_duration_s=42.5,
         session_description="Dopamine cohort A",
@@ -41,6 +42,7 @@ def test_complete_json_settings_round_trip(tmp_path: Path) -> None:
     document = json.loads(written.read_text(encoding="utf-8"))
     assert document["format"] == SETTINGS_FORMAT
     assert document["settings"]["rois"][1]["animal_id"] == "animal-02"
+    assert document["settings"]["rois"][1]["enabled"] is False
     assert document["settings"]["camera"]["raw_capture"] is True
     assert document["settings"]["display"]["mode"] == "dff"
 
