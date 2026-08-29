@@ -6,8 +6,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractSpinBox
 
 from driftless_photometry import __version__
-from driftless_photometry.config import Wavelength, demo_config
+from driftless_photometry.config import SessionConfig, TraceDisplayConfig, Wavelength, demo_config
 from driftless_photometry.gui.main_window import MainWindow
+from driftless_photometry.settings import save_default_settings
 
 
 def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Path) -> None:
@@ -83,6 +84,81 @@ def test_gui_removes_stepper_buttons_from_every_spin_box(qtbot, tmp_path: Path) 
     assert all(
         spin_box.buttonSymbols() == QAbstractSpinBox.ButtonSymbols.NoButtons
         for spin_box in spin_boxes
+    )
+
+
+def test_gui_loads_complete_default_settings_at_startup(qtbot, tmp_path: Path) -> None:
+    base = demo_config(tmp_path / "loaded-output", fiber_count=2, raw_capture=True)
+    rois = (
+        base.rois[0].model_copy(
+            update={
+                "animal_id": "mouse-A",
+                "brain_region": "NAc shell",
+                "sensor_type": "dLight1.3b",
+                "center_x_px": 45.0,
+                "center_y_px": 55.0,
+                "radius_px": 9.0,
+            }
+        ),
+        base.rois[1].model_copy(
+            update={
+                "animal_id": "mouse-B",
+                "brain_region": "DMS",
+                "sensor_type": "GRAB-DA2m",
+                "center_x_px": 175.0,
+                "center_y_px": 145.0,
+                "radius_px": 11.0,
+            }
+        ),
+    )
+    channels = tuple(
+        channel.model_copy(
+            update={
+                "enabled": channel.wavelength_nm is not Wavelength.RED_565,
+                "voltage_v": {
+                    Wavelength.CONTROL_405: 1.05,
+                    Wavelength.GREEN_470: 1.25,
+                    Wavelength.RED_565: 1.45,
+                }[channel.wavelength_nm],
+            }
+        )
+        for channel in base.channels
+    )
+    payload = base.model_dump()
+    payload.update(
+        session_description="Restored cohort protocol",
+        experimenter="A. Researcher",
+        recording_duration_s=42.0,
+        lab="Neural Dynamics",
+        institution="Example University",
+        rois=rois,
+        channels=channels,
+        display=TraceDisplayConfig(
+            horizon_s=600.0,
+            visible_wavelengths=(Wavelength.CONTROL_405,),
+            mode="dff",
+            dff_baseline_s=15.0,
+        ),
+    )
+    expected = SessionConfig.model_validate(payload)
+    save_default_settings(expected)
+
+    window = MainWindow(output_directory=tmp_path / "ignored", default_fibers=1)
+    qtbot.addWidget(window)
+    restored = window._build_config()
+
+    assert window.save_settings_button.text() == "Save JSON…"
+    assert window.load_settings_button.text() == "Load JSON…"
+    assert window.load_nwb_settings_button.text() == "Load NWB…"
+    assert window.default_settings_button.text() == "Set as default"
+    assert window.fiber_count_spin.value() == 2
+    assert window._roi_metadata_editors[0].animal_id_edit.text() == "mouse-A"
+    assert window._roi_metadata_editors[1].brain_region_edit.text() == "DMS"
+    assert window.trace_mode_combo.currentData() == "dff"
+    assert window._trace_horizon_s == 600.0
+    assert not window.trace_wavelength_checks[Wavelength.GREEN_470].isChecked()
+    assert restored.model_dump(exclude={"session_id", "session_start_time"}) == (
+        expected.model_dump(exclude={"session_id", "session_start_time"})
     )
 
 

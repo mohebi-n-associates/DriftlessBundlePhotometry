@@ -6,6 +6,19 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+### Added
+
+- Added complete, versioned JSON configuration files covering session metadata,
+  recording and camera settings, excitation channels, TTL inputs, display choices,
+  and every subject-specific ROI and its exact geometry.
+- Added GUI actions to save settings, load settings, load settings from a previous
+  DBF NWB file, and make the current setup the startup default. The default and file
+  picker location is the operator's real Windows Documents folder, including
+  redirected Documents folders.
+- Every new per-ROI NWB file now embeds the same complete configuration snapshot for
+  exact restoration. Legacy DBF NWBs restore all recoverable settings and sibling
+  ROIs while explicitly warning about fields those older files never stored.
+
 ### Changed
 
 - Removed the small increment/decrement stepper buttons from every numeric input in

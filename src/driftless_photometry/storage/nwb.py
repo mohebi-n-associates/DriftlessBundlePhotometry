@@ -39,6 +39,7 @@ from driftless_photometry import __version__
 from driftless_photometry.config import ROIConfig, SessionConfig, Wavelength
 from driftless_photometry.domain import AcquisitionData
 from driftless_photometry.roi import render_annotated_rois
+from driftless_photometry.settings import NWB_SETTINGS_SCRATCH_NAME, settings_json
 
 from .frames import FrameStream
 
@@ -160,7 +161,7 @@ def _validate_inputs(
 
 def _create_nwbfile(config: SessionConfig, roi: ROIConfig) -> NWBFile:
     roi_session_id = f"{config.session_id}__{roi.fiber_id}"
-    return NWBFile(
+    nwbfile = NWBFile(
         session_description=config.session_description,
         identifier=roi_session_id,
         session_start_time=config.session_start_time,
@@ -186,6 +187,15 @@ def _create_nwbfile(config: SessionConfig, roi: ROIConfig) -> NWBFile:
         source_script_file_name="driftless_photometry/storage/nwb.py",
         was_generated_by=[["driftless-bundle-photometry", __version__]],
     )
+    nwbfile.add_scratch(
+        settings_json(config),
+        name=NWB_SETTINGS_SCRATCH_NAME,
+        description=(
+            "Versioned complete application settings used for this recording, including "
+            "all configured ROIs and display preferences."
+        ),
+    )
+    return nwbfile
 
 
 def _add_photometry_metadata_and_traces(
@@ -581,6 +591,8 @@ def _round_trip_verify(
 ) -> None:
     with NWBHDF5IO(path, mode="r", load_namespaces=True) as io:
         nwbfile = io.read()
+        if NWB_SETTINGS_SCRATCH_NAME not in nwbfile.scratch:
+            raise RuntimeError("NWB round-trip settings snapshot is missing")
         frame_events = nwbfile.events["camera_frames"]
         if len(frame_events) != len(data.frame_ids):
             raise RuntimeError("NWB round-trip camera event count mismatch")

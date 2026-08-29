@@ -81,6 +81,10 @@ Use a hybrid of core NWB and `ndx-fiber-photometry`:
   and system events.
 - `invalid_times`/`TimeIntervals`: bad continuous spans.
 - Processing modules: immutable derived traces and QC.
+- A versioned complete settings snapshot: session metadata, camera/controller and
+  channel settings, display preferences, and all configured ROIs. Embed the snapshot
+  in every per-ROI file so any one current-format NWB can restore the whole setup;
+  legacy imports must identify fields that were not historically persisted.
 
 Use NWB seconds on a shared session time base and preserve raw camera frame IDs and
 controller ticks for forensic reconstruction. Use stable `fiber_id` values to map

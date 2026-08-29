@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from array import array
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QSize, Qt, QThread, QTimer
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -36,11 +38,23 @@ from PySide6.QtWidgets import (
 from driftless_photometry import __version__
 from driftless_photometry.acquisition import AcquisitionProgress, AcquisitionRunResult
 from driftless_photometry.config import (
+    CameraConfig,
     ChannelConfig,
     ROIConfig,
     SessionConfig,
+    TraceDisplayConfig,
     Wavelength,
     demo_config,
+)
+from driftless_photometry.settings import (
+    SETTINGS_SUFFIX,
+    configuration_from_nwb,
+    default_settings_path,
+    export_settings,
+    import_settings,
+    load_default_settings,
+    save_default_settings,
+    settings_root,
 )
 
 from .branding import logo_path
@@ -177,6 +191,12 @@ class MainWindow(QMainWindow):
         self._image_display_maximum = (1 << 12) - 1
         self.last_result: AcquisitionRunResult | None = None
         self.last_error: str | None = None
+        self._session_template = demo_config(
+            output_directory,
+            fiber_count=default_fibers,
+            raw_capture=default_raw,
+            recording_duration_s=default_duration_s,
+        )
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -208,6 +228,7 @@ class MainWindow(QMainWindow):
             "Ready — simulator mode; no physical camera or controller connected"
         )
         self._rebuild_roi_items()
+        self._load_default_settings_at_startup()
 
     def _remove_spin_box_buttons(self) -> None:
         for spin_box in self.findChildren(QAbstractSpinBox):
@@ -298,9 +319,43 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(setup_title)
         controls_layout.addWidget(setup_copy)
 
+        settings_group = QGroupBox("Configuration")
+        settings_layout = QGridLayout(settings_group)
+        self.save_settings_button = QPushButton("Save JSON…")
+        self.save_settings_button.setToolTip(
+            "Save all metadata, acquisition settings, display preferences, and ROIs"
+        )
+        self.save_settings_button.clicked.connect(self._save_settings_json)
+        self.load_settings_button = QPushButton("Load JSON…")
+        self.load_settings_button.clicked.connect(self._load_settings_json)
+        self.load_nwb_settings_button = QPushButton("Load NWB…")
+        self.load_nwb_settings_button.setToolTip(
+            "Restore the settings embedded in a previous DBF recording"
+        )
+        self.load_nwb_settings_button.clicked.connect(self._load_settings_nwb)
+        self.default_settings_button = QPushButton("Set as default")
+        self.default_settings_button.setToolTip(
+            "Save the current setup in Documents and load it whenever DBF starts"
+        )
+        self.default_settings_button.clicked.connect(self._save_as_default_settings)
+        settings_layout.addWidget(self.save_settings_button, 0, 0)
+        settings_layout.addWidget(self.load_settings_button, 0, 1)
+        settings_layout.addWidget(self.load_nwb_settings_button, 1, 0)
+        settings_layout.addWidget(self.default_settings_button, 1, 1)
+        self.settings_path_hint = QLabel(f"Defaults: {default_settings_path()}")
+        self.settings_path_hint.setObjectName("hint")
+        self.settings_path_hint.setWordWrap(True)
+        settings_layout.addWidget(self.settings_path_hint, 2, 0, 1, 2)
+        controls_layout.addWidget(settings_group)
+
         session_group = QGroupBox("Recording")
         session_form = QFormLayout(session_group)
         self.experimenter_edit = QLineEdit("Simulator")
+        self.session_description_edit = QLineEdit(
+            "Synthetic multichannel fiber-photometry demonstration"
+        )
+        self.lab_edit = QLineEdit("Driftless Bundle Photometry")
+        self.institution_edit = QLineEdit()
         self.output_edit = QLineEdit(str(output_directory))
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse_output)
@@ -315,6 +370,9 @@ class MainWindow(QMainWindow):
         self.duration_spin.setSuffix(" s")
         self.duration_spin.setValue(duration_s)
         session_form.addRow("Experimenter", self.experimenter_edit)
+        session_form.addRow("Description", self.session_description_edit)
+        session_form.addRow("Lab", self.lab_edit)
+        session_form.addRow("Institution", self.institution_edit)
         session_form.addRow("Output root", output_row)
         session_form.addRow("Duration", self.duration_spin)
         controls_layout.addWidget(session_group)
@@ -473,7 +531,13 @@ class MainWindow(QMainWindow):
         live_layout.addLayout(action_row)
         layout.addWidget(live_group, stretch=1)
 
-        self._settings_widgets = [session_group, channels_group, retention_group, browse]
+        self._settings_widgets = [
+            settings_group,
+            session_group,
+            channels_group,
+            retention_group,
+            browse,
+        ]
         for check in self.channel_checks.values():
             check.toggled.connect(self._update_overview)
         return page
@@ -733,6 +797,147 @@ class MainWindow(QMainWindow):
         if selected:
             self.output_edit.setText(selected)
 
+    def _save_settings_json(self) -> None:
+        try:
+            config = self._build_config()
+            root = settings_root()
+            root.mkdir(parents=True, exist_ok=True)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Could not save settings", str(error))
+            return
+        suggested = root / f"dbf{SETTINGS_SUFFIX}"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save all settings",
+            str(suggested),
+            "DBF settings (*.json)",
+        )
+        if not path:
+            return
+        try:
+            written = export_settings(path, config)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Could not save settings", str(error))
+            return
+        self.statusBar().showMessage(f"Saved all settings to {written}")
+
+    def _load_settings_json(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load all settings",
+            str(settings_root()),
+            "DBF settings (*.json)",
+        )
+        if not path:
+            return
+        try:
+            config = import_settings(path)
+            self._apply_configuration(config)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Could not load settings", str(error))
+            return
+        self.statusBar().showMessage(f"Loaded all settings from {path}")
+
+    def _load_settings_nwb(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load settings from a DBF recording",
+            self.output_edit.text(),
+            "NWB files (*.nwb)",
+        )
+        if not path:
+            return
+        try:
+            config, warnings = configuration_from_nwb(path)
+            self._apply_configuration(config)
+        except (OSError, ValueError, KeyError) as error:
+            QMessageBox.warning(self, "Could not load settings from NWB", str(error))
+            return
+        self.statusBar().showMessage(f"Loaded settings from {path}")
+        if warnings:
+            QMessageBox.warning(
+                self,
+                "Legacy settings restored with defaults",
+                "\n\n".join(warnings),
+            )
+
+    def _save_as_default_settings(self) -> None:
+        path = default_settings_path()
+        answer = QMessageBox.question(
+            self,
+            "Set as default configuration",
+            f"Save every current setting to\n{path}\n\nand load it whenever DBF starts?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            written = save_default_settings(self._build_config())
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Could not save default settings", str(error))
+            return
+        self.statusBar().showMessage(f"Saved default settings to {written}")
+
+    def _load_default_settings_at_startup(self) -> None:
+        try:
+            config = load_default_settings()
+            if config is None:
+                return
+            self._apply_configuration(config)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(
+                f"Default settings could not be loaded; using built-ins: {error}"
+            )
+            return
+        self.statusBar().showMessage(f"Loaded defaults from {default_settings_path()}")
+
+    def _apply_configuration(self, config: SessionConfig) -> None:
+        """Push one validated settings snapshot into every corresponding GUI control."""
+
+        self._session_template = config
+        self.duration_spin.setValue(config.recording_duration_s)
+        self.experimenter_edit.setText(config.experimenter)
+        self.session_description_edit.setText(config.session_description)
+        self.lab_edit.setText(config.lab or "")
+        self.institution_edit.setText(config.institution or "")
+        self.output_edit.setText(str(config.output_directory))
+        self.raw_checkbox.setChecked(config.camera.raw_capture)
+
+        configured_channels = {channel.wavelength_nm: channel for channel in config.channels}
+        for wavelength in Wavelength:
+            channel = configured_channels.get(wavelength)
+            self.channel_checks[wavelength].setChecked(channel.enabled if channel else False)
+            self.channel_voltages[wavelength].setValue(
+                round((channel.voltage_v if channel else 1.0) * 100)
+            )
+
+        blocker = QSignalBlocker(self.fiber_count_spin)
+        self.fiber_count_spin.setValue(len(config.rois))
+        del blocker
+        self._rebuild_roi_metadata(len(config.rois))
+        for editor, roi in zip(self._roi_metadata_editors, config.rois, strict=True):
+            editor.restore(
+                {
+                    "label": roi.label,
+                    "animal_id": roi.animal_id,
+                    "brain_region": roi.brain_region,
+                    "sensor_type": roi.sensor_type,
+                    "subject_age": roi.subject_age or "",
+                    "subject_sex": roi.subject_sex,
+                }
+            )
+        self._set_roi_items(config.rois, config.camera)
+
+        display = config.display
+        self._set_trace_horizon(display.horizon_s)
+        visible = set(display.visible_wavelengths)
+        for wavelength, check in self.trace_wavelength_checks.items():
+            check.setChecked(wavelength in visible)
+        mode_index = self.trace_mode_combo.findData(display.mode)
+        self.trace_mode_combo.setCurrentIndex(max(0, mode_index))
+        self.trace_baseline_spin.setValue(display.dff_baseline_s)
+        self._apply_trace_mode()
+        self._update_overview()
+
     def _rebuild_roi_metadata(self, fiber_count: int) -> None:
         if not hasattr(self, "roi_metadata_tabs"):
             return
@@ -755,17 +960,31 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "calibration_plot"):
             return
         self._rebuild_roi_metadata(self.fiber_count_spin.value())
-        for item in self._roi_items:
-            self.calibration_plot.removeItem(item)
-        self._roi_items.clear()
+        camera = self._session_template.camera
         preview = demo_config(
             Path(self.output_edit.text() or "."),
             fiber_count=self.fiber_count_spin.value(),
+            width_px=camera.width_px,
+            height_px=camera.height_px,
         )
-        self._configure_trace_plots(preview.rois)
-        blank = np.zeros((preview.camera.height_px, preview.camera.width_px), dtype=np.uint16)
-        self._image_item.setImage(blank, autoLevels=False, levels=(0, 4095))
-        for index, roi in enumerate(preview.rois):
+        self._set_roi_items(preview.rois, camera)
+
+    def _set_roi_items(
+        self,
+        rois: tuple[ROIConfig, ...],
+        camera: CameraConfig,
+    ) -> None:
+        for item in self._roi_items:
+            self.calibration_plot.removeItem(item)
+        self._roi_items.clear()
+        self._configure_trace_plots(rois)
+        blank = np.zeros((camera.height_px, camera.width_px), dtype=np.uint16)
+        self._image_item.setImage(
+            blank,
+            autoLevels=False,
+            levels=(0, (1 << camera.bit_depth) - 1),
+        )
+        for index, roi in enumerate(rois):
             circle = pg.CircleROI(
                 [roi.center_x_px - roi.radius_px, roi.center_y_px - roi.radius_px],
                 [2 * roi.radius_px, 2 * roi.radius_px],
@@ -779,8 +998,8 @@ class MainWindow(QMainWindow):
             circle.sigRegionChangeFinished.connect(self._update_roi_summary)
             self.calibration_plot.addItem(circle)
             self._roi_items.append(circle)
-        self.calibration_plot.setXRange(0, preview.camera.width_px, padding=0.02)
-        self.calibration_plot.setYRange(0, preview.camera.height_px, padding=0.02)
+        self.calibration_plot.setXRange(0, camera.width_px, padding=0.02)
+        self.calibration_plot.setYRange(0, camera.height_px, padding=0.02)
         self._update_roi_summary()
 
     def _update_roi_summary(self) -> None:
@@ -799,28 +1018,45 @@ class MainWindow(QMainWindow):
 
     def _build_config(self) -> SessionConfig:
         output = Path(self.output_edit.text()).expanduser()
-        base = demo_config(
-            output,
-            fiber_count=self.fiber_count_spin.value(),
-            raw_capture=self.raw_checkbox.isChecked(),
+        configured_channels = {
+            wavelength: ChannelConfig(wavelength_nm=wavelength) for wavelength in Wavelength
+        }
+        configured_channels.update(
+            {channel.wavelength_nm: channel for channel in self._session_template.channels}
         )
         channels = tuple(
             ChannelConfig(
                 wavelength_nm=wavelength,
                 enabled=self.channel_checks[wavelength].isChecked(),
                 voltage_v=self.channel_voltages[wavelength].value() / 100.0,
+                role=configured_channels[wavelength].role,
+                emission_wavelength_nm=configured_channels[wavelength].emission_wavelength_nm,
             )
             for wavelength in Wavelength
         )
         rois: list[ROIConfig] = []
+        used_fiber_ids: set[str] = set()
         for index, item in enumerate(self._roi_items):
             metadata = self._roi_metadata_editors[index]
             position = item.pos()
             size = item.size()
             radius = min(float(size.x()), float(size.y())) / 2.0
+            fiber_id = (
+                self._session_template.rois[index].fiber_id
+                if index < len(self._session_template.rois)
+                else f"fiber_{index + 1:02d}"
+            )
+            if fiber_id in used_fiber_ids:
+                suffix = 2
+                base = f"fiber_{index + 1:02d}"
+                fiber_id = base
+                while fiber_id in used_fiber_ids:
+                    fiber_id = f"{base}_{suffix}"
+                    suffix += 1
+            used_fiber_ids.add(fiber_id)
             rois.append(
                 ROIConfig(
-                    fiber_id=f"fiber_{index + 1:02d}",
+                    fiber_id=fiber_id,
                     label=metadata.label_edit.text().strip(),
                     animal_id=metadata.animal_id_edit.text().strip(),
                     brain_region=metadata.brain_region_edit.text().strip(),
@@ -832,11 +1068,34 @@ class MainWindow(QMainWindow):
                     radius_px=radius,
                 )
             )
-        payload = base.model_dump()
+        visible_wavelengths = tuple(
+            wavelength
+            for wavelength, check in self.trace_wavelength_checks.items()
+            if check.isChecked()
+        )
+        display = TraceDisplayConfig(
+            horizon_s=self._trace_horizon_s,
+            visible_wavelengths=visible_wavelengths,
+            mode=self.trace_mode_combo.currentData(),
+            dff_baseline_s=self.trace_baseline_spin.value(),
+        )
+        started = datetime.now(UTC)
+        payload = self._session_template.model_dump()
         payload.update(
+            session_id=started.strftime("demo-%Y%m%dT%H%M%S-%fZ"),
+            session_description=self.session_description_edit.text().strip(),
             experimenter=self.experimenter_edit.text().strip(),
+            output_directory=output,
+            recording_duration_s=self.duration_spin.value(),
+            session_start_time=started,
+            camera=self._session_template.camera.model_copy(
+                update={"raw_capture": self.raw_checkbox.isChecked()}
+            ),
             channels=channels,
             rois=tuple(rois),
+            lab=self.lab_edit.text().strip() or None,
+            institution=self.institution_edit.text().strip() or None,
+            display=display,
         )
         return SessionConfig.model_validate(payload)
 
@@ -861,7 +1120,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Arming simulator…")
 
         thread = QThread(self)
-        worker = AcquisitionWorker(config, self.duration_spin.value())
+        worker = AcquisitionWorker(config, config.recording_duration_s)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)

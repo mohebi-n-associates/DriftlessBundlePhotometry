@@ -74,6 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output,
         fiber_count=args.fibers,
         raw_capture=args.raw,
+        recording_duration_s=args.duration,
     )
     engine = AcquisitionEngine()
     result = engine.run(

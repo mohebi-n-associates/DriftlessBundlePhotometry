@@ -5,6 +5,7 @@ import pytest
 from pynwb import NWBHDF5IO
 
 from driftless_photometry.cli import build_parser, main
+from driftless_photometry.settings import configuration_from_nwb
 
 
 def test_cli_reports_short_name_and_version(capsys) -> None:
@@ -42,3 +43,6 @@ def test_headless_cli_writes_machine_readable_result(tmp_path: Path, capsys) -> 
             assert len(nwbfile.events["camera_frames"]) == 1
             assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
             assert "camera_frames" not in nwbfile.acquisition
+        restored, warnings = configuration_from_nwb(nwb_path)
+        assert restored.recording_duration_s == 0.04
+        assert warnings == []

@@ -64,6 +64,9 @@ the same contracts.
   wavelengths. Visibility and Absolute/dF/F controls are display state; each dF/F
   baseline is calculated independently per ROI and wavelength and is not persisted
   as raw data.
+- A versioned JSON settings model round-trips every validated configuration field and
+  is applied to the GUI as one unit. Startup defaults use the operator's visible
+  Documents folder rather than a repository or hidden application directory.
 - UI remains responsive during recording and finalization.
 - macOS offscreen smoke test and manual demo pass.
 
@@ -108,6 +111,15 @@ NWBFile
 All time-series timestamps are explicit seconds from the NWB session reference time.
 Raw controller ticks and camera frame IDs are retained as separate columns. Derived
 signals never replace raw response series.
+
+Every per-ROI NWB also carries a
+`scratch/driftless_bundle_photometry_settings_json` value. This is a versioned JSON
+provenance snapshot, not a competing scientific data representation. It includes all
+configured ROIs even though each canonical output contains one animal's traces, so
+any current-format file restores the whole setup exactly. The legacy importer can
+assemble sibling DBF files written before this snapshot existed, but it reports
+unrecoverable legacy fields instead of presenting inferred defaults as exact
+provenance.
 
 ## Known hardware boundary
 

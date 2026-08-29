@@ -30,6 +30,8 @@ target; the simulator and GUI demo are cross-platform.
   wavelength visibility controls, and Absolute or display-only dF/F views with a
   configurable per-ROI/per-wavelength median baseline window.
 - Clean numeric entry fields without embedded increment/decrement stepper buttons.
+- Versioned, human-readable JSON settings with GUI actions to save, load, set startup
+  defaults, and restore the complete setup from a previous DBF NWB recording.
 - A raw uint16 reference frame and fixed-scale ROI-annotated diagnostic view for
   every wavelength observed in a recording are saved inside each ROI NWB file.
 - Versioned/checksummed controller protocol, fail-safe lifecycle guard, and
@@ -43,6 +45,25 @@ safety measurements. Simulator success is not evidence of physical validation.
 
 The historical MATLAB, Arduino, and Bonsai sources remain under `old mescoscope/`
 for reference and are not runtime dependencies.
+
+## Saving and restoring settings
+
+The Configuration panel provides **Save JSON**, **Load JSON**, **Load NWB**, and
+**Set as default**. A settings file includes all session metadata, recording duration,
+output location, camera and retention settings, excitation states and voltages, TTL
+configuration, live-display preferences, and every ROI's animal metadata and camera
+geometry.
+
+On Windows, DBF resolves the same Documents folder used by Explorer, including
+OneDrive or other redirected locations, and uses its `Driftless Bundle Photometry`
+folder for settings. **Set as default** writes `default_settings.json` there; DBF
+loads that file automatically at startup. Save and Load dialogs open in the same
+folder by default.
+
+Every newly recorded per-ROI NWB file embeds the complete settings snapshot, so any
+one of those files can restore the whole multi-ROI setup. DBF can also import older
+per-ROI DBF NWBs: it gathers matching sibling files to recover all available ROIs and
+warns when an old file never recorded a setting that must use a safe default.
 
 ## Installation with Conda
 

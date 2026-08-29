@@ -113,6 +113,11 @@ acquisition and time base feeding them have passed integrated validation.
 
 **Status: Next**
 
+**Progress after 0.1.4:** The versioned v1 JSON format, complete GUI save/load/default
+workflow, redirected-Windows-Documents location, exact NWB settings snapshots, and
+warning-based legacy NWB import are implemented with round-trip tests. Explicit
+future-format migrations and broader provenance remain in this phase.
+
 ### Goal
 
 Make the software-only system reproducible on every supported Python and operating
@@ -150,9 +155,10 @@ system before connecting it to physical devices.
      rather than calculating them and then dropping them during finalization.
 
 4. **Configuration and provenance**
-   - Define a versioned on-disk session configuration format.
-   - Support save, load, validation, and explicit migration or rejection of older
-     configuration versions.
+   - Maintain the implemented versioned v1 on-disk session configuration format and
+     its complete save, load, default, and NWB restoration workflows.
+   - Add explicit migration or rejection rules when a future configuration format is
+     introduced; unknown formats are already rejected rather than silently repaired.
    - Capture application, dependency, operating-system, adapter, and protocol
      versions in the final NWB provenance.
 

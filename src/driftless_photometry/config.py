@@ -114,6 +114,23 @@ class CameraConfig(BaseModel):
     raw_capture: bool = False
 
 
+class TraceDisplayConfig(BaseModel):
+    """Restorable live-trace presentation preferences."""
+
+    model_config = ConfigDict(frozen=True)
+
+    horizon_s: Literal[15.0, 60.0, 600.0, 3600.0] | None = 15.0
+    visible_wavelengths: tuple[Wavelength, ...] = tuple(Wavelength)
+    mode: Literal["absolute", "dff"] = "absolute"
+    dff_baseline_s: float = Field(default=5.0, ge=0.1, le=3600.0)
+
+    @model_validator(mode="after")
+    def validate_wavelengths(self) -> TraceDisplayConfig:
+        if len(self.visible_wavelengths) != len(set(self.visible_wavelengths)):
+            raise ValueError("visible display wavelengths must be unique")
+        return self
+
+
 class SessionConfig(BaseModel):
     """Complete immutable configuration for one recording session."""
 
@@ -123,6 +140,7 @@ class SessionConfig(BaseModel):
     session_description: str = Field(min_length=1)
     experimenter: str = Field(min_length=1)
     output_directory: Path
+    recording_duration_s: float = Field(default=5.0, gt=0, le=24 * 60 * 60)
     session_start_time: datetime = Field(default_factory=lambda: datetime.now(UTC))
     camera: CameraConfig
     rois: tuple[ROIConfig, ...] = Field(min_length=1, max_length=9)
@@ -130,6 +148,7 @@ class SessionConfig(BaseModel):
     ttl_inputs: tuple[TTLInputConfig, ...] = Field(default=(), max_length=4)
     lab: str | None = None
     institution: str | None = None
+    display: TraceDisplayConfig = Field(default_factory=TraceDisplayConfig)
 
     @model_validator(mode="after")
     def validate_contract(self) -> SessionConfig:
@@ -172,6 +191,7 @@ def demo_config(
     *,
     fiber_count: int = 3,
     raw_capture: bool = False,
+    recording_duration_s: float = 5.0,
     width_px: int = 256,
     height_px: int = 256,
 ) -> SessionConfig:
@@ -209,6 +229,7 @@ def demo_config(
         session_description="Synthetic multichannel fiber-photometry demonstration",
         experimenter="Simulator",
         output_directory=output_directory,
+        recording_duration_s=recording_duration_s,
         session_start_time=started,
         camera=CameraConfig(
             width_px=width_px,

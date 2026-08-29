@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import h5py
 import numpy as np
+import pytest
 from pynwb import NWBHDF5IO, validate
 
 from driftless_photometry.config import Wavelength, demo_config
@@ -10,6 +12,10 @@ from driftless_photometry.domain import (
     FramePacket,
     TraceSample,
     TTLEdge,
+)
+from driftless_photometry.settings import (
+    NWB_SETTINGS_SCRATCH_NAME,
+    configuration_from_nwb,
 )
 from driftless_photometry.storage import write_session_nwbs
 
@@ -87,6 +93,7 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
 
         with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
             nwbfile = io.read()
+            assert NWB_SETTINGS_SCRATCH_NAME in nwbfile.scratch
             assert nwbfile.subject.subject_id == config.rois[roi_index].animal_id
             assert nwbfile.acquisition["camera_frames"].data.dtype == np.dtype("uint16")
             assert nwbfile.acquisition["camera_frames"].data.shape == (6, 24, 32)
@@ -115,6 +122,38 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
                     series.data[:, 0],
                     [sample.values[roi_index] for sample in samples],
                 )
+
+        restored, warnings = configuration_from_nwb(report.path)
+        assert restored == config
+        assert warnings == []
+
+
+@pytest.mark.parametrize("raw_capture", [False, True])
+def test_legacy_per_roi_nwbs_restore_available_sibling_settings(
+    tmp_path: Path, raw_capture: bool
+) -> None:
+    config, data, frames = _golden_data(tmp_path, raw_capture=raw_capture)
+    reports = write_session_nwbs(
+        config,
+        data,
+        frames=frames if raw_capture else None,
+        calibration_image=frames[0],
+        wavelength_images={
+            wavelength: frames[index] for index, wavelength in enumerate(Wavelength)
+        },
+    )
+    for report in reports:
+        with h5py.File(report.path, mode="r+") as handle:
+            del handle[f"scratch/{NWB_SETTINGS_SCRATCH_NAME}"]
+
+    restored, warnings = configuration_from_nwb(reports[0].path)
+
+    assert len(restored.rois) == 2
+    assert [roi.animal_id for roi in restored.rois] == ["animal-01", "animal-02"]
+    assert [channel.wavelength_nm for channel in restored.channels] == list(Wavelength)
+    assert restored.camera.raw_capture is raw_capture
+    assert restored.output_directory == tmp_path
+    assert warnings and "legacy NWB" in warnings[0]
 
 
 def test_nwb_without_raw_frames_retains_frame_provenance(tmp_path: Path) -> None:
