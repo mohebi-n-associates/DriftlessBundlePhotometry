@@ -8,6 +8,10 @@ version, move its completed entries into a dated version section.
 
 ### Added
 
+- Recording now requires a successful non-writing preview for the current settings.
+  Preview displays live frames and ROI traces while checking frame/exposure ordering,
+  explicit wavelength coverage and voltage commands, camera dtype/shape, finite ROI
+  extraction, and saturation bounds; relevant setting changes require a new preview.
 - Every ROI can now be enabled or disabled independently. Disabled definitions remain
   available in JSON/default settings and embedded recording settings, while only
   enabled ROIs are extracted, plotted, and written as per-animal NWB files.

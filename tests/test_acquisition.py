@@ -5,11 +5,45 @@ from pathlib import Path
 import pytest
 from pynwb import NWBHDF5IO
 
-from driftless_photometry.acquisition import AcquisitionEngine
+from driftless_photometry.acquisition import AcquisitionEngine, preview_duration_s, run_preview
 from driftless_photometry.config import demo_config
 from driftless_photometry.hardware import RigPacket, SimulatedRig
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
+
+
+def test_preview_validates_all_channels_without_creating_output(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=2, width_px=32, height_px=24)
+    progress = []
+
+    result = run_preview(config, SimulatedRig(config, seed=17), on_progress=progress.append)
+
+    assert result.duration_s == preview_duration_s(config)
+    assert result.frame_count == len(progress) == 15
+    assert result.roi_count == 2
+    assert all(count == 5 for _wavelength, count in result.wavelength_frame_counts)
+    assert 0 <= result.maximum_saturation_fraction <= 1
+    assert not list(tmp_path.iterdir())
+
+
+class _IncompletePreviewRig:
+    def __init__(self, config) -> None:
+        self._source = SimulatedRig(config, seed=19)
+
+    def packets(self, duration_s: float) -> Iterator[RigPacket]:
+        for packet in self._source.packets(duration_s):
+            if int(packet.frame.exposure.wavelength_nm) == 470:
+                yield packet
+
+    def stop(self) -> None:
+        self._source.stop()
+
+
+def test_preview_rejects_missing_enabled_wavelengths(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+
+    with pytest.raises(RuntimeError, match="did not observe two frames"):
+        run_preview(config, _IncompletePreviewRig(config))
 
 
 def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Path) -> None:

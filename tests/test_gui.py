@@ -20,6 +20,21 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
     )
     qtbot.addWidget(window)
     window.show()
+    assert not window.start_button.isEnabled()
+    assert window.preview_button.isEnabled()
+    qtbot.mouseClick(window.preview_button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(
+        lambda: (
+            (window.last_preview is not None or window.last_error is not None)
+            and window._thread is None
+        ),
+        timeout=5_000,
+    )
+    assert window.last_error is None
+    assert window.last_preview is not None
+    assert window.start_button.isEnabled()
+    assert window.preview_status.property("state") == "passed"
+    assert not list(tmp_path.glob("*.nwb"))
     qtbot.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
     qtbot.waitUntil(
         lambda: (
@@ -33,7 +48,8 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
     assert len(window.last_result.reports) == 2
     assert all(report.path.exists() for report in window.last_result.reports)
     assert window.last_result.report.frame_count == 3
-    assert window.start_button.isEnabled()
+    assert not window.start_button.isEnabled()
+    assert window.preview_button.isEnabled()
     assert not window.stop_button.isEnabled()
     assert window.system_status.text() == "COMPLETE"
     assert window.system_status.property("state") == "complete"
@@ -75,9 +91,25 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
+    assert window.preview_button.objectName() == "preview"
     assert window.stop_button.objectName() == "attention"
     assert "QPushButton#attention:disabled" in window.styleSheet()
     assert "QScrollBar::handle:vertical" in window.styleSheet()
+
+
+def test_gui_setting_change_invalidates_passed_preview(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path)
+    qtbot.addWidget(window)
+    config = window._build_config()
+    window._preview_signature = window._configuration_signature(config)
+    window._set_busy_controls(False)
+
+    assert window.start_button.isEnabled()
+    window.channel_voltages[Wavelength.GREEN_470].setValue(125)
+
+    assert window._preview_signature is None
+    assert not window.start_button.isEnabled()
+    assert window.preview_status.property("state") == "required"
 
 
 def test_gui_removes_stepper_buttons_from_every_spin_box(qtbot, tmp_path: Path) -> None:

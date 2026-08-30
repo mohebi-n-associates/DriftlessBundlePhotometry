@@ -123,6 +123,9 @@ warning-based legacy NWB import are implemented with round-trip tests. Explicit
 future-format migrations and broader provenance remain in this phase. The live trace
 workspace also has exact cross-ROI x-range synchronization, dominant-axis drag-box
 zoom, double-click reset, wheel-to-page routing, and bounded rendering tests.
+The simulator GUI now requires a non-writing acquisition preflight before each
+recording and invalidates that approval when recording-relevant settings change. The
+same preview validation contract must be exercised by physical adapters in Phases 3-5.
 
 ### Goal
 

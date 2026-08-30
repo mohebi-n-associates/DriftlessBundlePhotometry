@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from array import array
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -37,7 +39,11 @@ from PySide6.QtWidgets import (
 )
 
 from driftless_photometry import __version__
-from driftless_photometry.acquisition import AcquisitionProgress, AcquisitionRunResult
+from driftless_photometry.acquisition import (
+    AcquisitionProgress,
+    AcquisitionRunResult,
+    PreviewResult,
+)
 from driftless_photometry.config import (
     CameraConfig,
     ChannelConfig,
@@ -66,7 +72,7 @@ from .trace_display import (
     compact_duration,
     downsample_min_max,
 )
-from .worker import AcquisitionWorker
+from .worker import AcquisitionWorker, PreviewWorker
 
 _TRACE_REFRESH_INTERVAL_S = 0.1
 
@@ -183,8 +189,12 @@ class MainWindow(QMainWindow):
         self.resize(2300, 1300)
         self.setMinimumSize(1408, 792)
         self._thread: QThread | None = None
-        self._worker: AcquisitionWorker | None = None
+        self._worker: AcquisitionWorker | PreviewWorker | None = None
+        self._operation_kind: str | None = None
         self._close_pending = False
+        self._preview_signature: str | None = None
+        self._pending_preview_signature: str | None = None
+        self._progress_duration_s = default_duration_s
         self._roi_items: list[pg.CircleROI] = []
         self._curves: dict[tuple[Wavelength, int], pg.PlotDataItem] = {}
         self._trace_times: dict[Wavelength, array] = {}
@@ -198,6 +208,7 @@ class MainWindow(QMainWindow):
         self._image_item = pg.ImageItem()
         self._image_display_maximum = (1 << 12) - 1
         self.last_result: AcquisitionRunResult | None = None
+        self.last_preview: PreviewResult | None = None
         self.last_error: str | None = None
         self._session_template = demo_config(
             output_directory,
@@ -530,16 +541,30 @@ class MainWindow(QMainWindow):
         live_layout.addWidget(self.progress_bar)
         live_layout.addWidget(self._build_trace_workspace(), stretch=1)
 
+        self.preview_status = QLabel(
+            "Preview required - validate the current acquisition settings before recording"
+        )
+        self.preview_status.setObjectName("previewStatus")
+        self.preview_status.setProperty("state", "required")
+        self.preview_status.setWordWrap(True)
+        live_layout.addWidget(self.preview_status)
+
         action_row = QHBoxLayout()
+        self.preview_button = QPushButton("Run preview")
+        self.preview_button.setObjectName("preview")
+        self.preview_button.setMinimumHeight(38)
+        self.preview_button.clicked.connect(self.start_preview)
         self.start_button = QPushButton("Start recording")
         self.start_button.setObjectName("record")
         self.start_button.setMinimumHeight(38)
+        self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_recording)
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("attention")
         self.stop_button.setMinimumHeight(38)
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_recording)
+        action_row.addWidget(self.preview_button, stretch=1)
         action_row.addWidget(self.start_button, stretch=1)
         action_row.addWidget(self.stop_button, stretch=1)
         live_layout.addLayout(action_row)
@@ -554,6 +579,19 @@ class MainWindow(QMainWindow):
         ]
         for check in self.channel_checks.values():
             check.toggled.connect(self._update_overview)
+            check.toggled.connect(self._invalidate_preview)
+        for voltage in self.channel_voltages.values():
+            voltage.valueChanged.connect(self._invalidate_preview)
+        for edit in (
+            self.experimenter_edit,
+            self.session_description_edit,
+            self.lab_edit,
+            self.institution_edit,
+            self.output_edit,
+        ):
+            edit.textChanged.connect(self._invalidate_preview)
+        self.duration_spin.valueChanged.connect(self._invalidate_preview)
+        self.raw_checkbox.toggled.connect(self._invalidate_preview)
         return page
 
     def _update_overview(self) -> None:
@@ -752,6 +790,8 @@ class MainWindow(QMainWindow):
                 padding: 8px 14px;
             }
             QPushButton:hover { background: #205170; }
+            QPushButton#preview { background: #00aeba; color: #04151e; font-weight: 700; }
+            QPushButton#preview:hover { background: #20c3ce; }
             QPushButton#record { background: #4fd18b; color: #05261a; font-weight: 700; }
             QPushButton#record:hover { background: #66dd9c; }
             QPushButton#horizon { padding: 6px 12px; }
@@ -762,11 +802,20 @@ class MainWindow(QMainWindow):
             QPushButton#attention { background: #d98324; color: #1a0f02; font-weight: 700; }
             QPushButton#attention:hover { background: #eb9438; }
             QPushButton:disabled { color: #61778a; background: #13283a; }
-            QPushButton#record:disabled, QPushButton#attention:disabled {
+            QPushButton#preview:disabled, QPushButton#record:disabled,
+            QPushButton#attention:disabled {
                 color: #61778a; background: #13283a; border-color: #22394d;
             }
             QLabel#hint { color: #7694aa; }
             QLabel#liveStatus { font-weight: 700; color: #f2b134; }
+            QLabel#previewStatus {
+                border: 1px solid #315570; border-radius: 6px; padding: 7px 10px;
+                font-weight: 700;
+            }
+            QLabel#previewStatus[state="required"] { background: #2b2316; color: #f2b134; }
+            QLabel#previewStatus[state="running"] { background: #102b43; color: #66c2ff; }
+            QLabel#previewStatus[state="passed"] { background: #103226; color: #4fd18b; }
+            QLabel#previewStatus[state="failed"] { background: #3a1820; color: #ff8791; }
             QWidget#summaryCard {
                 background: #102638; border: 1px solid #23465b; border-radius: 8px;
             }
@@ -788,6 +837,7 @@ class MainWindow(QMainWindow):
                 border-radius: 10px; padding: 5px 14px; font-weight: 800; font-size: 13pt;
             }
             QLabel#systemStatus[state="ready"] { background: #13283a; color: #7694aa; }
+            QLabel#systemStatus[state="preview"] { background: #102b43; color: #66c2ff; }
             QLabel#systemStatus[state="recording"] { background: #e04450; color: #fff5f5; }
             QLabel#systemStatus[state="saving"] { background: #d98324; color: #1a0f02; }
             QLabel#systemStatus[state="complete"] { background: #00aeba; color: #04151e; }
@@ -833,6 +883,32 @@ class MainWindow(QMainWindow):
         self.system_status.setProperty("state", state)
         self.system_status.style().unpolish(self.system_status)
         self.system_status.style().polish(self.system_status)
+
+    def _set_preview_status(self, text: str, state: str) -> None:
+        self.preview_status.setText(text)
+        self.preview_status.setProperty("state", state)
+        self.preview_status.style().unpolish(self.preview_status)
+        self.preview_status.style().polish(self.preview_status)
+
+    @staticmethod
+    def _configuration_signature(config: SessionConfig) -> str:
+        payload = config.model_dump(
+            mode="json",
+            exclude={"session_id", "session_start_time", "display"},
+        )
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _invalidate_preview(self, *_args: object) -> None:
+        self._preview_signature = None
+        self._pending_preview_signature = None
+        if hasattr(self, "start_button"):
+            self.start_button.setEnabled(False)
+        if hasattr(self, "preview_status") and self._thread is None:
+            self._set_preview_status(
+                "Preview required - settings changed; run preview before recording",
+                "required",
+            )
 
     def _browse_output(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -982,6 +1058,7 @@ class MainWindow(QMainWindow):
         self.trace_baseline_spin.setValue(display.dff_baseline_s)
         self._apply_trace_mode()
         self._update_overview()
+        self._invalidate_preview()
 
     def _rebuild_roi_metadata(self, fiber_count: int) -> None:
         if not hasattr(self, "roi_metadata_tabs"):
@@ -1001,11 +1078,21 @@ class MainWindow(QMainWindow):
             editor.enabled_check.toggled.connect(
                 lambda checked, roi_index=index: self._on_roi_enabled_changed(roi_index, checked)
             )
+            for edit in (
+                editor.label_edit,
+                editor.animal_id_edit,
+                editor.brain_region_edit,
+                editor.sensor_type_edit,
+                editor.age_edit,
+            ):
+                edit.textChanged.connect(self._invalidate_preview)
+            editor.sex_combo.currentIndexChanged.connect(self._invalidate_preview)
             suffix = "" if editor.enabled_check.isChecked() else " (off)"
             self.roi_metadata_tabs.addTab(editor, f"ROI {index + 1}{suffix}")
         self.roi_metadata_tabs.setCurrentIndex(max(0, selected))
 
     def _on_roi_enabled_changed(self, index: int, checked: bool) -> None:
+        self._invalidate_preview()
         if index < self.roi_metadata_tabs.count():
             suffix = "" if checked else " (off)"
             self.roi_metadata_tabs.setTabText(index, f"ROI {index + 1}{suffix}")
@@ -1023,6 +1110,7 @@ class MainWindow(QMainWindow):
     def _rebuild_roi_items(self) -> None:
         if not hasattr(self, "calibration_plot"):
             return
+        self._invalidate_preview()
         self._rebuild_roi_metadata(self.fiber_count_spin.value())
         camera = self._session_template.camera
         preview = demo_config(
@@ -1065,12 +1153,16 @@ class MainWindow(QMainWindow):
             )
             circle.setZValue(10)
             circle.setOpacity(1.0 if roi.enabled else 0.25)
-            circle.sigRegionChangeFinished.connect(self._update_roi_summary)
+            circle.sigRegionChangeFinished.connect(self._on_roi_geometry_changed)
             self.calibration_plot.addItem(circle)
             self._roi_items.append(circle)
         self.calibration_plot.setXRange(0, camera.width_px, padding=0.02)
         self.calibration_plot.setYRange(0, camera.height_px, padding=0.02)
         self._update_roi_summary()
+
+    def _on_roi_geometry_changed(self) -> None:
+        self._update_roi_summary()
+        self._invalidate_preview()
 
     def _update_roi_summary(self) -> None:
         rows = []
@@ -1177,6 +1269,49 @@ class MainWindow(QMainWindow):
         )
         return SessionConfig.model_validate(payload)
 
+    def start_preview(self) -> None:
+        if self._thread is not None:
+            return
+        try:
+            config = self._build_config()
+        except Exception as error:
+            QMessageBox.critical(self, "Invalid configuration", str(error))
+            return
+        self.last_preview = None
+        self.last_error = None
+        self._operation_kind = "preview"
+        self._pending_preview_signature = self._configuration_signature(config)
+        self._prepare_trace_curves(config)
+        self._prepare_wavelength_images(config)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("0%")
+        self.frame_counter.setText("0 preview frames")
+        self.live_status.setText("Running acquisition preflight...")
+        self._set_preview_status(
+            "Preview running - checking timing, wavelengths, camera frames, and ROI signals",
+            "running",
+        )
+        self._set_system_status("PREVIEW", "preview")
+        self.statusBar().showMessage("Running non-recording acquisition preview...")
+
+        thread = QThread(self)
+        worker = PreviewWorker(config)
+        self._progress_duration_s = worker.duration_s
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self._on_progress)
+        worker.completed.connect(self._on_preview_completed)
+        worker.failed.connect(self._on_preview_failed)
+        worker.completed.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_thread_finished)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._thread = thread
+        self._worker = worker
+        self._set_busy_controls(True)
+        thread.start()
+
     def start_recording(self) -> None:
         if self._thread is not None:
             return
@@ -1185,6 +1320,17 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(self, "Invalid configuration", str(error))
             return
+        if self._preview_signature != self._configuration_signature(config):
+            self._invalidate_preview()
+            QMessageBox.warning(
+                self,
+                "Preview required",
+                "Run a successful preview for the current settings before recording.",
+            )
+            return
+        self._preview_signature = None
+        self._pending_preview_signature = None
+        self._operation_kind = "recording"
         self.last_result = None
         self.last_error = None
         self._prepare_trace_curves(config)
@@ -1193,8 +1339,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFormat("0%")
         self.frame_counter.setText("0 frames")
         self.live_status.setText("Arming simulator…")
+        self._set_preview_status(
+            "Preview passed for these settings - recording in progress",
+            "passed",
+        )
         self._set_system_status("STARTING…", "recording")
-        self._set_recording_controls(True)
         self.statusBar().showMessage("Arming simulator…")
 
         thread = QThread(self)
@@ -1212,12 +1361,15 @@ class MainWindow(QMainWindow):
         thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
+        self._progress_duration_s = config.recording_duration_s
+        self._set_busy_controls(True)
         thread.start()
 
     def stop_recording(self) -> None:
         if self._worker is not None:
-            self.live_status.setText("Stopping after the current frame…")
-            self.statusBar().showMessage("Stopping after the current frame…")
+            operation = "preview" if self._operation_kind == "preview" else "recording"
+            self.live_status.setText(f"Stopping {operation} after the current frame...")
+            self.statusBar().showMessage(f"Stopping {operation} after the current frame...")
             self.stop_button.setEnabled(False)
             self._worker.request_stop()
 
@@ -1298,7 +1450,8 @@ class MainWindow(QMainWindow):
         self._refresh_all_trace_curves()
 
     def _update_trace_horizon_availability(self, duration_s: float) -> None:
-        self.trace_span_hint.setText(f"{compact_duration(duration_s)} available (this recording)")
+        operation = "preview" if self._operation_kind == "preview" else "recording"
+        self.trace_span_hint.setText(f"{compact_duration(duration_s)} available (this {operation})")
         for label, seconds in HORIZONS:
             button = self.horizon_buttons[seconds]
             available = seconds is None or seconds <= duration_s or seconds == self._trace_horizon_s
@@ -1423,15 +1576,52 @@ class MainWindow(QMainWindow):
                 autoLevels=False,
                 levels=(0, self._image_display_maximum),
             )
-        fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self.duration_spin.value())
+        fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
         progress_value = round(fraction * 1000)
         self.progress_bar.setValue(progress_value)
         self.progress_bar.setFormat(f"{fraction:.0%}")
-        self.frame_counter.setText(f"{progress.frame_count:,} frames")
-        self.live_status.setText(f"Recording — {int(sample.wavelength_nm)} nm exposure")
+        operation = "Preview" if self._operation_kind == "preview" else "Recording"
+        self.frame_counter.setText(f"{progress.frame_count:,} {operation.lower()} frames")
+        self.live_status.setText(f"{operation} - {int(sample.wavelength_nm)} nm exposure")
         self.statusBar().showMessage(
-            f"Recording — frame {progress.frame_count}, {int(sample.wavelength_nm)} nm"
+            f"{operation} - frame {progress.frame_count}, {int(sample.wavelength_nm)} nm"
         )
+
+    def _on_preview_completed(self, result: PreviewResult) -> None:
+        self.last_preview = result
+        self._preview_signature = self._pending_preview_signature
+        self._pending_preview_signature = None
+        self._refresh_all_trace_curves()
+        self.progress_bar.setValue(1000)
+        self.progress_bar.setFormat("100%")
+        wavelengths = ", ".join(
+            f"{int(wavelength)} nm: {count}" for wavelength, count in result.wavelength_frame_counts
+        )
+        saturation = result.maximum_saturation_fraction * 100
+        self.live_status.setText("Preview passed - recording is enabled")
+        self._set_preview_status(
+            f"Preview passed: {result.frame_count} frames; {result.roi_count} ROIs; "
+            f"{wavelengths}; maximum saturation {saturation:.1f}%",
+            "passed",
+        )
+        self._set_system_status("PREVIEW PASSED", "complete")
+        self.statusBar().showMessage(
+            "Preview passed for the current settings; recording is now enabled"
+        )
+
+    def _on_preview_failed(self, traceback_text: str) -> None:
+        self.last_error = traceback_text
+        self._preview_signature = None
+        self._pending_preview_signature = None
+        self.live_status.setText("Preview failed - recording remains disabled")
+        self._set_preview_status(
+            "Preview failed - correct the reported problem and run preview again",
+            "failed",
+        )
+        self._set_system_status("PREVIEW FAILED", "error")
+        self.statusBar().showMessage("Preview failed; no recording files were created")
+        if not self._close_pending:
+            QMessageBox.critical(self, "Preview failed", traceback_text)
 
     def _on_state(self, state: str) -> None:
         if state == "recording":
@@ -1448,6 +1638,10 @@ class MainWindow(QMainWindow):
         self.progress_bar.setFormat("100%")
         file_count = len(result.reports)
         self.live_status.setText(f"Saved and validated {file_count} ROI NWB files")
+        self._set_preview_status(
+            "Preview required before the next recording",
+            "required",
+        )
         self._set_system_status("COMPLETE", "complete")
         self.statusBar().showMessage(
             f"Saved {file_count} validated ROI NWB files in {result.report.path.parent}"
@@ -1456,6 +1650,10 @@ class MainWindow(QMainWindow):
     def _on_failed(self, traceback_text: str) -> None:
         self.last_error = traceback_text
         self.live_status.setText("Acquisition failed — recovery spool preserved")
+        self._set_preview_status(
+            "Preview required before another recording attempt",
+            "required",
+        )
         self._set_system_status("ERROR", "error")
         self.statusBar().showMessage("Acquisition failed; recovery spool was preserved")
         QMessageBox.critical(self, "Acquisition failed", traceback_text)
@@ -1463,16 +1661,18 @@ class MainWindow(QMainWindow):
     def _on_thread_finished(self) -> None:
         self._thread = None
         self._worker = None
-        self._set_recording_controls(False)
+        self._operation_kind = None
+        self._set_busy_controls(False)
         if self._close_pending:
             self._close_pending = False
             QTimer.singleShot(0, self.close)
 
-    def _set_recording_controls(self, recording: bool) -> None:
-        self.start_button.setEnabled(not recording)
-        self.stop_button.setEnabled(recording)
+    def _set_busy_controls(self, busy: bool) -> None:
+        self.preview_button.setEnabled(not busy)
+        self.start_button.setEnabled(not busy and self._preview_signature is not None)
+        self.stop_button.setEnabled(busy)
         for widget in self._settings_widgets:
-            widget.setEnabled(not recording)
+            widget.setEnabled(not busy)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._thread is not None and self._thread.isRunning():

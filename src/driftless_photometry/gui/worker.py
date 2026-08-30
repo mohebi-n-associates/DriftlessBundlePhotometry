@@ -6,7 +6,12 @@ import traceback
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from driftless_photometry.acquisition import AcquisitionEngine, AcquisitionProgress
+from driftless_photometry.acquisition import (
+    AcquisitionEngine,
+    AcquisitionProgress,
+    preview_duration_s,
+    run_preview,
+)
 from driftless_photometry.config import SessionConfig
 from driftless_photometry.hardware import SimulatedRig
 from driftless_photometry.state import AcquisitionState
@@ -49,3 +54,36 @@ class AcquisitionWorker(QObject):
 
     def _emit_state(self, state: AcquisitionState) -> None:
         self.state_changed.emit(state.value)
+
+
+class PreviewWorker(QObject):
+    """Run the non-recording acquisition preflight off the GUI thread."""
+
+    progress = Signal(object)
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, config: SessionConfig) -> None:
+        super().__init__()
+        self._config = config
+        self.duration_s = preview_duration_s(config)
+        self._source = SimulatedRig(config, realtime=True)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = run_preview(
+                self._config,
+                self._source,
+                duration_s=self.duration_s,
+                on_progress=self.progress.emit,
+            )
+        except BaseException:
+            self.failed.emit(traceback.format_exc())
+        else:
+            self.completed.emit(result)
+
+    def request_stop(self) -> None:
+        """Thread-safe preview stop request."""
+
+        self._source.stop()
