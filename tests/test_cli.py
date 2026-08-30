@@ -12,7 +12,7 @@ def test_cli_reports_short_name_and_version(capsys) -> None:
     with pytest.raises(SystemExit, match="0"):
         build_parser().parse_args(["--version"])
 
-    assert capsys.readouterr().out == "DBF 0.1.5\n"
+    assert capsys.readouterr().out == "DBF 0.1.6\n"
 
 
 def test_headless_cli_writes_machine_readable_result(tmp_path: Path, capsys) -> None:

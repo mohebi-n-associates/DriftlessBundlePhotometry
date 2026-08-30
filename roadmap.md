@@ -9,7 +9,7 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.1.5
+**Current baseline:** 0.1.6
 
 **Last updated:** 2026-08-29
 
@@ -115,9 +115,9 @@ acquisition and time base feeding them have passed integrated validation.
 
 ## Phase 1 — Reliability closure and continuous integration
 
-**Status: Next**
+**Status: In progress**
 
-**0.1.5 foundation:** The versioned v1 JSON format, complete GUI save/load/default
+**0.1.6 foundation:** The versioned v1 JSON format, complete GUI save/load/default
 workflow, redirected-Windows-Documents location, exact NWB settings snapshots, and
 warning-based legacy NWB import are implemented with round-trip tests. Explicit
 future-format migrations and broader provenance remain in this phase. The live trace
@@ -126,6 +126,9 @@ zoom, double-click reset, wheel-to-page routing, and bounded rendering tests.
 The simulator GUI now requires a non-writing acquisition preflight before each
 recording and invalidates that approval when recording-relevant settings change. The
 same preview validation contract must be exercised by physical adapters in Phases 3-5.
+The Windows/macOS Python 3.11-3.13 CI matrix and isolated core/GUI wheel smoke gates
+are implemented in 0.1.6; the remaining Phase 1 data, fault, recovery, and capacity
+work continues in dependency order.
 
 ### Goal
 
@@ -134,7 +137,7 @@ system before connecting it to physical devices.
 
 ### Deliverables
 
-1. **Continuous integration**
+1. **Continuous integration — completed in 0.1.6**
    - Run lint, formatting, unit tests, NWB validation, and wheel installation on
      Windows and macOS.
    - Exercise supported Python 3.11–3.13 versions and the exact bounded

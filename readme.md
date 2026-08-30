@@ -1,6 +1,6 @@
 # Driftless Bundle Photometry
 
-**Version 0.1.5** · [What's new](WHATS_NEW.md)
+**Version 0.1.6** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
@@ -29,6 +29,11 @@ target; the simulator and GUI demo are cross-platform.
 - One live plot row per ROI with overlaid 405, 470, and 565 nm traces, independent
   wavelength visibility controls, and Absolute or display-only dF/F views with a
   configurable per-ROI/per-wavelength median baseline window.
+- Independent enable/disable controls for each ROI; disabled definitions remain in
+  saved settings but are excluded from extraction, live traces, and NWB output.
+- A required non-writing acquisition preview that validates timing, explicit
+  wavelength coverage, commanded voltages, camera frames, ROI extraction, and
+  saturation before enabling each recording.
 - Synchronized numeric time axes across all ROI rows, horizontal/vertical drag-box
   zoom, double-click zoom reset, and page scrolling—not graph zoom—under the mouse
   wheel.

@@ -6,8 +6,17 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+No changes yet.
+
+## 0.1.6 - 2026-08-29
+
 ### Added
 
+- Added read-only GitHub Actions CI across Windows and macOS on Python 3.11, 3.12,
+  and 3.13, with lint, formatting, synchronized-contract, and full-suite gates.
+- Added isolated core and GUI wheel smoke tests on Windows and macOS. They install
+  the built artifact in a fresh environment outside the checkout, then verify the
+  CLI version, headless NWB acquisition, GUI import, and packaged logo.
 - Recording now requires a successful non-writing preview for the current settings.
   Preview displays live frames and ROI traces while checking frame/exposure ordering,
   explicit wavelength coverage and voltage commands, camera dtype/shape, finite ROI
