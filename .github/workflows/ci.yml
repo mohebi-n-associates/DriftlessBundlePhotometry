@@ -29,7 +29,10 @@ jobs:
       - name: Check formatting
         run: python -m ruff format --check .
       - name: Verify synchronized agent contracts
-        run: python -m pytest -q tests/test_agent_contract.py
+        run: >-
+          python -c "from pathlib import Path;
+          assert Path('AGENTS.md').read_bytes() == Path('CLAUDE.md').read_bytes(),
+          'AGENTS.md and CLAUDE.md differ'"
 
   tests:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})

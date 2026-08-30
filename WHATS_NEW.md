@@ -25,6 +25,11 @@ No changes yet.
   available in JSON/default settings and embedded recording settings, while only
   enabled ROIs are extracted, plotted, and written as per-animal NWB files.
 
+### Fixed
+
+- Made display-horizon button signals reliable across the supported Python and macOS
+  combinations, and made the synchronized-agent-contract CI gate independent of Qt.
+
 ## 0.1.5 - 2026-08-29
 
 ### Added

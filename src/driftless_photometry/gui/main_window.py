@@ -472,7 +472,7 @@ class MainWindow(QMainWindow):
             button.setObjectName("horizon")
             button.setCheckable(True)
             button.setChecked(seconds == self._trace_horizon_s)
-            button.clicked.connect(lambda _checked, value=seconds: self._set_trace_horizon(value))
+            button.pressed.connect(lambda value=seconds: self._set_trace_horizon(value))
             self.horizon_group.addButton(button, index)
             self.horizon_buttons[seconds] = button
             horizon_row.addWidget(button)
