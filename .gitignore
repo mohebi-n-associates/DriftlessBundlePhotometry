@@ -13,3 +13,4 @@ dist/
 *.partial.nwb
 *.photometry-spool/
 demo-output/
+old mescoscope/averages.dat
