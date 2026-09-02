@@ -199,6 +199,10 @@ def test_tcp_client_stop_unblocks_idle_read_promptly() -> None:
         thread = threading.Thread(target=consume)
         thread.start()
         assert server.accepted.wait(timeout=1)
+        connected_deadline = time.monotonic() + 1
+        while not client.diagnostics.connected and time.monotonic() < connected_deadline:
+            time.sleep(0.001)
+        assert client.diagnostics.connected
         started = time.monotonic()
         client.stop()
         thread.join(timeout=0.5)
@@ -382,23 +386,21 @@ def test_headless_rwd_engine_surfaces_socket_to_spool_backpressure(
 ) -> None:
     payload = b"".join(_fluorescence_bytes(0, 100 + index, index) for index in range(8))
     writer_entered = threading.Event()
-    producer_observed_full_queue = threading.Event()
+    writer_observed_full_queue = threading.Event()
     release_writer = threading.Event()
     original_commit = RWDSessionSpool._commit_chunk
-    original_put = RWDSessionSpool._put
 
     def blocked_commit(self, records) -> None:
         writer_entered.set()
+        full_deadline = time.monotonic() + 1
+        while not self._queue.full() and time.monotonic() < full_deadline:
+            time.sleep(0.001)
+        assert self._queue.full()
+        writer_observed_full_queue.set()
         assert release_writer.wait(timeout=2)
         original_commit(self, records)
 
-    def observed_put(self, work) -> None:
-        if writer_entered.is_set() and self._queue.full():
-            producer_observed_full_queue.set()
-        original_put(self, work)
-
     monkeypatch.setattr(RWDSessionSpool, "_commit_chunk", blocked_commit)
-    monkeypatch.setattr(RWDSessionSpool, "_put", observed_put)
     with _ScriptedServer([payload], close_after_send=False) as server:
         config = _session_config(tmp_path, server.port).model_copy(
             update={"session_id": "rwd-pressure-test"}
@@ -419,7 +421,7 @@ def test_headless_rwd_engine_surfaces_socket_to_spool_backpressure(
         thread = threading.Thread(target=run_engine)
         thread.start()
         assert writer_entered.wait(timeout=1)
-        assert producer_observed_full_queue.wait(timeout=1)
+        assert writer_observed_full_queue.wait(timeout=1)
         time.sleep(0.06)
         release_writer.set()
         thread.join(timeout=2)
