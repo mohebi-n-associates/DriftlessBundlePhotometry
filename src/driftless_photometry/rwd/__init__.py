@@ -1,5 +1,14 @@
 """RWD read-only streaming contracts."""
 
+from .capture import (
+    RWDWireCaptureError,
+    RWDWireCaptureInspection,
+    RWDWireCaptureWriter,
+    RWDWireChunk,
+    RWDWireReplaySource,
+    inspect_rwd_wire_capture,
+    iter_rwd_wire_chunks,
+)
 from .client import RWDClientDiagnostics, RWDRecordSource, RWDStreamClient
 from .domain import (
     RWDEventRecord,
@@ -55,6 +64,13 @@ __all__ = [
     "RWDStreamMetadata",
     "RWDTickResolver",
     "RWDWavelength",
+    "RWDWireCaptureError",
+    "RWDWireCaptureInspection",
+    "RWDWireCaptureWriter",
+    "RWDWireChunk",
+    "RWDWireReplaySource",
+    "inspect_rwd_wire_capture",
+    "iter_rwd_wire_chunks",
     "normalize_rwd_session",
     "parse_event_record",
     "parse_fluorescence_record",

@@ -291,6 +291,67 @@ def test_rwd_settings_cli_runs_the_headless_tcp_bridge(tmp_path: Path, capsys) -
     assert result["fiber_files"] == 2
 
 
+def test_rwd_cli_captures_and_replays_exact_wire_stream(tmp_path: Path, capsys) -> None:
+    payload = _fluorescence_bytes(0, 100) + _fluorescence_bytes(1, 100, 1000)
+    capture_path = tmp_path / "live-bench.rwd-wire"
+    with _ScriptedServer([payload], close_after_send=False) as server:
+        live_config = _session_config(tmp_path / "live", server.port).model_copy(
+            update={"session_id": "rwd-wire-live"}
+        )
+        live_settings = export_settings(tmp_path / "live.settings.json", live_config)
+
+        assert (
+            main(
+                [
+                    "--rwd-settings",
+                    str(live_settings),
+                    "--rwd-wire-capture",
+                    str(capture_path),
+                    "--duration",
+                    "0.06",
+                ]
+            )
+            == 0
+        )
+
+    live_result = json.loads(capsys.readouterr().out)
+    assert live_result["wire_capture"]["path"] == str(capture_path)
+    assert live_result["wire_capture"]["bytes"] == len(payload)
+    assert live_result["wire_capture"]["terminal_outcome"] == "completed_duration"
+
+    replay_config = live_config.model_copy(
+        update={
+            "session_id": "rwd-wire-replay",
+            "output_directory": tmp_path / "replay",
+        }
+    )
+    replay_settings = export_settings(tmp_path / "replay.settings.json", replay_config)
+
+    assert (
+        main(
+            [
+                "--rwd-settings",
+                str(replay_settings),
+                "--rwd-replay",
+                str(capture_path),
+                "--duration",
+                "0.001",
+            ]
+        )
+        == 0
+    )
+    replay_result = json.loads(capsys.readouterr().out)
+    assert replay_result["stream_records"] == live_result["stream_records"] == 2
+    assert replay_result["trace_samples"] == live_result["trace_samples"] == 3
+    assert replay_result["wire_replay"]["sha256"] == live_result["wire_capture"]["sha256"]
+
+    assert main(["--inspect-rwd-capture", str(capture_path)]) == 0
+    inspected = json.loads(capsys.readouterr().out)
+    assert inspected["sha256"] == live_result["wire_capture"]["sha256"]
+    assert inspected["resolved_preamble_mode"] == "none"
+    assert inspected["machine_name"] == "RWD1"
+
+
 def test_headless_rwd_engine_journals_malformed_stream_after_committed_record(
     tmp_path: Path,
 ) -> None:

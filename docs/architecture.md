@@ -94,6 +94,19 @@ an elapsed-time trailing mean applied after horizon selection and before optiona
 dF/F display conversion. These transformations operate only on bounded GUI buffers;
 the raw source records continue unchanged to the recovery spool and NWB finalizer.
 
+Physical protocol characterization uses a separate exact-wire evidence path:
+
+```text
+TCP recv chunk -> production decoder -> RWD recovery/NWB path
+              \-> checksummed *.rwd-wire capture -> unpaced production-decoder replay
+```
+
+The capture retains each socket chunk and host receipt time, a parsing/remapping
+contract, runtime provenance, resolved stream identity, terminal outcome, per-chunk
+checksums, and a whole-stream digest. It is not a canonical scientific artifact and
+never replaces the trace spool or per-fiber NWBs. Completed captures are atomically
+promoted; incomplete `.partial` captures are retained but rejected for replay.
+
 ## Initial delivery gates
 
 ### Gate 0 — contracts and golden file

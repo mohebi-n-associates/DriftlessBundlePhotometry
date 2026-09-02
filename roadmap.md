@@ -250,10 +250,13 @@ control; DBF is a read-only client/recorder. Work proceeds in these gated commit
    - Configure channel/fiber/animal labels, show raw/smoothed/dF/F traces, event
      activity, connection state, queue pressure, and validation progress without
      changing stored raw values.
-7. **Operator docs and live bench harness**
+7. **Operator docs and live bench harness — software implemented in Unreleased;
+   physical capture remains hardware required**
    - Document the RWD connection sequence, recovery, provenance, and limitations;
-     capture real streams to confirm preamble, timestamp unit, scale, channel IDs,
-     masks, event padding, disconnect behavior, and long-run capacity.
+     provide checksummed exact-wire capture, inspection, and deterministic replay.
+   - Capture real streams to confirm preamble, timestamp unit, scale, channel IDs,
+     masks, event padding, disconnect behavior, and long-run capacity when the
+     physical RWD system is available.
 
 Behavior-video ports are deferred until safe payload limits, changing-dimension
 semantics, RGB orientation, timestamp units, and canonical storage requirements are

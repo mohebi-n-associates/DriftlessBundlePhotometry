@@ -185,6 +185,22 @@ optical power, exposure duration, emission wavelength, or native numbered TTL li
 Those fields are recorded as unknown where an extension requires metadata and are
 otherwise absent; DBF does not synthesize native camera/controller records for RWD.
 
+## Exact-wire bench capture and replay
+
+The optional `*.rwd-wire` bench artifact retains every non-empty byte chunk returned
+by `recv`, its monotonic host receipt time, the configured parsing/remapping contract,
+runtime provenance, resolved preamble and machine identity, and terminal outcome.
+Each chunk and the concatenated stream have SHA-256 integrity checks. A partial path
+is atomically promoted only after its footer is written and fsynced; incomplete
+captures remain visibly suffixed `.partial` and are rejected for replay.
+
+Replay is unpaced and uses the captured receipt timestamps. It requires an exact
+match for protocol version, preamble policy, timestamp/value scales, expected machine
+name, enabled wavelengths, and device-channel/fiber mappings, then passes the exact
+chunks through the production decoder and normal recovery/NWB path. The capture is
+validation evidence rather than the canonical scientific output and may itself
+contain experimental data.
+
 ## Behavior video is deferred
 
 The RWD software exposes up to three additional behavior-video ports. `Video.m`
@@ -209,13 +225,17 @@ initial bridge because safe implementation still needs:
 2. **Implemented with synthetic records:** the same incremental parser feeds the
    bounded trace-only spool, recovery, rollover handling, exact per-fiber NWB
    finalization, PyNWB validation, NWB Inspector, and reopen/count/value checks.
-3. **Partially implemented with a local TCP server:** fragmentation/coalescing,
+3. **Implemented with a local TCP server:** fragmentation/coalescing,
    connection failure, idle timeout, exact-boundary disconnect, truncated EOF,
    malformed input, bounded queue pressure, prompt stop, fault journaling, and full
-   headless finalization are covered. GUI close behavior remains in the GUI gate.
-4. A real RWD packet capture confirming byte order, the connection preamble,
+   headless finalization are covered. The GUI source workflow, close behavior,
+   mapping, diagnostics, and presentation-only analysis have synthetic coverage.
+4. **Harness implemented; physical system required:** capture and replay a real RWD
+   stream to confirm byte order, the connection preamble,
    timestamp unit, value scale, channel numbering, wavelength combinations, event
-   padding, and tick behavior.
+   padding, disconnect outcomes, tick behavior, and sustained capacity. Follow the
+   [operator and bench-validation guide](rwd-operator-guide.md) and retain the stated
+   evidence.
 
 Until gate 4 passes, the feature is an evidence-based RWD bridge implementation, not
 a physically validated RWD integration.

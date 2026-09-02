@@ -80,7 +80,8 @@ and named event activity; raw, elapsed-time-smoothed, and dF/F views remain
 presentation-only.
 The TCP path has only synthetic local-server validation; current builds must not be
 described as a physically validated RWD connection. See
-[the RWD streaming contract](docs/rwd-streaming-protocol.md).
+[the RWD streaming contract](docs/rwd-streaming-protocol.md) and
+[the RWD operator and bench-validation guide](docs/rwd-operator-guide.md).
 
 The historical MATLAB, Arduino, and Bonsai sources remain under `old mescoscope/`
 for reference and are not runtime dependencies.
@@ -184,6 +185,22 @@ RWD must already be recording and listening on the host/port stored in that file
 DBF does not send hardware commands. It makes one connection for one session and
 never reconnects automatically after a fault, because joining records across TCP
 connections could hide a gap or changed device state.
+
+Capture a checksummed exact-wire artifact during a physical bench run, inspect it,
+and replay it unpaced through the production parser/recovery/NWB path:
+
+```bash
+dbf --rwd-settings path/to/rwd.settings.json --duration 300 \
+    --rwd-wire-capture path/to/bench-001.rwd-wire
+dbf --inspect-rwd-capture path/to/bench-001.rwd-wire
+dbf --rwd-settings path/to/replay.settings.json \
+    --rwd-replay path/to/bench-001.rwd-wire
+```
+
+Replay settings must preserve the capture's parsing scales, wavelengths, expected
+machine, and channel/fiber mappings, but should use a new session ID and empty output
+directory. Exact-wire captures can contain experimental data and must not be
+committed to the repository.
 
 Run the GUI demo:
 

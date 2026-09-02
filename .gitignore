@@ -12,5 +12,8 @@ dist/
 *.nwb
 *.partial.nwb
 *.photometry-spool/
+*.rwd-spool/
+*.rwd-wire
+*.rwd-wire.partial
 demo-output/
 old mescoscope/averages.dat

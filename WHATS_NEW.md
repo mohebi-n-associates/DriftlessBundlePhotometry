@@ -59,6 +59,16 @@ version, move its completed entries into a dated version section.
 - Added a persisted display-only trailing-mean window based on elapsed seconds. Raw,
   smoothed, and dF/F views share independently timed fiber/wavelength buffers; the
   smoothing and dF/F pipeline never mutates acquired or stored values.
+- Added a versioned exact-wire RWD bench artifact with socket-chunk receipt times,
+  parsing/remapping contract, runtime provenance, resolved stream identity, terminal
+  outcome, per-chunk checksums, and a whole-stream SHA-256 digest. Completed captures
+  are atomically promoted; interrupted partials are retained and rejected for replay.
+- Added capture inspection and deterministic unpaced replay through the production
+  decoder, recovery spool, and per-fiber NWB finalizer. Replay rejects changed
+  scientific parsing/mapping settings and preserves captured host receipt times.
+- Added an RWD operator and physical-validation guide covering connection order,
+  channel/animal mapping, recovery, exact-wire evidence, replay, failure handling,
+  and the measurements required before claiming live hardware validation.
 - Added typed acquisition-fault and system-event records for camera/controller
   disconnects, malformed controller streams, clock discontinuities, queue pressure,
   and storage failures. When committed samples exist, the fault classification and

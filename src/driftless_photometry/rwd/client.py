@@ -71,9 +71,11 @@ class RWDStreamClient:
         config: RWDSourceConfig,
         *,
         monotonic: Callable[[], float] = time.monotonic,
+        on_wire_chunk: Callable[[bytes, float], None] | None = None,
     ) -> None:
         self._config = config
         self._monotonic = monotonic
+        self._on_wire_chunk = on_wire_chunk
         self._decoder = RWDStreamDecoder(
             value_scale=config.value_scale,
             preamble_mode=config.preamble_mode,
@@ -180,6 +182,8 @@ class RWDStreamClient:
                         "RWD peer closed the TCP stream",
                     )
                 last_byte_at = received_at
+                if self._on_wire_chunk is not None:
+                    self._on_wire_chunk(chunk, received_at - started)
                 try:
                     parsed_records = self._decoder.feed(chunk)
                     for record in parsed_records:
