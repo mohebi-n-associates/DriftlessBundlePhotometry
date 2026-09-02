@@ -23,7 +23,7 @@ from driftless_photometry.rwd.acquisition import RWDAcquisitionEngine
 from driftless_photometry.settings import export_settings
 from driftless_photometry.state import AcquisitionState
 from driftless_photometry.storage import load_rwd_session_spool
-from driftless_photometry.storage.rwd_spool import RWDSessionSpool
+from driftless_photometry.storage.rwd_spool import RWDSessionSpool, _RecordWork
 
 
 def _fluorescence_bytes(channel: int, tick: int, offset: int = 0) -> bytes:
@@ -386,21 +386,31 @@ def test_headless_rwd_engine_surfaces_socket_to_spool_backpressure(
 ) -> None:
     payload = b"".join(_fluorescence_bytes(0, 100 + index, index) for index in range(8))
     writer_entered = threading.Event()
-    writer_observed_full_queue = threading.Event()
+    producer_attempted_full_queue = threading.Event()
+    producer_full_put_finished = threading.Event()
     release_writer = threading.Event()
     original_commit = RWDSessionSpool._commit_chunk
+    original_put = RWDSessionSpool._put
 
     def blocked_commit(self, records) -> None:
         writer_entered.set()
-        full_deadline = time.monotonic() + 1
-        while not self._queue.full() and time.monotonic() < full_deadline:
-            time.sleep(0.001)
-        assert self._queue.full()
-        writer_observed_full_queue.set()
-        assert release_writer.wait(timeout=2)
+        assert release_writer.wait(timeout=4)
         original_commit(self, records)
 
+    def synchronized_put(self, work) -> None:
+        attempted_full_queue = writer_entered.is_set() and self._queue.full()
+        if attempted_full_queue:
+            producer_attempted_full_queue.set()
+        try:
+            original_put(self, work)
+        finally:
+            if attempted_full_queue:
+                producer_full_put_finished.set()
+        if isinstance(work, _RecordWork) and not writer_entered.is_set():
+            assert writer_entered.wait(timeout=1)
+
     monkeypatch.setattr(RWDSessionSpool, "_commit_chunk", blocked_commit)
+    monkeypatch.setattr(RWDSessionSpool, "_put", synchronized_put)
     with _ScriptedServer([payload], close_after_send=False) as server:
         config = _session_config(tmp_path, server.port).model_copy(
             update={"session_id": "rwd-pressure-test"}
@@ -408,7 +418,7 @@ def test_headless_rwd_engine_surfaces_socket_to_spool_backpressure(
         engine = RWDAcquisitionEngine(
             spool_chunk_size=1,
             spool_queue_size=1,
-            spool_submit_timeout_s=0.02,
+            spool_submit_timeout_s=0.25,
         )
         outcome: list[BaseException] = []
 
@@ -421,10 +431,10 @@ def test_headless_rwd_engine_surfaces_socket_to_spool_backpressure(
         thread = threading.Thread(target=run_engine)
         thread.start()
         assert writer_entered.wait(timeout=1)
-        assert writer_observed_full_queue.wait(timeout=1)
-        time.sleep(0.06)
+        assert producer_attempted_full_queue.wait(timeout=1)
+        assert producer_full_put_finished.wait(timeout=1)
         release_writer.set()
-        thread.join(timeout=2)
+        thread.join(timeout=3)
 
     assert not thread.is_alive()
     assert len(outcome) == 1
