@@ -15,7 +15,7 @@ _No unreleased changes._
 - Added a versioned 64-bit Windows installer build. Each published GitHub release now
   freezes the GUI and scientific stack, compiles a per-user Setup executable, tests
   silent installation, launch, and uninstall, and attaches it with SHA-256 checksums
-  and build provenance.
+  while attempting GitHub build provenance when the repository plan supports it.
 - Added synchronized PyPI and GitHub Release automation using Trusted
   Publishing. Exact tag/version/changelog checks prevent mismatched releases, and
   the wheel and source distribution must pass tests and strict metadata validation

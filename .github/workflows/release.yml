@@ -179,6 +179,7 @@ jobs:
           release-assets/*.tar.gz
           release-assets/*.exe
       - name: Attest release artifacts
+        continue-on-error: true
         uses: actions/attest-build-provenance@v4.2.2
         with:
           subject-path: |
