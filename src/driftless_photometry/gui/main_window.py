@@ -597,10 +597,10 @@ class MainWindow(QMainWindow):
             button.setObjectName("horizon")
             button.setCheckable(True)
             button.setChecked(seconds == self._trace_horizon_s)
-            button.pressed.connect(lambda value=seconds: self._set_trace_horizon(value))
             self.horizon_group.addButton(button, index)
             self.horizon_buttons[seconds] = button
             horizon_row.addWidget(button)
+        self.horizon_group.idClicked.connect(self._set_trace_horizon_from_button_id)
         self.trace_span_hint = QLabel("No trace data yet")
         self.trace_span_hint.setObjectName("hint")
         horizon_row.addSpacing(8)
@@ -1794,6 +1794,12 @@ class MainWindow(QMainWindow):
         for plot in self.trace_plots.values():
             plot.enableAutoRange(axis="y", enable=True)
         self._refresh_all_trace_curves()
+
+    def _set_trace_horizon_from_button_id(self, button_id: int) -> None:
+        if not 0 <= button_id < len(HORIZONS):
+            raise ValueError(f"unknown trace horizon button ID {button_id}")
+        _label, seconds = HORIZONS[button_id]
+        self._set_trace_horizon(seconds)
 
     def _on_trace_range_selected(
         self,

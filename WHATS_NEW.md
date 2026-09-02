@@ -6,6 +6,10 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+_No unreleased changes._
+
+## 0.2.0 - 2026-09-02
+
 ### Added
 
 - Added the evidence-based RWD read-only streaming contract, including fixed
@@ -106,6 +110,11 @@ version, move its completed entries into a dated version section.
 - Recovery spools now use schema version 2 while retaining explicit, marked recovery
   support for schema version 1 spools that did not store per-frame host receipt and
   intensity provenance.
+
+### Fixed
+
+- Made trace-horizon button selection use the button group's stable integer signal,
+  avoiding a PySide6 6.8/macOS callback-binding failure seen in the release matrix.
 
 ## 0.1.6 - 2026-08-29
 

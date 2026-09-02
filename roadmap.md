@@ -9,9 +9,9 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.1.6
+**Current baseline:** 0.2.0
 
-**Last updated:** 2026-09-01
+**Last updated:** 2026-09-02
 
 ## How to use this roadmap
 
@@ -59,8 +59,8 @@ acquisition and time base feeding them have passed integrated validation.
 | Phase | Outcome | Status | Primary dependency |
 | --- | --- | --- | --- |
 | 0 | Trace-first simulator and NWB software baseline | Complete | — |
-| 1 | Repeatable software reliability and continuous integration | Next | Phase 0 |
-| 2 | Deterministic replay, simulator workflow, and integration harness | Planned | Phase 1 |
+| 1 | Repeatable software reliability and continuous integration | Complete | Phase 0 |
+| 2 | Deterministic replay, simulator workflow, and integration harness | Next | Phase 1 |
 | 3 | Safe deterministic timing controller | Hardware required | Phase 2 |
 | 4 | Characterized CS505MU camera backend | Hardware required | Phase 2 |
 | 5 | One-clock, end-to-end Windows acquisition rig | Planned | Phases 3 and 4 |
@@ -115,7 +115,7 @@ acquisition and time base feeding them have passed integrated validation.
 
 ## Phase 1 — Reliability closure and continuous integration
 
-**Status: Completed in Unreleased**
+**Status: Complete in 0.2.0**
 
 **0.1.6 foundation:** The versioned v1 JSON format, complete GUI save/load/default
 workflow, redirected-Windows-Documents location, exact NWB settings snapshots, and
@@ -127,10 +127,10 @@ The simulator GUI now requires a non-writing acquisition preflight before each
 recording and invalidates that approval when recording-relevant settings change. The
 same preview validation contract must be exercised by physical adapters in Phases 3-5.
 The Windows/macOS Python 3.11-3.13 CI matrix and isolated core/GUI wheel smoke gates
-are implemented in 0.1.6. Unreleased work closes the native canonical data contract:
+are implemented in 0.1.6. Version 0.2.0 closes the native canonical data contract:
 actual per-exposure voltage commands, host receipt times, ROI saturation QC,
 excitation events, invalid intervals, runtime provenance, and recoverable spool-v1
-limitations now round-trip explicitly. Unreleased reliability closure adds typed
+limitations now round-trip explicitly. The 0.2.0 reliability closure adds typed
 fault journaling, deterministic coverage for every listed software fault, safe spool
 inspection/discovery, idempotent interrupted recovery, structured diagnostics,
 storage preflight, and small-fixture capacity bounds. A future configuration version
@@ -152,7 +152,7 @@ system before connecting it to physical devices.
    - Add a clean-wheel smoke test for `dbf --version`, headless acquisition, GUI
      import, and packaged logo availability.
 
-2. **Complete fault-injection coverage — implemented in Unreleased**
+2. **Complete fault-injection coverage — implemented in 0.2.0**
    - Retain existing stop, drop-event, non-monotonic sequence/tick, spool corruption,
      writer failure, and finalizer failure tests.
    - Add deterministic tests for queue saturation, malformed controller streams,
@@ -161,7 +161,7 @@ system before connecting it to physical devices.
    - Verify every failure becomes an event or surfaced error and leaves a recoverable
      spool when committed data exists.
 
-3. **Canonical data-contract closure — implemented in Unreleased**
+3. **Canonical data-contract closure — implemented in 0.2.0**
    - Persist actual commanded intensity for every exposure instead of reconstructing
      it from the initial channel configuration.
    - Add explicit excitation-event records alongside camera exposure, TTL, dropped-
@@ -181,12 +181,12 @@ system before connecting it to physical devices.
    - Capture application, dependency, operating-system, adapter, and protocol
      versions in the final NWB provenance.
 
-5. **Recovery workflow — implemented in Unreleased**
+5. **Recovery workflow — implemented in 0.2.0**
    - Discover incomplete spools safely without scanning unrelated directories.
    - Report recoverable counts and acquisition completeness before finalization.
    - Make recovery idempotent and test interrupted recovery itself.
 
-6. **Observability and capacity limits — implemented in Unreleased**
+6. **Observability and capacity limits — implemented in 0.2.0**
    - Define structured diagnostics for queue depth, write latency, dropped frames,
      clock residuals, and finalization progress.
    - Establish tested bounds for simulator throughput, raw-frame retention, and
@@ -226,31 +226,31 @@ This approved track integrates the RWD software's exported fluorescence/event TC
 stream into the same trace, analysis, recovery, and NWB product. RWD retains hardware
 control; DBF is a read-only client/recorder. Work proceeds in these gated commits:
 
-1. **Protocol/configuration foundation — implemented in Unreleased**
+1. **Protocol/configuration foundation — implemented in 0.2.0**
    - Review the vendor manual, MATLAB operating instructions, `Wave.m`, and `Video.m`.
    - Document fixed record layouts plus every assumption and unsupported behavior.
    - Add a discriminated native/RWD source, exact 410/470/560 identities, unique
      device-channel/fiber mappings, typed raw records, and explicit settings-v1 to
      native migration.
-2. **Pure incremental parsers — implemented in Unreleased**
+2. **Pure incremental parsers — implemented in 0.2.0**
    - Parse arbitrary TCP fragmentation/coalescing without using read boundaries.
    - Add golden fixtures for masks, mixed records, preamble modes, malformed input,
      rollover, truncation, and unknown channels.
-3. **Trace-only recovery and canonical NWB — implemented in Unreleased**
+3. **Trace-only recovery and canonical NWB — implemented in 0.2.0**
    - Add an append-safe RWD spool that never requires fake camera images.
    - Write raw device traces/events/ticks/scales and immutable derived outputs into
      one independently valid NWB per mapped fiber/animal.
-4. **Headless TCP bridge — implemented with a synthetic local server in Unreleased**
+4. **Headless TCP bridge — implemented with a synthetic local server in 0.2.0**
    - Add a single-owner client worker, bounded queues, prompt stop, timeouts,
      disconnect/malformed-stream faults, and a local fake-server test path.
-5. **Shared trace and startup workflow — implemented in Unreleased**
+5. **Shared trace and startup workflow — implemented in 0.2.0**
    - Refactor source-neutral trace services, then present native or RWD selection at
      startup and hide inactive hardware controls.
-6. **RWD mapping and analysis GUI — implemented with synthetic streams in Unreleased**
+6. **RWD mapping and analysis GUI — implemented with synthetic streams in 0.2.0**
    - Configure channel/fiber/animal labels, show raw/smoothed/dF/F traces, event
      activity, connection state, queue pressure, and validation progress without
      changing stored raw values.
-7. **Operator docs and live bench harness — software implemented in Unreleased;
+7. **Operator docs and live bench harness — software implemented in 0.2.0;
    physical capture remains hardware required**
    - Document the RWD connection sequence, recovery, provenance, and limitations;
      provide checksummed exact-wire capture, inspection, and deterministic replay.
