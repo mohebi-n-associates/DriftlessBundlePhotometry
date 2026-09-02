@@ -24,6 +24,15 @@ version, move its completed entries into a dated version section.
   malformed streams. Synthetic golden hex fixtures cover every documented wavelength
   mask, mixed data/events, rollover endpoints, and faults without containing animal
   data.
+- Added a separate trace-only RWD recovery spool and canonical NWB finalizer. The
+  bounded background writer checksums configuration, runtime provenance, connection
+  metadata, mixed record chunks, system events, and invalid spans; recovery validates
+  exact counts and resumes interrupted multi-fiber promotion before removing a spool.
+- Each mapped RWD fiber/animal now gets an independently validated NWB containing
+  exact 410/470/560 identities, raw uint32 ticks and vendor values, configured scales,
+  rollover-resolved timestamps, scaled response series, named ON/OFF events, and
+  complete settings/provenance. RWD files explicitly omit unsupported camera frames,
+  native exposure/TTL tables, LED commands, and inferred signal roles.
 - Added typed acquisition-fault and system-event records for camera/controller
   disconnects, malformed controller streams, clock discontinuities, queue pressure,
   and storage failures. When committed samples exist, the fault classification and

@@ -236,7 +236,7 @@ control; DBF is a read-only client/recorder. Work proceeds in these gated commit
    - Parse arbitrary TCP fragmentation/coalescing without using read boundaries.
    - Add golden fixtures for masks, mixed records, preamble modes, malformed input,
      rollover, truncation, and unknown channels.
-3. **Trace-only recovery and canonical NWB**
+3. **Trace-only recovery and canonical NWB — implemented in Unreleased**
    - Add an append-safe RWD spool that never requires fake camera images.
    - Write raw device traces/events/ticks/scales and immutable derived outputs into
      one independently valid NWB per mapped fiber/animal.

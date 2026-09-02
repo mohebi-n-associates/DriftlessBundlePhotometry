@@ -69,6 +69,14 @@ bench confirmation. Raw `uint32` ticks are always preserved even after conversio
 NWB seconds. Tick rollover, reset, and discontinuity handling must be tested before a
 live system is described as validated.
 
+The trace-only normalizer unwraps each channel/wavelength series independently so it
+does not assume the three fixed slots inside one record are timestamp-sorted. New
+series are aligned to the closest observed shared tick epoch, the earliest resolved
+tick becomes NWB time zero, ordinary backward resets are rejected, and uint32
+rollovers are retained explicitly. Equal named-event timestamps are allowed because
+distinct event edges may share a device tick; trace timestamps for one mapped
+channel/wavelength must remain strictly increasing.
+
 ## Fluorescence record (`0x01`, 31 bytes)
 
 All offsets below are zero-based, half-open byte ranges. Every wavelength slot
@@ -138,6 +146,32 @@ fields in its complete snapshot so old configurations remain reversible. RWD wor
 must not read those inactive fields. The GUI refactor will hide them rather than
 imply that DBF controls RWD hardware.
 
+## Trace-only recovery and NWB boundary
+
+RWD records use a dedicated `*.rwd-spool` rather than the native camera-frame spool.
+Its bounded single-owner writer commits mixed fluorescence/event records in wire
+order and checksums every record chunk plus configuration, runtime provenance,
+resolved preamble/machine identity, system events, and invalid spans. Complete and
+explicitly aborted spools are recoverable. A spool is removed only after all mapped
+fiber outputs validate, reopen with exact counts/values, and complete atomic
+promotion; valid canonical or partial files are reused when recovery resumes.
+
+Each output is one self-contained NWB per mapped `fiber_id`/animal. It contains:
+
+- one `FiberPhotometryResponseSeries` per observed exact RWD wavelength with the
+  configured scaled vendor values, plus a core `TimeSeries` retaining each exact
+  `uint32` wire value;
+- event tables for every stream record, every fluorescence sample represented by
+  that file, and every shared named ON/OFF event, including raw and unwrapped ticks,
+  wire sequence, device channel, machine bytes, and host receipt time;
+- the RWD timing/value scales, connection metadata, complete settings, runtime
+  provenance, lifecycle/fault events, and any invalid intervals.
+
+The stream does not substantiate camera pixels, camera ROIs, illumination commands,
+optical power, exposure duration, emission wavelength, or native numbered TTL lines.
+Those fields are recorded as unknown where an extension requires metadata and are
+otherwise absent; DBF does not synthesize native camera/controller records for RWD.
+
 ## Behavior video is deferred
 
 The RWD software exposes up to three additional behavior-video ports. `Video.m`
@@ -159,8 +193,10 @@ initial bridge because safe implementation still needs:
    endpoints, malformed types/masks/status/names, truncated EOF, preamble modes, and
    unknown channels. These fixtures test the documented interpretation but are not a
    substitute for a real capture.
-2. A replay path that exercises the same parser, bounded queue, trace-only spool,
-   recovery, and NWB finalizer without an RWD installation.
+2. **Partially implemented with synthetic records:** bounded trace-only spool,
+   recovery, rollover handling, exact per-fiber NWB finalization, PyNWB validation,
+   NWB Inspector, and reopen/count/value checks. The socket/replay coordinator that
+   connects the parser to this path is the next gate.
 3. A local fake TCP server covering timeouts, reconnect policy, disconnect, queue
    pressure, stop, and GUI close.
 4. A real RWD packet capture confirming byte order, the connection preamble,

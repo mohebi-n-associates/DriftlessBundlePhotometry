@@ -47,6 +47,21 @@ valid records in order before surfacing a later malformed record, and then remai
 a failed state. It never scans ahead after an error because the vendor format has no
 documented synchronization marker.
 
+The RWD persistence path is intentionally separate from native frame acquisition:
+
+```text
+RWD TCP bytes -> incremental decoder -> typed mixed records -> bounded RWD spool
+                                                           -> tick normalization
+                                                           -> per-fiber trace-only NWBs
+                                                              -> validate/reopen/promote
+```
+
+The spool retains raw records and connection provenance before normalization. Its
+finalizer copies shared stream/event/fault context into every mapped animal file,
+while fluorescence tables and response series contain only that file's mapped device
+channel. It stores raw uint32 ticks/values beside scaled series and never creates
+camera, stimulus, exposure, or numbered-TTL data that the source did not provide.
+
 ## Initial delivery gates
 
 ### Gate 0 — contracts and golden file

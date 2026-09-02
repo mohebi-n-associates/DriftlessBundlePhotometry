@@ -15,6 +15,22 @@ from .recovery import (
     inspect_session_spool,
     recover_session_spool,
 )
+from .rwd_nwb import RWDNWBWriteReport, write_rwd_session_nwbs
+from .rwd_recovery import (
+    RWDRecoveryReport,
+    RWDSpoolInspection,
+    discover_rwd_session_spools,
+    inspect_rwd_session_spool,
+    recover_rwd_session_spool,
+)
+from .rwd_spool import (
+    LoadedRWDSpool,
+    RWDSessionSpool,
+    RWDSpoolBackpressureError,
+    RWDSpoolError,
+    load_rwd_session_spool,
+    remove_rwd_session_spool,
+)
 from .spool import (
     LoadedSpool,
     SessionSpool,
@@ -27,8 +43,15 @@ from .spool import (
 __all__ = [
     "FrameStream",
     "InsufficientStorageError",
+    "LoadedRWDSpool",
     "LoadedSpool",
     "NWBWriteReport",
+    "RWDNWBWriteReport",
+    "RWDRecoveryReport",
+    "RWDSessionSpool",
+    "RWDSpoolBackpressureError",
+    "RWDSpoolError",
+    "RWDSpoolInspection",
     "RecoveryReport",
     "SessionSpool",
     "SpoolBackpressureError",
@@ -36,12 +59,18 @@ __all__ = [
     "SpoolInspection",
     "StorageCapacity",
     "check_storage_capacity",
+    "discover_rwd_session_spools",
     "discover_session_spools",
     "estimate_session_bytes",
+    "inspect_rwd_session_spool",
     "inspect_session_spool",
+    "load_rwd_session_spool",
     "load_session_spool",
+    "recover_rwd_session_spool",
     "recover_session_spool",
+    "remove_rwd_session_spool",
     "remove_session_spool",
+    "write_rwd_session_nwbs",
     "write_session_nwb",
     "write_session_nwbs",
 ]
