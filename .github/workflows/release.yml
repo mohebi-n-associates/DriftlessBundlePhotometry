@@ -29,6 +29,8 @@ jobs:
           cache: pip
       - name: Validate synchronized release metadata
         run: python tools/release.py check "$RELEASE_TAG"
+      - name: Install Linux GUI runtime libraries
+        run: sudo apt-get update && sudo apt-get install --yes libegl1
       - name: Install release tooling
         run: python -m pip install --upgrade pip && python -m pip install ".[dev,release]"
       - name: Run release quality gates
