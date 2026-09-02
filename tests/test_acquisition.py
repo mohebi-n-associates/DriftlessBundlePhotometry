@@ -7,14 +7,14 @@ import pytest
 from pynwb import NWBHDF5IO
 
 from driftless_photometry.acquisition import AcquisitionEngine, preview_duration_s, run_preview
-from driftless_photometry.config import demo_config
+from driftless_photometry.config import RWDChannelMapping, RWDSourceConfig, demo_config
 from driftless_photometry.diagnostics import FinalizationStage
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from driftless_photometry.hardware import RigPacket, SimulatedRig
 from driftless_photometry.provenance import NWB_RUNTIME_PROVENANCE_SCRATCH_NAME
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
-from driftless_photometry.storage import InsufficientStorageError, load_session_spool
+from driftless_photometry.storage import InsufficientStorageError, SessionSpool, load_session_spool
 
 
 def test_preview_validates_all_channels_without_creating_output(tmp_path: Path) -> None:
@@ -28,6 +28,36 @@ def test_preview_validates_all_channels_without_creating_output(tmp_path: Path) 
     assert result.roi_count == 2
     assert all(count == 5 for _wavelength, count in result.wavelength_frame_counts)
     assert 0 <= result.maximum_saturation_fraction <= 1
+    assert not list(tmp_path.iterdir())
+
+
+def test_native_services_reject_rwd_source_before_creating_output(tmp_path: Path) -> None:
+    base = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    rwd_config = base.model_copy(
+        update={
+            "source": RWDSourceConfig(
+                channel_mappings=(
+                    RWDChannelMapping(
+                        device_channel=0,
+                        fiber_id="fiber_01",
+                        label="RWD channel 0",
+                    ),
+                )
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="native preview"):
+        run_preview(rwd_config, SimulatedRig(rwd_config))
+    with pytest.raises(ValueError, match="native acquisition engine"):
+        AcquisitionEngine().run(
+            rwd_config,
+            SimulatedRig(rwd_config),
+            duration_s=0.1,
+        )
+    with pytest.raises(ValueError, match="native session spool"):
+        SessionSpool(rwd_config)
+
     assert not list(tmp_path.iterdir())
 
 

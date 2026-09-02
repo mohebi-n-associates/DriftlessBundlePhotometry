@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 from datetime import UTC, datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Wavelength(IntEnum):
@@ -132,6 +133,112 @@ class TraceDisplayConfig(BaseModel):
         return self
 
 
+class NativeSourceConfig(BaseModel):
+    """Driftless-controlled camera/controller acquisition source."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["native"] = "native"
+
+
+class RWDPreambleMode(StrEnum):
+    """Treatment of the undocumented optional four-byte connection banner."""
+
+    AUTO = "auto"
+    NONE = "none"
+    MACHINE_NAME_4 = "machine_name_4"
+
+
+class RWDChannelMapping(BaseModel):
+    """Map one RWD device channel to a stable configured fiber/animal."""
+
+    model_config = ConfigDict(frozen=True)
+
+    device_channel: int = Field(ge=0, le=255)
+    fiber_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
+    label: str = Field(min_length=1, max_length=128)
+
+
+class RWDSourceConfig(BaseModel):
+    """Read-only TCP fluorescence/event stream exported by RWD software."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["rwd"] = "rwd"
+    host: str = Field(default="127.0.0.1", min_length=1, max_length=253)
+    port: int = Field(default=8080, ge=1, le=65535)
+    connect_timeout_s: float = Field(default=3.0, gt=0, le=60)
+    read_timeout_s: float = Field(default=1.0, gt=0, le=60)
+    preamble_mode: RWDPreambleMode = RWDPreambleMode.AUTO
+    timestamp_scale_s: float = Field(
+        default=0.001,
+        gt=0,
+        description=(
+            "Seconds per RWD uint32 timestamp tick. Vendor documents do not state the unit; "
+            "the default millisecond scale requires replay or bench confirmation."
+        ),
+    )
+    value_scale: float = Field(
+        default=0.001,
+        gt=0,
+        description="Scale applied to the vendor uint32 fluorescence value, matching Wave.m.",
+    )
+    enabled_wavelengths_nm: tuple[Literal[410, 470, 560], ...] = Field(
+        default=(410, 470, 560),
+        min_length=1,
+        max_length=3,
+    )
+    channel_mappings: tuple[RWDChannelMapping, ...] = Field(min_length=1, max_length=9)
+    expected_machine_name: str | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4,
+        pattern=r"^[\x20-\x7E]{4}$",
+    )
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(character.isspace() for character in normalized):
+            raise ValueError("RWD host must be a non-empty hostname or address without spaces")
+        try:
+            ipaddress.ip_address(normalized)
+        except ValueError:
+            labels = normalized.split(".")
+            if any(
+                not label
+                or len(label) > 63
+                or label.startswith("-")
+                or label.endswith("-")
+                or not all(
+                    character.isascii() and (character.isalnum() or character == "-")
+                    for character in label
+                )
+                for label in labels
+            ):
+                raise ValueError("RWD host must be a valid IP address or DNS hostname") from None
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_stream_mapping(self) -> RWDSourceConfig:
+        if len(self.enabled_wavelengths_nm) != len(set(self.enabled_wavelengths_nm)):
+            raise ValueError("RWD enabled wavelengths must be unique")
+        device_channels = [mapping.device_channel for mapping in self.channel_mappings]
+        if len(device_channels) != len(set(device_channels)):
+            raise ValueError("RWD device channel mappings must be unique")
+        fiber_ids = [mapping.fiber_id for mapping in self.channel_mappings]
+        if len(fiber_ids) != len(set(fiber_ids)):
+            raise ValueError("RWD fiber mappings must be unique")
+        return self
+
+
+AcquisitionSourceConfig = Annotated[
+    NativeSourceConfig | RWDSourceConfig,
+    Field(discriminator="kind"),
+]
+
+
 class SessionConfig(BaseModel):
     """Complete immutable configuration for one recording session."""
 
@@ -143,6 +250,7 @@ class SessionConfig(BaseModel):
     output_directory: Path
     recording_duration_s: float = Field(default=5.0, gt=0, le=24 * 60 * 60)
     session_start_time: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    source: AcquisitionSourceConfig = Field(default_factory=NativeSourceConfig)
     camera: CameraConfig
     rois: tuple[ROIConfig, ...] = Field(min_length=1, max_length=9)
     channels: tuple[ChannelConfig, ...] = Field(min_length=1, max_length=3)
@@ -166,22 +274,33 @@ class SessionConfig(BaseModel):
         wavelengths = [channel.wavelength_nm for channel in self.channels]
         if len(wavelengths) != len(set(wavelengths)):
             raise ValueError("channel wavelengths must be unique")
-        if not any(channel.enabled for channel in self.channels):
+        if isinstance(self.source, NativeSourceConfig) and not any(
+            channel.enabled for channel in self.channels
+        ):
             raise ValueError("at least one excitation channel must be enabled")
 
         ttl_lines = [ttl.line for ttl in self.ttl_inputs]
         if len(ttl_lines) != len(set(ttl_lines)):
             raise ValueError("TTL input lines must be unique")
 
-        for roi in self.rois:
-            if roi.center_x_px + roi.radius_px > self.camera.width_px:
-                raise ValueError(f"ROI {roi.fiber_id} exceeds camera width")
-            if roi.center_y_px + roi.radius_px > self.camera.height_px:
-                raise ValueError(f"ROI {roi.fiber_id} exceeds camera height")
-            if roi.center_x_px - roi.radius_px < 0:
-                raise ValueError(f"ROI {roi.fiber_id} exceeds camera left edge")
-            if roi.center_y_px - roi.radius_px < 0:
-                raise ValueError(f"ROI {roi.fiber_id} exceeds camera top edge")
+        if isinstance(self.source, NativeSourceConfig):
+            for roi in self.rois:
+                if roi.center_x_px + roi.radius_px > self.camera.width_px:
+                    raise ValueError(f"ROI {roi.fiber_id} exceeds camera width")
+                if roi.center_y_px + roi.radius_px > self.camera.height_px:
+                    raise ValueError(f"ROI {roi.fiber_id} exceeds camera height")
+                if roi.center_x_px - roi.radius_px < 0:
+                    raise ValueError(f"ROI {roi.fiber_id} exceeds camera left edge")
+                if roi.center_y_px - roi.radius_px < 0:
+                    raise ValueError(f"ROI {roi.fiber_id} exceeds camera top edge")
+        else:
+            mapped_fibers = {mapping.fiber_id for mapping in self.source.channel_mappings}
+            enabled_fibers = {roi.fiber_id for roi in self.enabled_rois}
+            if mapped_fibers != enabled_fibers:
+                raise ValueError(
+                    "RWD channel mappings must map every enabled fiber exactly once and no "
+                    "disabled fiber"
+                )
         return self
 
     @property

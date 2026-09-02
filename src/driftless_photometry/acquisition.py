@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from driftless_photometry.config import SessionConfig, Wavelength
+from driftless_photometry.config import NativeSourceConfig, SessionConfig, Wavelength
 from driftless_photometry.diagnostics import AcquisitionDiagnostics, FinalizationProgress
 from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TraceSample
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
@@ -78,6 +78,8 @@ def run_preview(
     """Exercise and validate acquisition inputs without creating scientific output."""
 
     planned_duration_s = preview_duration_s(config) if duration_s is None else duration_s
+    if not isinstance(config.source, NativeSourceConfig):
+        raise ValueError("native preview requires a native acquisition source")
     if planned_duration_s <= 0:
         raise ValueError("preview duration must be positive")
     expected_channels = {channel.wavelength_nm: channel for channel in config.enabled_channels}
@@ -205,6 +207,8 @@ class AcquisitionEngine:
         on_state: StateCallback | None = None,
         on_finalization: FinalizationCallback | None = None,
     ) -> AcquisitionRunResult:
+        if not isinstance(config.source, NativeSourceConfig):
+            raise ValueError("native acquisition engine requires a native acquisition source")
         if duration_s <= 0:
             raise ValueError("duration_s must be positive")
         if not self._run_lock.acquire(blocking=False):

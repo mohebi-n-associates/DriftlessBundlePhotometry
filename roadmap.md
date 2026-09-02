@@ -220,6 +220,46 @@ Create the hardware-free reader, complete simulator-backed operator workflow, an
 adapter test harness required to develop physical camera and controller integrations
 without weakening regression coverage on macOS or machines without vendor SDKs.
 
+### RWD read-only bridge track
+
+This approved track integrates the RWD software's exported fluorescence/event TCP
+stream into the same trace, analysis, recovery, and NWB product. RWD retains hardware
+control; DBF is a read-only client/recorder. Work proceeds in these gated commits:
+
+1. **Protocol/configuration foundation — implemented in Unreleased**
+   - Review the vendor manual, MATLAB operating instructions, `Wave.m`, and `Video.m`.
+   - Document fixed record layouts plus every assumption and unsupported behavior.
+   - Add a discriminated native/RWD source, exact 410/470/560 identities, unique
+     device-channel/fiber mappings, typed raw records, and explicit settings-v1 to
+     native migration.
+2. **Pure incremental parsers**
+   - Parse arbitrary TCP fragmentation/coalescing without using read boundaries.
+   - Add golden fixtures for masks, mixed records, preamble modes, malformed input,
+     rollover, truncation, and unknown channels.
+3. **Trace-only recovery and canonical NWB**
+   - Add an append-safe RWD spool that never requires fake camera images.
+   - Write raw device traces/events/ticks/scales and immutable derived outputs into
+     one independently valid NWB per mapped fiber/animal.
+4. **Headless TCP bridge**
+   - Add a single-owner client worker, bounded queues, prompt stop, timeouts,
+     disconnect/malformed-stream faults, and a local fake-server test path.
+5. **Shared trace and startup workflow**
+   - Refactor source-neutral trace services, then present native or RWD selection at
+     startup and hide inactive hardware controls.
+6. **RWD mapping and analysis GUI**
+   - Configure channel/fiber/animal labels, show raw/smoothed/dF/F traces, event
+     activity, connection state, queue pressure, and validation progress without
+     changing stored raw values.
+7. **Operator docs and live bench harness**
+   - Document the RWD connection sequence, recovery, provenance, and limitations;
+     capture real streams to confirm preamble, timestamp unit, scale, channel IDs,
+     masks, event padding, disconnect behavior, and long-run capacity.
+
+Behavior-video ports are deferred until safe payload limits, changing-dimension
+semantics, RGB orientation, timestamp units, and canonical storage requirements are
+confirmed. No RWD phase may claim live validation without the real RWD system and
+recorded evidence.
+
 ### Deliverables
 
 1. **Read-only NWB service**

@@ -59,8 +59,8 @@ from driftless_photometry.settings import (
     configuration_from_nwb,
     default_settings_path,
     export_settings,
-    import_settings,
-    load_default_settings,
+    import_settings_with_warnings,
+    load_default_settings_with_warnings,
     save_default_settings,
     settings_root,
 )
@@ -952,12 +952,18 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            config = import_settings(path)
+            config, warnings = import_settings_with_warnings(path)
             self._apply_configuration(config)
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Could not load settings", str(error))
             return
         self.statusBar().showMessage(f"Loaded all settings from {path}")
+        if warnings:
+            QMessageBox.warning(
+                self,
+                "Older settings migrated",
+                "\n\n".join(warnings),
+            )
 
     def _load_settings_nwb(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -1000,7 +1006,7 @@ class MainWindow(QMainWindow):
 
     def _load_default_settings_at_startup(self) -> None:
         try:
-            config = load_default_settings()
+            config, warnings = load_default_settings_with_warnings()
             if config is None:
                 return
             self._apply_configuration(config)
@@ -1009,7 +1015,10 @@ class MainWindow(QMainWindow):
                 f"Default settings could not be loaded; using built-ins: {error}"
             )
             return
-        self.statusBar().showMessage(f"Loaded defaults from {default_settings_path()}")
+        if warnings:
+            self.statusBar().showMessage(warnings[0])
+        else:
+            self.statusBar().showMessage(f"Loaded defaults from {default_settings_path()}")
 
     def _apply_configuration(self, config: SessionConfig) -> None:
         """Push one validated settings snapshot into every corresponding GUI control."""

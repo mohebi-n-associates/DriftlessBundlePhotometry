@@ -38,7 +38,7 @@ from pynwb.file import EventsTable, Subject
 from pynwb.image import GrayscaleImage, ImageSeries, RGBImage
 
 from driftless_photometry import __version__
-from driftless_photometry.config import ROIConfig, SessionConfig, Wavelength
+from driftless_photometry.config import NativeSourceConfig, ROIConfig, SessionConfig, Wavelength
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
 from driftless_photometry.domain import AcquisitionData
 from driftless_photometry.provenance import (
@@ -105,6 +105,8 @@ def _validate_inputs(
     calibration_image: NDArray[np.uint16] | None,
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
 ) -> None:
+    if not isinstance(config.source, NativeSourceConfig):
+        raise ValueError("native NWB finalizer requires a native acquisition source")
     frame_count = len(data.frame_ids)
     parallel_lengths = {
         len(data.frame_timestamps_s),

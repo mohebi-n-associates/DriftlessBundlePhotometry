@@ -36,6 +36,13 @@ The controller provides sequence identity and deterministic timing. The acquisit
 coordinator verifies rather than invents wavelength assignments. The simulator uses
 the same contracts.
 
+Session settings use a discriminated acquisition source. `native` selects the
+camera/controller/simulator contracts in this document. `rwd` is a read-only TCP
+trace source with separately validated connection assumptions and device-channel
+mappings. RWD never enters the native camera-exposure path and never fabricates
+camera frames, ROI geometry, LED commands, or numbered TTL lines. Its evidence and
+unknowns are specified in [the RWD streaming contract](rwd-streaming-protocol.md).
+
 ## Initial delivery gates
 
 ### Gate 0 — contracts and golden file

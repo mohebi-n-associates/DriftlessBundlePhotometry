@@ -16,7 +16,7 @@ from typing import IO
 
 import numpy as np
 
-from driftless_photometry.config import SessionConfig, Wavelength
+from driftless_photometry.config import NativeSourceConfig, SessionConfig, Wavelength
 from driftless_photometry.diagnostics import SpoolDiagnostics
 from driftless_photometry.domain import (
     AcquisitionData,
@@ -108,6 +108,8 @@ class SessionSpool:
         submit_timeout_s: float = 2.0,
         runtime_provenance: RuntimeProvenance | None = None,
     ) -> None:
+        if not isinstance(config.source, NativeSourceConfig):
+            raise ValueError("native session spool requires a native acquisition source")
         if chunk_size <= 0 or queue_size <= 0 or submit_timeout_s <= 0:
             raise ValueError("chunk_size, queue_size, and submit timeout must be positive")
         self.config = config

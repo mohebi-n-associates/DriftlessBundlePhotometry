@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import warnings as python_warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,15 +26,17 @@ from driftless_photometry.config import (
     Wavelength,
 )
 
-SETTINGS_FORMAT = "driftless_bundle_photometry_settings_v1"
+SETTINGS_FORMAT_V1 = "driftless_bundle_photometry_settings_v1"
+SETTINGS_FORMAT = "driftless_bundle_photometry_settings_v2"
 SETTINGS_SUFFIX = ".settings.json"
 DEFAULT_SETTINGS_NAME = "default_settings.json"
 NWB_SETTINGS_SCRATCH_NAME = "driftless_bundle_photometry_settings_json"
 
 _ABOUT = (
     "Complete Driftless Bundle Photometry settings, including session metadata, "
-    "camera/controller configuration, excitation channels, display preferences, "
-    "and every subject-specific circular ROI."
+    "the discriminated native or RWD acquisition source, camera/controller "
+    "configuration, excitation channels, display preferences, and every "
+    "subject-specific fiber definition."
 )
 
 
@@ -93,11 +96,14 @@ def settings_json(config: SessionConfig, *, indent: int | None = 2) -> str:
     ) + ("\n" if indent is not None else "")
 
 
-def _config_from_document(document: object, source_name: str) -> SessionConfig:
+def _config_from_document(
+    document: object,
+    source_name: str,
+) -> tuple[SessionConfig, list[str]]:
     if not isinstance(document, dict):
         raise ValueError(f"{source_name} does not contain a settings object")
     declared = document.get("format")
-    if declared != SETTINGS_FORMAT:
+    if declared not in {SETTINGS_FORMAT, SETTINGS_FORMAT_V1}:
         raise ValueError(
             f"{source_name} is not a Driftless Bundle Photometry settings file "
             f"(expected format {SETTINGS_FORMAT!r}, found {declared!r})"
@@ -105,8 +111,18 @@ def _config_from_document(document: object, source_name: str) -> SessionConfig:
     values = document.get("settings")
     if not isinstance(values, dict):
         raise ValueError(f"{source_name} has no 'settings' object")
+    warnings: list[str] = []
+    if declared == SETTINGS_FORMAT_V1:
+        if "source" in values:
+            raise ValueError(f"{source_name} declares settings v1 but contains the v2 source field")
+        values = dict(values)
+        values["source"] = {"kind": "native"}
+        warnings.append(
+            f"{source_name} used settings v1 and was migrated explicitly to the native "
+            "camera/controller source; v1 predates system selection and RWD settings."
+        )
     try:
-        return SessionConfig.model_validate(values)
+        return SessionConfig.model_validate(values), warnings
     except ValidationError as error:
         raise ValueError(f"{source_name} contains invalid settings: {error}") from error
 
@@ -129,7 +145,16 @@ def export_settings(path: str | Path, config: SessionConfig) -> Path:
 
 
 def import_settings(path: str | Path) -> SessionConfig:
-    """Load and validate a versioned JSON settings file without silent repair."""
+    """Load settings, emitting a warning when an older format is migrated."""
+
+    config, migration_warnings = import_settings_with_warnings(path)
+    for warning in migration_warnings:
+        python_warnings.warn(warning, UserWarning, stacklevel=2)
+    return config
+
+
+def import_settings_with_warnings(path: str | Path) -> tuple[SessionConfig, list[str]]:
+    """Load settings and return every explicit migration notice."""
 
     source = Path(path).expanduser()
     try:
@@ -146,6 +171,13 @@ def save_default_settings(config: SessionConfig) -> Path:
 def load_default_settings() -> SessionConfig | None:
     path = default_settings_path()
     return import_settings(path) if path.is_file() else None
+
+
+def load_default_settings_with_warnings() -> tuple[SessionConfig | None, list[str]]:
+    path = default_settings_path()
+    if not path.is_file():
+        return None, []
+    return import_settings_with_warnings(path)
 
 
 def configuration_from_nwb(path: str | Path) -> tuple[SessionConfig, list[str]]:
@@ -167,7 +199,7 @@ def configuration_from_nwb(path: str | Path) -> tuple[SessionConfig, list[str]]:
                     raise ValueError(
                         f"{source.name} has a malformed embedded settings snapshot"
                     ) from error
-                return _config_from_document(document, source.name), []
+                return _config_from_document(document, source.name)
         return _legacy_configuration_from_nwbs(source)
     except (OSError, ValueError):
         raise

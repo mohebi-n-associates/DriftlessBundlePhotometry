@@ -8,6 +8,16 @@ version, move its completed entries into a dated version section.
 
 ### Added
 
+- Added the evidence-based RWD read-only streaming contract, including fixed
+  fluorescence/event layouts, exact 410/470/560 labels, TCP framing rules, event
+  semantics, known ambiguities, and the replay/bench gates required before claiming
+  live validation.
+- Added a discriminated native/RWD session source. RWD settings persist host/port,
+  timeouts, preamble policy, explicit timestamp and value scales, expected machine
+  name, device wavelengths, and unique device-channel-to-fiber mappings.
+- Added typed RWD fluorescence and event domain records that retain raw machine-name
+  bytes, device channel, raw uint32 timestamps/values, exact wavelength identity,
+  fixed event-name bytes, and ON/OFF status.
 - Added typed acquisition-fault and system-event records for camera/controller
   disconnects, malformed controller streams, clock discontinuities, queue pressure,
   and storage failures. When committed samples exist, the fault classification and
@@ -31,6 +41,9 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- Settings snapshots now use format v2. Version-1 settings migrate explicitly to the
+  native camera/controller source with a visible warning; malformed or unknown
+  versions remain rejected.
 - Recovery is now idempotent. It validates and reuses matching canonical or partial
   ROI outputs, resumes an interrupted all-ROI promotion, and rewrites only a corrupt
   unvalidated partial. Existing canonical files are never silently replaced.

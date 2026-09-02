@@ -47,6 +47,8 @@ target; the simulator and GUI demo are cross-platform.
 - Clean numeric entry fields without embedded increment/decrement stepper buttons.
 - Versioned, human-readable JSON settings with GUI actions to save, load, set startup
   defaults, and restore the complete setup from a previous DBF NWB recording.
+- Settings v2 discriminate the native camera/controller source from the planned RWD
+  read-only bridge and migrate v1 files explicitly to native with a visible warning.
 - A raw uint16 reference frame and fixed-scale ROI-annotated diagnostic view for
   every wavelength observed in a recording are saved inside each ROI NWB file.
 - Versioned/checksummed controller protocol, fail-safe lifecycle guard, and
@@ -58,6 +60,12 @@ LED intensity electronics are not yet physically validated. Those require the re
 Windows rig, vendor SDK, trigger cabling, DAC/driver hardware, and bench timing and
 safety measurements. Simulator success is not evidence of physical validation.
 
+The RWD bridge currently has a documented wire contract, validated source settings,
+and typed raw domain records. The incremental parser, trace-only recovery/NWB path,
+TCP worker, and GUI workflow are still being implemented; current builds must not be
+described as a working or physically validated RWD connection. See
+[the RWD streaming contract](docs/rwd-streaming-protocol.md).
+
 The historical MATLAB, Arduino, and Bonsai sources remain under `old mescoscope/`
 for reference and are not runtime dependencies.
 
@@ -65,9 +73,11 @@ for reference and are not runtime dependencies.
 
 The Configuration panel provides **Save JSON**, **Load JSON**, **Load NWB**, and
 **Set as default**. A settings file includes all session metadata, recording duration,
-output location, camera and retention settings, excitation states and voltages, TTL
-configuration, live-display preferences, and every ROI's animal metadata and camera
-geometry.
+output location, native/RWD source selection, source-specific connection settings,
+camera and retention settings, excitation states and voltages, TTL configuration,
+live-display preferences, and every fiber's animal metadata. Settings v1 files are
+accepted only through an explicit migration to the native source because they
+predate system selection.
 
 On Windows, DBF resolves the same Documents folder used by Explorer, including
 OneDrive or other redirected locations, and uses its `Driftless Bundle Photometry`
