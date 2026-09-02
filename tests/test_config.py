@@ -125,6 +125,7 @@ def test_rwd_source_round_trips_discriminated_settings_and_maps_enabled_fibers(
     assert restored.source.enabled_wavelengths_nm == (410, 470, 560)
     assert restored.source.timestamp_scale_s == 0.001
     assert restored.source.value_scale == 0.001
+    assert restored.source.maximum_expected_record_rate_hz == 1000.0
 
 
 def test_rwd_source_rejects_duplicate_or_incomplete_channel_mapping(tmp_path: Path) -> None:

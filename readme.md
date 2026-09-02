@@ -66,9 +66,11 @@ and a synthetic-data trace-only recovery/NWB path. The RWD spool retains checksu
 mixed records, exact raw ticks/values and scales, named ON/OFF events, connection
 identity, faults, and invalid spans. Recovery creates one independently validated NWB
 per mapped fiber without inventing camera frames, LED commands, native exposures, or
-numbered TTL inputs. The TCP worker and GUI workflow are still being implemented;
-current builds must not be described as a working or physically validated RWD
-connection. See
+numbered TTL inputs. A headless single-owner TCP client now provides bounded
+recording, timeout/disconnect/malformed-stream faults, prompt stop, storage preflight,
+and machine-readable CLI output. The GUI workflow is still being implemented, and
+the TCP path has only synthetic local-server validation; current builds must not be
+described as a physically validated RWD connection. See
 [the RWD streaming contract](docs/rwd-streaming-protocol.md).
 
 The historical MATLAB, Arduino, and Bonsai sources remain under `old mescoscope/`
@@ -163,6 +165,17 @@ Run a headless simulated acquisition:
 dbf --headless --duration 5 --raw
 ```
 
+Run the headless read-only RWD bridge from a validated settings-v2 file:
+
+```bash
+dbf --rwd-settings path/to/rwd.settings.json --duration 60
+```
+
+RWD must already be recording and listening on the host/port stored in that file.
+DBF does not send hardware commands. It makes one connection for one session and
+never reconnects automatically after a fault, because joining records across TCP
+connections could hide a gap or changed device state.
+
 Run the GUI demo:
 
 ```bash
@@ -173,6 +186,7 @@ Recover all committed data from a complete or interrupted spool:
 
 ```bash
 dbf --recover-spool path/to/session.photometry-spool
+dbf --recover-spool path/to/session.rwd-spool
 ```
 
 Inspect direct child spools without creating or removing files:
@@ -181,9 +195,10 @@ Inspect direct child spools without creating or removing files:
 dbf --inspect-spools path/to/output-directory
 ```
 
-Inspection verifies checksums and reports completeness plus recoverable frame, trace,
-TTL, invalid-time, system-event, schema, and ROI-file counts. It deliberately does
-not recurse into unrelated directories. Successful recovery validates the complete
+Inspection recognizes native `*.photometry-spool` and RWD `*.rwd-spool` children,
+verifies checksums, and reports source-specific counts plus completeness, invalid
+times, system events, schema, and output-file count. It deliberately does not recurse
+into unrelated directories. Successful recovery validates the complete
 NWB set before removing the spool; add `--keep-spool` for forensic retention.
 Recovery is idempotent and can resume if a process stopped after validating partials
 or while promoting the multi-ROI set. Existing canonical files must match the spool

@@ -240,7 +240,7 @@ control; DBF is a read-only client/recorder. Work proceeds in these gated commit
    - Add an append-safe RWD spool that never requires fake camera images.
    - Write raw device traces/events/ticks/scales and immutable derived outputs into
      one independently valid NWB per mapped fiber/animal.
-4. **Headless TCP bridge**
+4. **Headless TCP bridge — implemented with a synthetic local server in Unreleased**
    - Add a single-owner client worker, bounded queues, prompt stop, timeouts,
      disconnect/malformed-stream faults, and a local fake-server test path.
 5. **Shared trace and startup workflow**

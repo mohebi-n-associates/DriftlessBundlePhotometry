@@ -2,8 +2,11 @@
 
 from .capacity import (
     InsufficientStorageError,
+    RWDStorageCapacity,
     StorageCapacity,
+    check_rwd_storage_capacity,
     check_storage_capacity,
+    estimate_rwd_session_bytes,
     estimate_session_bytes,
 )
 from .frames import FrameStream
@@ -52,15 +55,18 @@ __all__ = [
     "RWDSpoolBackpressureError",
     "RWDSpoolError",
     "RWDSpoolInspection",
+    "RWDStorageCapacity",
     "RecoveryReport",
     "SessionSpool",
     "SpoolBackpressureError",
     "SpoolError",
     "SpoolInspection",
     "StorageCapacity",
+    "check_rwd_storage_capacity",
     "check_storage_capacity",
     "discover_rwd_session_spools",
     "discover_session_spools",
+    "estimate_rwd_session_bytes",
     "estimate_session_bytes",
     "inspect_rwd_session_spool",
     "inspect_session_spool",

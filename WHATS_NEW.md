@@ -33,6 +33,14 @@ version, move its completed entries into a dated version section.
   rollover-resolved timestamps, scaled response series, named ON/OFF events, and
   complete settings/provenance. RWD files explicitly omit unsupported camera frames,
   native exposure/TTL tables, LED commands, and inferred signal roles.
+- Added the headless read-only RWD TCP client and acquisition coordinator. One owner
+  thread connects, incrementally decodes and spools records with short stop polling;
+  connect failure, idle timeout, clean disconnect, truncation, malformed bytes, queue
+  pressure, and storage failure remain distinct surfaced faults. Automatic reconnect
+  is intentionally disabled so a gap or changed RWD state cannot be hidden.
+- Added `dbf --rwd-settings FILE --duration SECONDS`, combined native/RWD spool
+  inspection, and suffix-aware recovery. RWD capacity preflight uses a persisted
+  maximum expected record-rate bound without changing the vendor acquisition rate.
 - Added typed acquisition-fault and system-event records for camera/controller
   disconnects, malformed controller streams, clock discontinuities, queue pressure,
   and storage failures. When committed samples exist, the fault classification and

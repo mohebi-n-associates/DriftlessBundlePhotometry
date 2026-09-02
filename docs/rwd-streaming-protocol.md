@@ -37,6 +37,10 @@ configuration and provenance.
   number, or protocol version.
 - Because there is no reliable synchronization marker, malformed bytes are a
   fail-closed stream fault. DBF must not silently scan ahead and invent a boundary.
+- One TCP connection is one DBF recording. Connect failure, configured idle timeout,
+  clean peer disconnect, truncated EOF, malformed payload, and operator stop are
+  distinct outcomes. DBF never reconnects automatically because the protocol has no
+  session/sequence handshake that could prove continuity across connections.
 
 ## Optional connection preamble
 
@@ -141,6 +145,10 @@ from each device channel to every enabled `fiber_id`. Native camera, LED voltage
 camera ROI, and numbered TTL controls are inactive in RWD mode. Existing settings v1
 files migrate explicitly to `native`; unknown versions remain rejected.
 
+`maximum_expected_record_rate_hz` is a conservative operator-configurable bound used
+only to estimate worst-case spool plus duplicated per-fiber NWB capacity before a
+connection is armed. It never throttles or changes the RWD software's sampling rate.
+
 The current transitional session model still carries native camera/channel/display
 fields in its complete snapshot so old configurations remain reversible. RWD workers
 must not read those inactive fields. The GUI refactor will hide them rather than
@@ -193,12 +201,13 @@ initial bridge because safe implementation still needs:
    endpoints, malformed types/masks/status/names, truncated EOF, preamble modes, and
    unknown channels. These fixtures test the documented interpretation but are not a
    substitute for a real capture.
-2. **Partially implemented with synthetic records:** bounded trace-only spool,
-   recovery, rollover handling, exact per-fiber NWB finalization, PyNWB validation,
-   NWB Inspector, and reopen/count/value checks. The socket/replay coordinator that
-   connects the parser to this path is the next gate.
-3. A local fake TCP server covering timeouts, reconnect policy, disconnect, queue
-   pressure, stop, and GUI close.
+2. **Implemented with synthetic records:** the same incremental parser feeds the
+   bounded trace-only spool, recovery, rollover handling, exact per-fiber NWB
+   finalization, PyNWB validation, NWB Inspector, and reopen/count/value checks.
+3. **Partially implemented with a local TCP server:** fragmentation/coalescing,
+   connection failure, idle timeout, exact-boundary disconnect, truncated EOF,
+   malformed input, bounded queue pressure, prompt stop, fault journaling, and full
+   headless finalization are covered. GUI close behavior remains in the GUI gate.
 4. A real RWD packet capture confirming byte order, the connection preamble,
    timestamp unit, value scale, channel numbering, wavelength combinations, event
    padding, and tick behavior.

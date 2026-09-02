@@ -342,7 +342,8 @@ def _add_events(
             sample_count=record.sample_count,
             wavelength_mask=record.wavelength_mask,
         )
-    nwbfile.add_events_table(stream_records)
+    if normalized.records:
+        nwbfile.add_events_table(stream_records)
 
     fluorescence = _make_events_table(
         name="rwd_fluorescence_samples",
@@ -376,7 +377,8 @@ def _add_events(
             raw_value=sample.raw_value,
             scaled_value=sample.scaled_value,
         )
-    nwbfile.add_events_table(fluorescence)
+    if fiber_samples:
+        nwbfile.add_events_table(fluorescence)
 
     named_events = _make_events_table(
         name="rwd_named_events",
@@ -407,7 +409,8 @@ def _add_events(
             status=event.status,
             active=event.active,
         )
-    nwbfile.add_events_table(named_events)
+    if normalized.events:
+        nwbfile.add_events_table(named_events)
 
     stop_time = max((record.timestamp_s for record in normalized.records), default=0.0)
     system = _make_events_table(
@@ -482,18 +485,24 @@ def _round_trip_verify(
             raise RuntimeError("RWD NWB runtime provenance is missing")
         if RWD_STREAM_METADATA_SCRATCH_NAME not in nwbfile.scratch:
             raise RuntimeError("RWD NWB stream metadata is missing")
-        if set(nwbfile.events) != {
-            "rwd_stream_records",
-            "rwd_fluorescence_samples",
-            "rwd_named_events",
-            "system_events",
-        }:
+        expected_event_tables = {"system_events"}
+        if normalized.records:
+            expected_event_tables.add("rwd_stream_records")
+        if expected_samples:
+            expected_event_tables.add("rwd_fluorescence_samples")
+        if normalized.events:
+            expected_event_tables.add("rwd_named_events")
+        if set(nwbfile.events) != expected_event_tables:
             raise RuntimeError("RWD NWB contains missing or unexpected event tables")
-        if len(nwbfile.events["rwd_stream_records"]) != len(normalized.records):
+        if normalized.records and len(nwbfile.events["rwd_stream_records"]) != len(
+            normalized.records
+        ):
             raise RuntimeError("RWD NWB stream-record count mismatch")
-        if len(nwbfile.events["rwd_fluorescence_samples"]) != len(expected_samples):
+        if expected_samples and len(nwbfile.events["rwd_fluorescence_samples"]) != len(
+            expected_samples
+        ):
             raise RuntimeError("RWD NWB trace-sample count mismatch")
-        if len(nwbfile.events["rwd_named_events"]) != len(normalized.events):
+        if normalized.events and len(nwbfile.events["rwd_named_events"]) != len(normalized.events):
             raise RuntimeError("RWD NWB named-event count mismatch")
         expected_system_count = 2 + len(data.system_events) + len(additional_system_events)
         if len(nwbfile.events["system_events"]) != expected_system_count:

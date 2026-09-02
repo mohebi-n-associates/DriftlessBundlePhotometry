@@ -61,6 +61,12 @@ finalizer copies shared stream/event/fault context into every mapped animal file
 while fluorescence tables and response series contain only that file's mapped device
 channel. It stores raw uint32 ticks/values beside scaled series and never creates
 camera, stimulus, exposure, or numbered-TTL data that the source did not provide.
+The headless RWD coordinator owns the socket and decoder on its run thread and feeds
+the bounded single-writer spool directly, so there is no unbounded intermediate
+queue. Another thread may request stop; short socket polls make an idle stop prompt,
+while a partially received record gets a bounded drain window and then becomes an
+explicit truncation fault. One connection always defines one session. Disconnects
+are terminal and never trigger an automatic reconnect or silent session join.
 
 ## Initial delivery gates
 

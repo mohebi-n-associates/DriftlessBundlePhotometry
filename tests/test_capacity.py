@@ -4,11 +4,13 @@ from types import SimpleNamespace
 import pytest
 
 from driftless_photometry.acquisition import AcquisitionEngine
-from driftless_photometry.config import demo_config
+from driftless_photometry.config import RWDChannelMapping, RWDSourceConfig, demo_config
 from driftless_photometry.hardware import SimulatedRig
 from driftless_photometry.storage import (
     InsufficientStorageError,
+    check_rwd_storage_capacity,
     check_storage_capacity,
+    estimate_rwd_session_bytes,
     estimate_session_bytes,
 )
 
@@ -59,6 +61,41 @@ def test_storage_preflight_rejects_insufficient_space_before_acquisition(
         )
 
     assert not output.exists()
+
+
+def test_rwd_capacity_uses_persisted_record_rate_and_per_fiber_copy_cost(
+    tmp_path: Path,
+) -> None:
+    base = demo_config(tmp_path, fiber_count=2)
+    source = RWDSourceConfig(
+        maximum_expected_record_rate_hz=250,
+        channel_mappings=(
+            RWDChannelMapping(device_channel=0, fiber_id="fiber_01", label="A"),
+            RWDChannelMapping(device_channel=1, fiber_id="fiber_02", label="B"),
+        ),
+    )
+    config = base.model_copy(update={"source": source})
+
+    record_count, estimated_bytes = estimate_rwd_session_bytes(config, 2.1)
+    capacity = check_rwd_storage_capacity(
+        config,
+        2.1,
+        reserve_bytes=1000,
+        disk_usage=lambda _path: SimpleNamespace(free=estimated_bytes + 1000),
+    )
+
+    assert record_count == 525
+    assert capacity.estimated_record_count == 525
+    assert capacity.estimated_session_bytes == estimated_bytes
+    assert capacity.required_free_bytes == estimated_bytes + 1000
+
+    with pytest.raises(InsufficientStorageError, match="RWD acquisition"):
+        check_rwd_storage_capacity(
+            config,
+            2.1,
+            reserve_bytes=1000,
+            disk_usage=lambda _path: SimpleNamespace(free=estimated_bytes + 999),
+        )
 
 
 @pytest.mark.parametrize(

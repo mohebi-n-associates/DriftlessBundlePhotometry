@@ -1,5 +1,6 @@
 """RWD read-only streaming contracts."""
 
+from .client import RWDClientDiagnostics, RWDRecordSource, RWDStreamClient
 from .domain import (
     RWDEventRecord,
     RWDFluorescenceRecord,
@@ -33,6 +34,7 @@ __all__ = [
     "EVENT_RECORD_BYTES",
     "FLUORESCENCE_RECORD_BYTES",
     "RWD_PROTOCOL_VERSION",
+    "RWDClientDiagnostics",
     "RWDClockDiscontinuity",
     "RWDDecoderDiagnostics",
     "RWDEventRecord",
@@ -45,7 +47,9 @@ __all__ = [
     "RWDProtocolError",
     "RWDReceivedRecord",
     "RWDRecord",
+    "RWDRecordSource",
     "RWDSessionData",
+    "RWDStreamClient",
     "RWDStreamDecoder",
     "RWDStreamMetadata",
     "RWDWavelength",

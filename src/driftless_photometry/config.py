@@ -183,6 +183,15 @@ class RWDSourceConfig(BaseModel):
         gt=0,
         description="Scale applied to the vendor uint32 fluorescence value, matching Wave.m.",
     )
+    maximum_expected_record_rate_hz: float = Field(
+        default=1000.0,
+        gt=0,
+        le=100_000,
+        description=(
+            "Conservative upper bound used only for queue/storage planning; it does not "
+            "change the RWD acquisition rate."
+        ),
+    )
     enabled_wavelengths_nm: tuple[Literal[410, 470, 560], ...] = Field(
         default=(410, 470, 560),
         min_length=1,

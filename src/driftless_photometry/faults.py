@@ -12,6 +12,10 @@ class AcquisitionFaultCode(StrEnum):
     CLOCK_DISCONTINUITY = "clock_discontinuity"
     QUEUE_BACKPRESSURE = "queue_backpressure"
     STORAGE_WRITE_FAILURE = "storage_write_failure"
+    RWD_CONNECT_FAILURE = "rwd_connect_failure"
+    RWD_DISCONNECT = "rwd_disconnect"
+    RWD_READ_TIMEOUT = "rwd_read_timeout"
+    MALFORMED_RWD_STREAM = "malformed_rwd_stream"
     ACQUISITION_FAILURE = "acquisition_failure"
 
 
