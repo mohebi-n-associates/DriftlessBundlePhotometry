@@ -26,6 +26,7 @@ from driftless_photometry.gui.main_window import MainWindow
 from driftless_photometry.gui.worker import AcquisitionWorker
 from driftless_photometry.rwd import (
     RWDDecoderDiagnostics,
+    RWDEventRecord,
     RWDFluorescenceRecord,
     RWDFluorescenceSample,
     RWDReceivedRecord,
@@ -237,6 +238,7 @@ def test_gui_builds_and_restores_complete_rwd_source_settings(qtbot, tmp_path: P
             "display": TraceDisplayConfig(
                 visible_wavelengths=(410, 560),
                 mode="absolute",
+                smoothing_window_s=0.5,
             ),
         }
     )
@@ -253,9 +255,17 @@ def test_gui_builds_and_restores_complete_rwd_source_settings(qtbot, tmp_path: P
     assert restored.source.maximum_expected_record_rate_hz == 321
     assert restored.source.enabled_wavelengths_nm == (410, 560)
     assert [mapping.device_channel for mapping in restored.source.channel_mappings] == [7, 9]
+    assert [mapping.label for mapping in restored.source.channel_mappings] == ["A", "B"]
     assert restored.display.visible_wavelengths == (410, 560)
+    assert restored.display.smoothing_window_s == 0.5
+    assert window._roi_metadata_editors[0].rwd_channel_spin.value() == 7
+    assert window._roi_metadata_editors[1].rwd_label_edit.text() == "B"
     assert window.source_combo.currentData() == "rwd"
     assert isinstance(AcquisitionWorker(restored, 1)._engine, RWDAcquisitionEngine)
+
+    window._roi_metadata_editors[1].rwd_channel_spin.setValue(7)
+    with pytest.raises(ValueError, match="device channel mappings must be unique"):
+        window._build_config()
 
 
 def test_gui_projects_rwd_progress_into_exact_device_wavelength_curve(
@@ -313,6 +323,49 @@ def test_gui_projects_rwd_progress_into_exact_device_wavelength_curve(
     _, displayed = window._curves[(410, 0)].getData()
     np.testing.assert_allclose(displayed, [1.234])
     assert window.frame_counter.text() == "1 RWD records"
+    assert "31 bytes" in window.connection_diagnostics_label.text()
+
+    for sequence, status in ((1, 0), (2, 1)):
+        window._on_progress(
+            RWDAcquisitionProgress(
+                record_count=sequence + 1,
+                received=RWDReceivedRecord(
+                    sequence,
+                    0.02 + sequence * 0.01,
+                    RWDEventRecord(
+                        b"RWD1",
+                        100 + sequence,
+                        b"lever".ljust(20, b"\x00"),
+                        status,
+                    ),
+                ),
+                diagnostics=progress.diagnostics,
+            )
+        )
+    assert "lever OFF" in window.rwd_event_status.text()
+    assert window.rwd_event_status.text().endswith("active: none")
+
+
+def test_gui_display_smoothing_is_time_based_and_does_not_change_raw_buffer(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    config = demo_config(tmp_path, fiber_count=1)
+    window._prepare_trace_curves(config)
+    key = (Wavelength.GREEN_470, 0)
+    window._trace_times[key] = array("d", [0.0, 0.1, 0.2])
+    window._trace_values[key] = array("f", [0.0, 10.0, 20.0])
+    window._trace_first_s = 0.0
+    window._trace_latest_s = 0.2
+
+    window.trace_smoothing_spin.setValue(0.15)
+    window._refresh_trace_wavelength(Wavelength.GREEN_470)
+
+    _, displayed = window._curves[key].getData()
+    np.testing.assert_allclose(displayed, [0.0, 5.0, 15.0])
+    assert list(window._trace_values[key]) == [0.0, 10.0, 20.0]
 
 
 def test_gui_setting_change_invalidates_passed_preview(qtbot, tmp_path: Path) -> None:

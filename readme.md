@@ -36,6 +36,8 @@ target; the simulator and GUI demo are cross-platform.
 - One live plot row per ROI with overlaid 405, 470, and 565 nm traces, independent
   wavelength visibility controls, and Absolute or display-only dF/F views with a
   configurable per-ROI/per-wavelength median baseline window.
+- Optional display-only trailing-mean smoothing uses elapsed seconds, works with
+  asynchronously sampled channels, and never changes acquired or stored values.
 - Independent enable/disable controls for each ROI; disabled definitions remain in
   saved settings but are excluded from extraction, live traces, and NWB output.
 - A required non-writing acquisition preview that validates timing, explicit
@@ -71,8 +73,11 @@ recording, timeout/disconnect/malformed-stream faults, prompt stop, storage pref
 and machine-readable CLI output. The GUI workflow is still being implemented, and
 the desktop setup now begins with a native/simulator or RWD read-only system choice,
 hides camera/LED controls in RWD mode, retains per-fiber animal metadata, and routes
-both sources through the same bounded live-trace presentation contract. Explicit RWD
-channel mapping and the full monitoring/analysis workspace are the next GUI gate.
+both sources through the same bounded live-trace presentation contract. Every RWD
+fiber has an explicit device-channel number and an independent operator label. Live
+status reports connection state, decoder counts, spool pressure, committed records,
+and named event activity; raw, elapsed-time-smoothed, and dF/F views remain
+presentation-only.
 The TCP path has only synthetic local-server validation; current builds must not be
 described as a physically validated RWD connection. See
 [the RWD streaming contract](docs/rwd-streaming-protocol.md).

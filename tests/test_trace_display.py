@@ -9,7 +9,20 @@ from driftless_photometry.gui.trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
     downsample_min_max,
+    trailing_mean,
 )
+
+
+def test_trailing_mean_uses_elapsed_time_and_preserves_input() -> None:
+    times = np.asarray([0.0, 0.1, 0.4, 1.0], dtype=np.float64)
+    values = np.asarray([1.0, 3.0, 5.0, 9.0], dtype=np.float32)
+    original = values.copy()
+
+    smoothed = trailing_mean(times, values, window_s=0.35)
+
+    np.testing.assert_allclose(smoothed, [1.0, 2.0, 4.0, 9.0])
+    np.testing.assert_array_equal(values, original)
+    np.testing.assert_array_equal(trailing_mean(times, values, window_s=0), values)
 
 
 def test_min_max_decimation_caps_points_and_preserves_brief_excursion() -> None:

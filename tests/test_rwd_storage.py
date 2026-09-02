@@ -398,6 +398,9 @@ def test_golden_rwd_nwb_is_trace_only_exact_and_independently_restorable(
                 470.0,
                 560.0,
             ]
+            assert set(table.to_dataframe()["rwd_channel_label"]) == {
+                config.source.channel_mappings[roi_index].label
+            }
             sample_table = nwbfile.events["rwd_fluorescence_samples"].to_dataframe()
             assert set(sample_table["fiber_id"]) == {config.enabled_rois[roi_index].fiber_id}
             assert set(sample_table["wavelength_nm"]) == {410, 470, 560}

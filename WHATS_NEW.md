@@ -50,6 +50,15 @@ version, move its completed entries into a dated version section.
   wavelength. Each fiber/wavelength curve owns its timestamps, so display-only
   windowing, extrema-preserving decimation, and dF/F no longer assume synchronized
   vector samples and never alter stored raw data.
+- Added explicit RWD device-channel and user-facing channel-label fields for every
+  enabled fiber/animal. Duplicate device channels fail validation, imported mappings
+  restore exactly, and each label is embedded in the per-fiber photometry metadata.
+- Added live RWD connection, byte/record decoder, bounded spool queue, committed
+  record, and named event ON/OFF status. Existing finalization progress now applies
+  to both native ROI files and RWD fiber files.
+- Added a persisted display-only trailing-mean window based on elapsed seconds. Raw,
+  smoothed, and dF/F views share independently timed fiber/wavelength buffers; the
+  smoothing and dF/F pipeline never mutates acquired or stored values.
 - Added typed acquisition-fault and system-event records for camera/controller
   disconnects, malformed controller streams, clock discontinuities, queue pressure,
   and storage failures. When committed samples exist, the fault classification and

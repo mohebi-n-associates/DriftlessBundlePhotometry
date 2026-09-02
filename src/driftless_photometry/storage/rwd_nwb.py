@@ -229,6 +229,10 @@ def _add_photometry_metadata_and_traces(
     table.add_column(name="fiber_id", description="Stable Driftless fiber identifier.")
     table.add_column(name="rwd_device_channel", description="Exact RWD device-channel byte.")
     table.add_column(
+        name="rwd_channel_label",
+        description="User-defined label for this RWD device-channel mapping.",
+    )
+    table.add_column(
         name="signal_role",
         description="Vendor-unclassified signal; no control/signal role was inferred.",
     )
@@ -244,6 +248,7 @@ def _add_photometry_metadata_and_traces(
             photodetector=detector,
             fiber_id=roi.fiber_id,
             rwd_device_channel=mapping.device_channel,
+            rwd_channel_label=mapping.label,
             signal_role="vendor_unclassified",
             notes=(
                 f"Animal {roi.animal_id}; RWD stream provides no camera geometry, emission "

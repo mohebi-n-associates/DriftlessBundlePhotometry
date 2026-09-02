@@ -16,6 +16,43 @@ HORIZONS: tuple[tuple[str, float | None], ...] = (
 MAX_DISPLAY_POINTS = 4000
 
 
+def trailing_mean(
+    times: NDArray[np.float64],
+    values: NDArray[np.floating],
+    *,
+    window_s: float,
+) -> NDArray[np.float64]:
+    """Return a display-only time-windowed trailing mean in linear time."""
+
+    x = np.asarray(times, dtype=np.float64)
+    y = np.asarray(values, dtype=np.float64)
+    if x.ndim != 1 or y.ndim != 1 or x.shape != y.shape:
+        raise ValueError("times and values must be one-dimensional arrays of equal length")
+    if not np.isfinite(window_s) or window_s < 0:
+        raise ValueError("smoothing window must be finite and non-negative")
+    if len(x) > 1 and np.any(np.diff(x) <= 0):
+        raise ValueError("smoothing timestamps must strictly increase")
+    if window_s == 0 or len(x) == 0:
+        return y.copy()
+    output = np.full(len(y), np.nan, dtype=np.float64)
+    left = 0
+    running_sum = 0.0
+    finite_count = 0
+    for right, value in enumerate(y):
+        if np.isfinite(value):
+            running_sum += value
+            finite_count += 1
+        while x[right] - x[left] > window_s:
+            departing = y[left]
+            if np.isfinite(departing):
+                running_sum -= departing
+                finite_count -= 1
+            left += 1
+        if finite_count:
+            output[right] = running_sum / finite_count
+    return output
+
+
 def compact_duration(seconds: float) -> str:
     """Return a short human-readable span for the availability hint."""
 

@@ -246,7 +246,7 @@ control; DBF is a read-only client/recorder. Work proceeds in these gated commit
 5. **Shared trace and startup workflow — implemented in Unreleased**
    - Refactor source-neutral trace services, then present native or RWD selection at
      startup and hide inactive hardware controls.
-6. **RWD mapping and analysis GUI**
+6. **RWD mapping and analysis GUI — implemented with synthetic streams in Unreleased**
    - Configure channel/fiber/animal labels, show raw/smoothed/dF/F traces, event
      activity, connection state, queue pressure, and validation progress without
      changing stored raw values.

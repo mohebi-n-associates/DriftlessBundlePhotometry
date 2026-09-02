@@ -154,9 +154,10 @@ fields in its complete snapshot so old configurations remain reversible. RWD wor
 do not read those inactive fields. The desktop source selector hides camera
 calibration, native excitation voltage, raw-frame retention, and wavelength-image
 controls in RWD mode rather than implying that DBF controls RWD hardware. Fiber and
-animal metadata remain available. Until the explicit mapping editor is complete, a
-new RWD GUI setup maps enabled fibers in order to device channels `0..N-1`; imported
-RWD settings preserve their explicit device-channel mappings exactly.
+animal metadata remain available. Every enabled fiber has an explicit `0..255`
+device-channel field and a separate operator-facing channel label. Duplicate device
+channels fail validation, and imported settings restore their mappings and labels
+exactly rather than reassigning channels by row order.
 
 ## Trace-only recovery and NWB boundary
 

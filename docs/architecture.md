@@ -82,6 +82,18 @@ retains its mandatory preview. RWD mode shows read-only connection fields and
 fiber/subject metadata, hides unsupported native hardware controls, and starts the
 RWD coordinator directly because it cannot perform a camera/LED preflight.
 
+Each enabled RWD fiber exposes an explicit vendor device-channel byte and a separate
+operator-facing channel label. Device-channel uniqueness is a configuration
+invariant; stable `fiber_id` remains the scientific identity and the label is copied
+into that fiber's NWB photometry metadata. Imported mappings restore these fields
+exactly instead of being reassigned by row order.
+
+Connection/decoder counters, spool pressure, committed-record counts, and named RWD
+event state cross the worker boundary as presentation diagnostics. Live smoothing is
+an elapsed-time trailing mean applied after horizon selection and before optional
+dF/F display conversion. These transformations operate only on bounded GUI buffers;
+the raw source records continue unchanged to the recovery spool and NWB finalizer.
+
 ## Initial delivery gates
 
 ### Gate 0 — contracts and golden file

@@ -125,6 +125,12 @@ class TraceDisplayConfig(BaseModel):
     visible_wavelengths: tuple[Literal[405, 410, 470, 560, 565], ...] = (405, 470, 565)
     mode: Literal["absolute", "dff"] = "absolute"
     dff_baseline_s: float = Field(default=5.0, ge=0.1, le=3600.0)
+    smoothing_window_s: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=60.0,
+        description="Display-only trailing mean window; zero disables smoothing.",
+    )
 
     @model_validator(mode="after")
     def validate_wavelengths(self) -> TraceDisplayConfig:
