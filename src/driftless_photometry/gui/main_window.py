@@ -47,13 +47,26 @@ from driftless_photometry.acquisition import (
 from driftless_photometry.config import (
     CameraConfig,
     ChannelConfig,
+    NativeSourceConfig,
     ROIConfig,
+    RWDChannelMapping,
+    RWDPreambleMode,
+    RWDSourceConfig,
     SessionConfig,
     TraceDisplayConfig,
     Wavelength,
     demo_config,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
+from driftless_photometry.live_trace import (
+    LiveTracePoint,
+    RWDLiveTraceProjector,
+    native_live_trace_points,
+)
+from driftless_photometry.rwd.acquisition import (
+    RWDAcquisitionProgress,
+    RWDAcquisitionRunResult,
+)
 from driftless_photometry.settings import (
     SETTINGS_SUFFIX,
     configuration_from_nwb,
@@ -90,9 +103,11 @@ _FIBER_COLORS = (
 )
 
 _WAVELENGTH_COLORS = {
-    Wavelength.CONTROL_405: "#66c2ff",
-    Wavelength.GREEN_470: "#4fd18b",
-    Wavelength.RED_565: "#e05fa0",
+    405: "#66c2ff",
+    410: "#66c2ff",
+    470: "#4fd18b",
+    560: "#e05fa0",
+    565: "#e05fa0",
 }
 
 _WAVELENGTH_TITLES = {
@@ -100,6 +115,10 @@ _WAVELENGTH_TITLES = {
     Wavelength.GREEN_470: "470 nm — green signal",
     Wavelength.RED_565: "565 nm — red signal",
 }
+
+_NATIVE_TRACE_WAVELENGTHS = (405, 470, 565)
+_RWD_TRACE_WAVELENGTHS = (410, 470, 560)
+_ALL_TRACE_WAVELENGTHS = (405, 410, 470, 560, 565)
 
 
 class SummaryCard(QWidget):
@@ -197,18 +216,22 @@ class MainWindow(QMainWindow):
         self._pending_preview_signature: str | None = None
         self._progress_duration_s = default_duration_s
         self._roi_items: list[pg.CircleROI] = []
-        self._curves: dict[tuple[Wavelength, int], pg.PlotDataItem] = {}
-        self._trace_times: dict[Wavelength, array] = {}
-        self._trace_values: dict[tuple[Wavelength, int], array] = {}
+        self._curves: dict[tuple[int, int], pg.PlotDataItem] = {}
+        self._trace_times: dict[tuple[int, int], array] = {}
+        self._trace_values: dict[tuple[int, int], array] = {}
+        self._trace_roi_indices: dict[str, int] = {}
+        self._active_trace_wavelengths: tuple[int, ...] = _NATIVE_TRACE_WAVELENGTHS
+        self._rwd_trace_projector: RWDLiveTraceProjector | None = None
+        self._active_config: SessionConfig | None = None
         self._trace_roi_count = 0
         self._trace_horizon_s: float | None = HORIZONS[0][1]
         self._trace_manual_x_range: tuple[float, float] | None = None
         self._trace_first_s: float | None = None
         self._trace_latest_s: float | None = None
-        self._last_trace_render_s: dict[Wavelength, float] = {}
+        self._last_trace_render_s: dict[int, float] = {}
         self._image_item = pg.ImageItem()
         self._image_display_maximum = (1 << 12) - 1
-        self.last_result: AcquisitionRunResult | None = None
+        self.last_result: AcquisitionRunResult | RWDAcquisitionRunResult | None = None
         self.last_preview: PreviewResult | None = None
         self.last_error: str | None = None
         self._session_template = demo_config(
@@ -249,6 +272,7 @@ class MainWindow(QMainWindow):
         )
         self._rebuild_roi_items()
         self._load_default_settings_at_startup()
+        self._apply_source_mode()
 
     def _remove_spin_box_buttons(self) -> None:
         for spin_box in self.findChildren(QAbstractSpinBox):
@@ -339,6 +363,23 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(setup_title)
         controls_layout.addWidget(setup_copy)
 
+        source_group = QGroupBox("Acquisition system — choose first")
+        source_form = QFormLayout(source_group)
+        self.source_combo = QComboBox()
+        self.source_combo.setObjectName("sourceSelector")
+        self.source_combo.addItem("Driftless native / simulator", "native")
+        self.source_combo.addItem("RWD read-only stream", "rwd")
+        self.source_combo.currentIndexChanged.connect(self._apply_source_mode)
+        self.source_mode_hint = QLabel(
+            "Native mode uses the simulator now and the validated camera/controller "
+            "adapters when available."
+        )
+        self.source_mode_hint.setObjectName("hint")
+        self.source_mode_hint.setWordWrap(True)
+        source_form.addRow("System", self.source_combo)
+        source_form.addRow(self.source_mode_hint)
+        controls_layout.addWidget(source_group)
+
         settings_group = QGroupBox("Configuration")
         settings_layout = QGridLayout(settings_group)
         self.save_settings_button = QPushButton("Save JSON…")
@@ -398,6 +439,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(session_group)
 
         channels_group = QGroupBox("Excitation schedule")
+        self.native_channels_group = channels_group
         channels_layout = QVBoxLayout(channels_group)
         channels_layout.setSpacing(8)
         self.channel_checks: dict[Wavelength, QCheckBox] = {}
@@ -435,6 +477,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(channels_group)
 
         retention_group = QGroupBox("Data retention")
+        self.native_retention_group = retention_group
         retention_layout = QVBoxLayout(retention_group)
         self.raw_checkbox = QCheckBox("Embed lossless raw camera frames")
         self.raw_checkbox.setChecked(raw_capture)
@@ -449,6 +492,61 @@ class MainWindow(QMainWindow):
         raw_hint.setWordWrap(True)
         retention_layout.addWidget(raw_hint)
         controls_layout.addWidget(retention_group)
+
+        self.rwd_connection_group = QGroupBox("RWD read-only connection")
+        rwd_form = QFormLayout(self.rwd_connection_group)
+        self.rwd_host_edit = QLineEdit("127.0.0.1")
+        self.rwd_port_spin = QSpinBox()
+        self.rwd_port_spin.setRange(1, 65535)
+        self.rwd_port_spin.setValue(8080)
+        self.rwd_connect_timeout_spin = QDoubleSpinBox()
+        self.rwd_connect_timeout_spin.setRange(0.1, 60.0)
+        self.rwd_connect_timeout_spin.setValue(3.0)
+        self.rwd_connect_timeout_spin.setSuffix(" s")
+        self.rwd_read_timeout_spin = QDoubleSpinBox()
+        self.rwd_read_timeout_spin.setRange(0.1, 60.0)
+        self.rwd_read_timeout_spin.setValue(1.0)
+        self.rwd_read_timeout_spin.setSuffix(" s")
+        self.rwd_preamble_combo = QComboBox()
+        self.rwd_preamble_combo.addItem("Auto detect", RWDPreambleMode.AUTO.value)
+        self.rwd_preamble_combo.addItem("No preamble", RWDPreambleMode.NONE.value)
+        self.rwd_preamble_combo.addItem(
+            "Four-byte machine banner",
+            RWDPreambleMode.MACHINE_NAME_4.value,
+        )
+        self.rwd_machine_edit = QLineEdit()
+        self.rwd_machine_edit.setMaxLength(4)
+        self.rwd_machine_edit.setPlaceholderText("optional 4 ASCII bytes")
+        self.rwd_record_rate_spin = QDoubleSpinBox()
+        self.rwd_record_rate_spin.setRange(1.0, 100_000.0)
+        self.rwd_record_rate_spin.setDecimals(0)
+        self.rwd_record_rate_spin.setValue(1000.0)
+        self.rwd_record_rate_spin.setSuffix(" records/s max")
+        rwd_form.addRow("RWD host", self.rwd_host_edit)
+        rwd_form.addRow("RWD port", self.rwd_port_spin)
+        rwd_form.addRow("Connect timeout", self.rwd_connect_timeout_spin)
+        rwd_form.addRow("Idle timeout", self.rwd_read_timeout_spin)
+        rwd_form.addRow("Preamble", self.rwd_preamble_combo)
+        rwd_form.addRow("Expected machine", self.rwd_machine_edit)
+        rwd_form.addRow("Capacity bound", self.rwd_record_rate_spin)
+        rwd_wavelength_row = QWidget()
+        rwd_wavelength_layout = QHBoxLayout(rwd_wavelength_row)
+        rwd_wavelength_layout.setContentsMargins(0, 0, 0, 0)
+        self.rwd_wavelength_checks: dict[int, QCheckBox] = {}
+        for wavelength_nm in _RWD_TRACE_WAVELENGTHS:
+            check = QCheckBox(f"{wavelength_nm} nm")
+            check.setChecked(True)
+            self.rwd_wavelength_checks[wavelength_nm] = check
+            rwd_wavelength_layout.addWidget(check)
+        rwd_form.addRow("Stream wavelengths", rwd_wavelength_row)
+        rwd_hint = QLabel(
+            "DBF only reads RWD fluorescence/events. Until the mapping editor lands, "
+            "enabled fibers map in order to device channels 0, 1, 2, … ."
+        )
+        rwd_hint.setObjectName("hint")
+        rwd_hint.setWordWrap(True)
+        rwd_form.addRow(rwd_hint)
+        controls_layout.addWidget(self.rwd_connection_group)
         controls_layout.addStretch(1)
         layout.addWidget(controls)
 
@@ -491,9 +589,9 @@ class MainWindow(QMainWindow):
         live_layout.addLayout(horizon_row)
         trace_options = QHBoxLayout()
         trace_options.addWidget(QLabel("Show"))
-        self.trace_wavelength_checks: dict[Wavelength, QCheckBox] = {}
-        for wavelength in Wavelength:
-            check = QCheckBox(f"{int(wavelength)} nm")
+        self.trace_wavelength_checks: dict[int, QCheckBox] = {}
+        for wavelength in _ALL_TRACE_WAVELENGTHS:
+            check = QCheckBox(f"{wavelength} nm")
             check.setChecked(True)
             check.setStyleSheet(f"color: {_WAVELENGTH_COLORS[wavelength]}; font-weight: 700;")
             check.toggled.connect(self._apply_trace_visibility)
@@ -572,10 +670,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(live_group, stretch=1)
 
         self._settings_widgets = [
+            source_group,
             settings_group,
             session_group,
             channels_group,
             retention_group,
+            self.rwd_connection_group,
             browse,
         ]
         for check in self.channel_checks.values():
@@ -593,10 +693,29 @@ class MainWindow(QMainWindow):
             edit.textChanged.connect(self._invalidate_preview)
         self.duration_spin.valueChanged.connect(self._invalidate_preview)
         self.raw_checkbox.toggled.connect(self._invalidate_preview)
+        for widget in (
+            self.rwd_host_edit,
+            self.rwd_machine_edit,
+        ):
+            widget.textChanged.connect(self._invalidate_preview)
+        for widget in (
+            self.rwd_port_spin,
+            self.rwd_connect_timeout_spin,
+            self.rwd_read_timeout_spin,
+            self.rwd_record_rate_spin,
+        ):
+            widget.valueChanged.connect(self._invalidate_preview)
+        self.rwd_preamble_combo.currentIndexChanged.connect(self._invalidate_preview)
+        for check in self.rwd_wavelength_checks.values():
+            check.toggled.connect(self._invalidate_preview)
+            check.toggled.connect(self._update_overview)
         return page
 
     def _update_overview(self) -> None:
-        enabled = sum(check.isChecked() for check in self.channel_checks.values())
+        if self._is_rwd_mode():
+            enabled = sum(check.isChecked() for check in self.rwd_wavelength_checks.values())
+        else:
+            enabled = sum(check.isChecked() for check in self.channel_checks.values())
         self.channels_summary.value_label.setText(str(enabled))
         if hasattr(self, "fiber_count_spin"):
             fiber_count = self.fiber_count_spin.value()
@@ -606,6 +725,70 @@ class MainWindow(QMainWindow):
             )
             self.fibers_summary.value_label.setText(f"{active_count}/{fiber_count}")
             self.format_summary.value_label.setText(str(active_count))
+
+    def _is_rwd_mode(self) -> bool:
+        return hasattr(self, "source_combo") and self.source_combo.currentData() == "rwd"
+
+    def _apply_source_mode(self, *_args: object) -> None:
+        if not hasattr(self, "rwd_connection_group"):
+            return
+        is_rwd = self._is_rwd_mode()
+        self.native_channels_group.setVisible(not is_rwd)
+        self.native_retention_group.setVisible(not is_rwd)
+        self.rwd_connection_group.setVisible(is_rwd)
+        self._active_trace_wavelengths = (
+            _RWD_TRACE_WAVELENGTHS if is_rwd else _NATIVE_TRACE_WAVELENGTHS
+        )
+        for wavelength_nm, check in self.trace_wavelength_checks.items():
+            check.setVisible(wavelength_nm in self._active_trace_wavelengths)
+        if hasattr(self, "tabs"):
+            self.tabs.setTabVisible(1, True)
+            self.tabs.setTabText(1, "Fibers & subjects" if is_rwd else "Camera & fiber ROIs")
+            self.tabs.setTabVisible(2, not is_rwd)
+        if hasattr(self, "camera_calibration_group"):
+            self.camera_calibration_group.setVisible(not is_rwd)
+            self.roi_summary.setVisible(not is_rwd)
+            self.fiber_instructions.setText(
+                "Define each RWD fiber's animal and scientific metadata. Device-channel "
+                "mapping is configured separately from camera ROI geometry."
+                if is_rwd
+                else "Drag a circle to move its fiber ROI. Drag its handle to resize it. "
+                "Each ROI has its own live trace row; wavelength colors remain consistent "
+                "across every row."
+            )
+        if is_rwd:
+            self.source_mode_hint.setText(
+                "RWD controls the hardware. DBF only reads, displays, journals, and "
+                "writes the exported fluorescence/event stream."
+            )
+            self.backend_badge.setText("RWD read-only")
+            self.preview_button.setVisible(False)
+            self._set_preview_status(
+                "RWD is read-only; Start opens one bounded recording connection",
+                "passed",
+            )
+            self.statusBar().showMessage(
+                "Ready — RWD read-only mode; DBF will not send hardware commands"
+            )
+        else:
+            self.source_mode_hint.setText(
+                "Native mode uses the simulator now and the validated camera/controller "
+                "adapters when available."
+            )
+            self.backend_badge.setText("Simulator")
+            self.preview_button.setVisible(True)
+            self._set_preview_status(
+                "Preview required - validate the current acquisition settings before recording",
+                "required",
+            )
+            self.statusBar().showMessage(
+                "Ready — simulator mode; no physical camera or controller connected"
+            )
+        self.backend_badge.setProperty("hardware", False)
+        self.backend_badge.style().unpolish(self.backend_badge)
+        self.backend_badge.style().polish(self.backend_badge)
+        self._update_overview()
+        self._invalidate_preview()
 
     def _build_trace_workspace(self) -> ScrollableTraceWorkspace:
         self.trace_workspace = ScrollableTraceWorkspace()
@@ -639,7 +822,11 @@ class MainWindow(QMainWindow):
             if display_mode == "dff":
                 plot.setLabel("left", "dF/F", units="%")
             else:
-                plot.setLabel("left", "Fluorescence", units="counts")
+                plot.setLabel(
+                    "left",
+                    "Fluorescence",
+                    units="a.u." if self._is_rwd_mode() else "counts",
+                )
             if row == len(rois) - 1:
                 plot.setLabel("bottom", "Session time", units="s")
             if row == 0:
@@ -722,6 +909,7 @@ class MainWindow(QMainWindow):
         )
         instructions.setObjectName("hint")
         instructions.setWordWrap(True)
+        self.fiber_instructions = instructions
         fibers_layout.addWidget(instructions)
         metadata_title = QLabel("ONE ANIMAL AND NWB FILE PER ROI")
         metadata_title.setObjectName("eyebrow")
@@ -737,6 +925,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(fibers_group)
 
         camera_group = QGroupBox("Camera calibration — full frame")
+        self.camera_calibration_group = camera_group
         camera_layout = QVBoxLayout(camera_group)
         self.calibration_plot = pg.PlotWidget()
         self.calibration_plot.setAspectLocked(True)
@@ -904,12 +1093,18 @@ class MainWindow(QMainWindow):
         self._preview_signature = None
         self._pending_preview_signature = None
         if hasattr(self, "start_button"):
-            self.start_button.setEnabled(False)
+            self.start_button.setEnabled(self._is_rwd_mode() and self._thread is None)
         if hasattr(self, "preview_status") and self._thread is None:
-            self._set_preview_status(
-                "Preview required - settings changed; run preview before recording",
-                "required",
-            )
+            if self._is_rwd_mode():
+                self._set_preview_status(
+                    "RWD is read-only; Start opens one bounded recording connection",
+                    "passed",
+                )
+            else:
+                self._set_preview_status(
+                    "Preview required - settings changed; run preview before recording",
+                    "required",
+                )
 
     def _browse_output(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -1024,6 +1219,24 @@ class MainWindow(QMainWindow):
         """Push one validated settings snapshot into every corresponding GUI control."""
 
         self._session_template = config
+        source_blocker = QSignalBlocker(self.source_combo)
+        source_kind = "rwd" if isinstance(config.source, RWDSourceConfig) else "native"
+        self.source_combo.setCurrentIndex(self.source_combo.findData(source_kind))
+        del source_blocker
+        if isinstance(config.source, RWDSourceConfig):
+            source = config.source
+            self.rwd_host_edit.setText(source.host)
+            self.rwd_port_spin.setValue(source.port)
+            self.rwd_connect_timeout_spin.setValue(source.connect_timeout_s)
+            self.rwd_read_timeout_spin.setValue(source.read_timeout_s)
+            self.rwd_preamble_combo.setCurrentIndex(
+                self.rwd_preamble_combo.findData(source.preamble_mode.value)
+            )
+            self.rwd_machine_edit.setText(source.expected_machine_name or "")
+            self.rwd_record_rate_spin.setValue(source.maximum_expected_record_rate_hz)
+            enabled_rwd = set(source.enabled_wavelengths_nm)
+            for wavelength_nm, check in self.rwd_wavelength_checks.items():
+                check.setChecked(wavelength_nm in enabled_rwd)
         self.duration_spin.setValue(config.recording_duration_s)
         self.experimenter_edit.setText(config.experimenter)
         self.session_description_edit.setText(config.session_description)
@@ -1067,6 +1280,7 @@ class MainWindow(QMainWindow):
         self.trace_mode_combo.setCurrentIndex(max(0, mode_index))
         self.trace_baseline_spin.setValue(display.dff_baseline_s)
         self._apply_trace_mode()
+        self._apply_source_mode()
         self._update_overview()
         self._invalidate_preview()
 
@@ -1251,7 +1465,7 @@ class MainWindow(QMainWindow):
         visible_wavelengths = tuple(
             wavelength
             for wavelength, check in self.trace_wavelength_checks.items()
-            if check.isChecked()
+            if wavelength in self._active_trace_wavelengths and check.isChecked()
         )
         display = TraceDisplayConfig(
             horizon_s=self._trace_horizon_s,
@@ -1259,15 +1473,68 @@ class MainWindow(QMainWindow):
             mode=self.trace_mode_combo.currentData(),
             dff_baseline_s=self.trace_baseline_spin.value(),
         )
+        if self._is_rwd_mode():
+            previous_source = (
+                self._session_template.source
+                if isinstance(self._session_template.source, RWDSourceConfig)
+                else None
+            )
+            previous_channels = (
+                {
+                    mapping.fiber_id: mapping.device_channel
+                    for mapping in previous_source.channel_mappings
+                }
+                if previous_source is not None
+                else {}
+            )
+            used_device_channels: set[int] = set()
+            mappings = []
+            for index, roi in enumerate(roi for roi in rois if roi.enabled):
+                device_channel = previous_channels.get(roi.fiber_id, index)
+                while device_channel in used_device_channels:
+                    device_channel += 1
+                used_device_channels.add(device_channel)
+                mappings.append(
+                    RWDChannelMapping(
+                        device_channel=device_channel,
+                        fiber_id=roi.fiber_id,
+                        label=roi.label,
+                    )
+                )
+            enabled_rwd_wavelengths = tuple(
+                wavelength_nm
+                for wavelength_nm, check in self.rwd_wavelength_checks.items()
+                if check.isChecked()
+            )
+            source = RWDSourceConfig(
+                host=self.rwd_host_edit.text().strip(),
+                port=self.rwd_port_spin.value(),
+                connect_timeout_s=self.rwd_connect_timeout_spin.value(),
+                read_timeout_s=self.rwd_read_timeout_spin.value(),
+                preamble_mode=RWDPreambleMode(self.rwd_preamble_combo.currentData()),
+                timestamp_scale_s=(
+                    previous_source.timestamp_scale_s if previous_source is not None else 0.001
+                ),
+                value_scale=previous_source.value_scale if previous_source is not None else 0.001,
+                maximum_expected_record_rate_hz=self.rwd_record_rate_spin.value(),
+                enabled_wavelengths_nm=enabled_rwd_wavelengths,
+                channel_mappings=tuple(mappings),
+                expected_machine_name=self.rwd_machine_edit.text().strip() or None,
+            )
+            session_prefix = "rwd"
+        else:
+            source = NativeSourceConfig()
+            session_prefix = "demo"
         started = datetime.now(UTC)
         payload = self._session_template.model_dump()
         payload.update(
-            session_id=started.strftime("demo-%Y%m%dT%H%M%S-%fZ"),
+            session_id=started.strftime(f"{session_prefix}-%Y%m%dT%H%M%S-%fZ"),
             session_description=self.session_description_edit.text().strip(),
             experimenter=self.experimenter_edit.text().strip(),
             output_directory=output,
             recording_duration_s=self.duration_spin.value(),
             session_start_time=started,
+            source=source,
             camera=self._session_template.camera.model_copy(
                 update={"raw_capture": self.raw_checkbox.isChecked()}
             ),
@@ -1286,6 +1553,13 @@ class MainWindow(QMainWindow):
             config = self._build_config()
         except Exception as error:
             QMessageBox.critical(self, "Invalid configuration", str(error))
+            return
+        if isinstance(config.source, RWDSourceConfig):
+            QMessageBox.information(
+                self,
+                "RWD is read-only",
+                "RWD mode records the exported stream directly and has no camera preview.",
+            )
             return
         self.last_preview = None
         self.last_error = None
@@ -1330,7 +1604,9 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(self, "Invalid configuration", str(error))
             return
-        if self._preview_signature != self._configuration_signature(config):
+        if isinstance(config.source, NativeSourceConfig) and (
+            self._preview_signature != self._configuration_signature(config)
+        ):
             self._invalidate_preview()
             QMessageBox.warning(
                 self,
@@ -1344,17 +1620,27 @@ class MainWindow(QMainWindow):
         self.last_result = None
         self.last_error = None
         self._prepare_trace_curves(config)
-        self._prepare_wavelength_images(config)
+        if isinstance(config.source, NativeSourceConfig):
+            self._prepare_wavelength_images(config)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("0%")
-        self.frame_counter.setText("0 frames")
-        self.live_status.setText("Arming simulator…")
+        self.frame_counter.setText(
+            "0 RWD records" if isinstance(config.source, RWDSourceConfig) else "0 frames"
+        )
+        source_label = (
+            "RWD read-only stream" if isinstance(config.source, RWDSourceConfig) else "simulator"
+        )
+        self.live_status.setText(f"Arming {source_label}…")
         self._set_preview_status(
-            "Preview passed for these settings - recording in progress",
+            (
+                "RWD read-only recording in progress"
+                if isinstance(config.source, RWDSourceConfig)
+                else "Preview passed for these settings - recording in progress"
+            ),
             "passed",
         )
         self._set_system_status("STARTING…", "recording")
-        self.statusBar().showMessage("Arming simulator…")
+        self.statusBar().showMessage(f"Arming {source_label}…")
 
         thread = QThread(self)
         worker = AcquisitionWorker(config, config.recording_duration_s)
@@ -1379,14 +1665,27 @@ class MainWindow(QMainWindow):
     def stop_recording(self) -> None:
         if self._worker is not None:
             operation = "preview" if self._operation_kind == "preview" else "recording"
-            self.live_status.setText(f"Stopping {operation} after the current frame...")
-            self.statusBar().showMessage(f"Stopping {operation} after the current frame...")
+            unit = "record" if self._is_rwd_mode() else "frame"
+            self.live_status.setText(f"Stopping {operation} after the current {unit}...")
+            self.statusBar().showMessage(f"Stopping {operation} after the current {unit}...")
             self.stop_button.setEnabled(False)
             self._worker.request_stop()
 
     def _prepare_trace_curves(self, config: SessionConfig) -> None:
+        self._active_config = config
         self._configure_trace_plots(config.enabled_rois)
-        self._trace_times = {wavelength: array("d") for wavelength in Wavelength}
+        self._active_trace_wavelengths = (
+            tuple(config.source.enabled_wavelengths_nm)
+            if isinstance(config.source, RWDSourceConfig)
+            else tuple(int(channel.wavelength_nm) for channel in config.enabled_channels)
+        )
+        self._rwd_trace_projector = (
+            RWDLiveTraceProjector(config) if isinstance(config.source, RWDSourceConfig) else None
+        )
+        self._trace_roi_indices = {
+            roi.fiber_id: index for index, roi in enumerate(config.enabled_rois)
+        }
+        self._trace_times.clear()
         self._trace_values.clear()
         self._trace_horizon_s = HORIZONS[0][1]
         self._trace_manual_x_range = None
@@ -1394,15 +1693,18 @@ class MainWindow(QMainWindow):
             button.setChecked(seconds == self._trace_horizon_s)
         self._trace_first_s = None
         self._trace_latest_s = None
-        self._last_trace_render_s = {wavelength: -np.inf for wavelength in Wavelength}
+        self._last_trace_render_s = {
+            wavelength: -np.inf for wavelength in self._active_trace_wavelengths
+        }
         for index, _roi in enumerate(config.enabled_rois):
-            for wavelength in Wavelength:
+            for wavelength in self._active_trace_wavelengths:
                 curve = self.trace_plots[index].plot(
-                    name=f"{int(wavelength)} nm" if index == 0 else None,
+                    name=f"{wavelength} nm" if index == 0 else None,
                     pen=pg.mkPen(_WAVELENGTH_COLORS[wavelength], width=1.8),
                 )
                 curve.setVisible(self.trace_wavelength_checks[wavelength].isChecked())
                 self._curves[(wavelength, index)] = curve
+                self._trace_times[(wavelength, index)] = array("d")
                 self._trace_values[(wavelength, index)] = array("f")
         self._update_trace_horizon_availability(0.0)
 
@@ -1456,7 +1758,11 @@ class MainWindow(QMainWindow):
             if is_dff:
                 plot.setLabel("left", "dF/F", units="%")
             else:
-                plot.setLabel("left", "Fluorescence", units="counts")
+                plot.setLabel(
+                    "left",
+                    "Fluorescence",
+                    units="a.u." if self._is_rwd_mode() else "counts",
+                )
             plot.enableAutoRange(axis="y", enable=True)
         self._refresh_all_trace_curves()
 
@@ -1489,22 +1795,23 @@ class MainWindow(QMainWindow):
             start = max(start, stop - self._trace_horizon_s)
         return start, stop
 
-    def _refresh_trace_wavelength(self, wavelength: Wavelength) -> None:
+    def _refresh_trace_wavelength(self, wavelength: int) -> None:
         visible = self._trace_manual_x_range or self._visible_trace_range()
         if visible is None:
             return
         start_s, stop_s = visible
-        time_buffer = self._trace_times[wavelength]
-        if not time_buffer:
-            return
-        times = np.frombuffer(time_buffer, dtype=np.float64)
-        first_index = int(np.searchsorted(times, start_s, side="left"))
-        stop_index = int(np.searchsorted(times, stop_s, side="right"))
-        selected_times = times[first_index:stop_index]
         budget = self._trace_point_budget()
         for index in range(self._trace_roi_count):
+            key = (wavelength, index)
+            time_buffer = self._trace_times[key]
+            if not time_buffer:
+                continue
+            times = np.frombuffer(time_buffer, dtype=np.float64)
+            first_index = int(np.searchsorted(times, start_s, side="left"))
+            stop_index = int(np.searchsorted(times, stop_s, side="right"))
+            selected_times = times[first_index:stop_index]
             all_values = np.frombuffer(
-                self._trace_values[(wavelength, index)],
+                self._trace_values[key],
                 dtype=np.float32,
             )
             values = all_values[first_index:stop_index]
@@ -1524,7 +1831,7 @@ class MainWindow(QMainWindow):
                 first_index=first_index,
                 max_points=budget,
             )
-            self._curves[(wavelength, index)].setData(
+            self._curves[key].setData(
                 display_times,
                 display_values,
                 connect="finite",
@@ -1532,7 +1839,7 @@ class MainWindow(QMainWindow):
         self._set_all_trace_x_ranges(start_s, stop_s)
 
     def _refresh_all_trace_curves(self) -> None:
-        for wavelength in Wavelength:
+        for wavelength in self._active_trace_wavelengths:
             self._refresh_trace_wavelength(wavelength)
 
     def _prepare_wavelength_images(self, config: SessionConfig) -> None:
@@ -1552,51 +1859,95 @@ class MainWindow(QMainWindow):
                 "Waiting for first frame" if wavelength in enabled else "Channel disabled"
             )
 
-    def _on_progress(self, progress: AcquisitionProgress) -> None:
-        sample = progress.sample
-        self.wavelength_image_items[sample.wavelength_nm].setImage(
-            progress.image,
-            autoLevels=False,
-            levels=(0, self._image_display_maximum),
-        )
-        self.wavelength_frame_labels[sample.wavelength_nm].setText(
-            f"Frame {progress.frame_count:,} · {sample.timestamp_s:.3f} s"
-        )
-        times = self._trace_times[sample.wavelength_nm]
-        times.append(sample.timestamp_s)
-        for index, value in enumerate(sample.values):
-            values = self._trace_values[(sample.wavelength_nm, index)]
-            values.append(float(value))
-        if self._trace_first_s is None:
-            self._trace_first_s = sample.timestamp_s
-        self._trace_latest_s = sample.timestamp_s
-        available_span = sample.timestamp_s - self._trace_first_s + 1 / 30
-        self._update_trace_horizon_availability(available_span)
+    def _append_live_trace_points(self, points: Sequence[LiveTracePoint]) -> None:
+        affected_wavelengths: set[int] = set()
+        for point in points:
+            roi_index = self._trace_roi_indices.get(point.fiber_id)
+            if roi_index is None:
+                raise ValueError(f"live trace references unknown fiber_id {point.fiber_id!r}")
+            key = (point.wavelength_nm, roi_index)
+            if key not in self._trace_times:
+                raise ValueError(
+                    f"live trace references inactive wavelength {point.wavelength_nm} nm"
+                )
+            times = self._trace_times[key]
+            if times and point.timestamp_s <= times[-1]:
+                raise ValueError("live trace timestamps must increase per fiber/wavelength")
+            times.append(point.timestamp_s)
+            self._trace_values[key].append(point.value)
+            self._trace_first_s = (
+                point.timestamp_s
+                if self._trace_first_s is None
+                else min(self._trace_first_s, point.timestamp_s)
+            )
+            self._trace_latest_s = (
+                point.timestamp_s
+                if self._trace_latest_s is None
+                else max(self._trace_latest_s, point.timestamp_s)
+            )
+            affected_wavelengths.add(point.wavelength_nm)
+        if self._trace_first_s is not None and self._trace_latest_s is not None:
+            available_span = self._trace_latest_s - self._trace_first_s + 1 / 30
+            self._update_trace_horizon_availability(available_span)
         visible = self._trace_manual_x_range or self._visible_trace_range()
         if visible is not None:
             self._set_all_trace_x_ranges(*visible)
-        if (
-            sample.timestamp_s - self._last_trace_render_s[sample.wavelength_nm]
-            >= _TRACE_REFRESH_INTERVAL_S
-        ):
-            self._refresh_trace_wavelength(sample.wavelength_nm)
-            self._last_trace_render_s[sample.wavelength_nm] = sample.timestamp_s
-        if progress.frame_count == 1 or progress.frame_count % 5 == 0:
-            self._image_item.setImage(
+        for wavelength_nm in affected_wavelengths:
+            latest = max(
+                self._trace_times[(wavelength_nm, index)][-1]
+                for index in range(self._trace_roi_count)
+                if self._trace_times[(wavelength_nm, index)]
+            )
+            if latest - self._last_trace_render_s[wavelength_nm] >= _TRACE_REFRESH_INTERVAL_S:
+                self._refresh_trace_wavelength(wavelength_nm)
+                self._last_trace_render_s[wavelength_nm] = latest
+
+    def _on_progress(self, progress: AcquisitionProgress | RWDAcquisitionProgress) -> None:
+        if isinstance(progress, RWDAcquisitionProgress):
+            if self._rwd_trace_projector is None:
+                raise RuntimeError("RWD progress arrived without a live trace projector")
+            points = self._rwd_trace_projector.project(progress.received)
+            self._append_live_trace_points(points)
+            elapsed_s = progress.received.host_received_s
+            fraction = min(1.0, elapsed_s / self._progress_duration_s)
+            self.frame_counter.setText(f"{progress.record_count:,} RWD records")
+            record_type = (
+                type(progress.received.record).__name__.removeprefix("RWD").removesuffix("Record")
+            )
+            self.live_status.setText(f"Recording RWD {record_type.lower()} data")
+            self.statusBar().showMessage(
+                f"RWD read-only recording - record {progress.record_count:,}"
+            )
+        else:
+            sample = progress.sample
+            wavelength = int(sample.wavelength_nm)
+            self.wavelength_image_items[sample.wavelength_nm].setImage(
                 progress.image,
                 autoLevels=False,
                 levels=(0, self._image_display_maximum),
             )
-        fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
+            self.wavelength_frame_labels[sample.wavelength_nm].setText(
+                f"Frame {progress.frame_count:,} · {sample.timestamp_s:.3f} s"
+            )
+            if self._active_config is None:
+                raise RuntimeError("native progress arrived without an active configuration")
+            self._append_live_trace_points(native_live_trace_points(self._active_config, progress))
+            if progress.frame_count == 1 or progress.frame_count % 5 == 0:
+                self._image_item.setImage(
+                    progress.image,
+                    autoLevels=False,
+                    levels=(0, self._image_display_maximum),
+                )
+            fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
+            operation = "Preview" if self._operation_kind == "preview" else "Recording"
+            self.frame_counter.setText(f"{progress.frame_count:,} {operation.lower()} frames")
+            self.live_status.setText(f"{operation} - {wavelength} nm exposure")
+            self.statusBar().showMessage(
+                f"{operation} - frame {progress.frame_count}, {wavelength} nm"
+            )
         progress_value = round(fraction * 1000)
         self.progress_bar.setValue(progress_value)
         self.progress_bar.setFormat(f"{fraction:.0%}")
-        operation = "Preview" if self._operation_kind == "preview" else "Recording"
-        self.frame_counter.setText(f"{progress.frame_count:,} {operation.lower()} frames")
-        self.live_status.setText(f"{operation} - {int(sample.wavelength_nm)} nm exposure")
-        self.statusBar().showMessage(
-            f"{operation} - frame {progress.frame_count}, {int(sample.wavelength_nm)} nm"
-        )
 
     def _on_preview_completed(self, result: PreviewResult) -> None:
         self.last_preview = result
@@ -1659,20 +2010,30 @@ class MainWindow(QMainWindow):
         self.live_status.setText(message)
         self.statusBar().showMessage(message)
 
-    def _on_completed(self, result: AcquisitionRunResult) -> None:
+    def _on_completed(
+        self,
+        result: AcquisitionRunResult | RWDAcquisitionRunResult,
+    ) -> None:
         self.last_result = result
         self._refresh_all_trace_curves()
         self.progress_bar.setValue(1000)
         self.progress_bar.setFormat("100%")
         file_count = len(result.reports)
-        self.live_status.setText(f"Saved and validated {file_count} ROI NWB files")
-        self._set_preview_status(
-            "Preview required before the next recording",
-            "required",
-        )
+        output_kind = "fiber" if isinstance(result, RWDAcquisitionRunResult) else "ROI"
+        self.live_status.setText(f"Saved and validated {file_count} {output_kind} NWB files")
+        if isinstance(result, RWDAcquisitionRunResult):
+            self._set_preview_status(
+                "RWD is read-only; Start opens a new bounded recording connection",
+                "passed",
+            )
+        else:
+            self._set_preview_status(
+                "Preview required before the next recording",
+                "required",
+            )
         self._set_system_status("COMPLETE", "complete")
         self.statusBar().showMessage(
-            f"Saved {file_count} validated ROI NWB files in {result.report.path.parent}"
+            f"Saved {file_count} validated {output_kind} NWB files in {result.report.path.parent}"
         )
 
     def _on_failed(self, traceback_text: str) -> None:
@@ -1696,8 +2057,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.close)
 
     def _set_busy_controls(self, busy: bool) -> None:
-        self.preview_button.setEnabled(not busy)
-        self.start_button.setEnabled(not busy and self._preview_signature is not None)
+        self.preview_button.setEnabled(not busy and not self._is_rwd_mode())
+        self.start_button.setEnabled(
+            not busy and (self._is_rwd_mode() or self._preview_signature is not None)
+        )
         self.stop_button.setEnabled(busy)
         for widget in self._settings_widgets:
             widget.setEnabled(not busy)

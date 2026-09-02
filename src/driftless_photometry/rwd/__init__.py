@@ -27,6 +27,7 @@ from .timing import (
     RWDNormalizedRecord,
     RWDNormalizedSample,
     RWDNormalizedSession,
+    RWDTickResolver,
     normalize_rwd_session,
 )
 
@@ -52,6 +53,7 @@ __all__ = [
     "RWDStreamClient",
     "RWDStreamDecoder",
     "RWDStreamMetadata",
+    "RWDTickResolver",
     "RWDWavelength",
     "normalize_rwd_session",
     "parse_event_record",

@@ -69,7 +69,11 @@ per mapped fiber without inventing camera frames, LED commands, native exposures
 numbered TTL inputs. A headless single-owner TCP client now provides bounded
 recording, timeout/disconnect/malformed-stream faults, prompt stop, storage preflight,
 and machine-readable CLI output. The GUI workflow is still being implemented, and
-the TCP path has only synthetic local-server validation; current builds must not be
+the desktop setup now begins with a native/simulator or RWD read-only system choice,
+hides camera/LED controls in RWD mode, retains per-fiber animal metadata, and routes
+both sources through the same bounded live-trace presentation contract. Explicit RWD
+channel mapping and the full monitoring/analysis workspace are the next GUI gate.
+The TCP path has only synthetic local-server validation; current builds must not be
 described as a physically validated RWD connection. See
 [the RWD streaming contract](docs/rwd-streaming-protocol.md).
 

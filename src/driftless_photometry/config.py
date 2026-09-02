@@ -122,7 +122,7 @@ class TraceDisplayConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     horizon_s: Literal[15.0, 60.0, 600.0, 3600.0] | None = 15.0
-    visible_wavelengths: tuple[Wavelength, ...] = tuple(Wavelength)
+    visible_wavelengths: tuple[Literal[405, 410, 470, 560, 565], ...] = (405, 470, 565)
     mode: Literal["absolute", "dff"] = "absolute"
     dff_baseline_s: float = Field(default=5.0, ge=0.1, le=3600.0)
 

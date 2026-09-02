@@ -8,9 +8,35 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QAbstractSpinBox
 
 from driftless_photometry import __version__
-from driftless_photometry.config import SessionConfig, TraceDisplayConfig, Wavelength, demo_config
-from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
+from driftless_photometry.config import (
+    RWDChannelMapping,
+    RWDPreambleMode,
+    RWDSourceConfig,
+    SessionConfig,
+    TraceDisplayConfig,
+    Wavelength,
+    demo_config,
+)
+from driftless_photometry.diagnostics import (
+    FinalizationProgress,
+    FinalizationStage,
+    SpoolDiagnostics,
+)
 from driftless_photometry.gui.main_window import MainWindow
+from driftless_photometry.gui.worker import AcquisitionWorker
+from driftless_photometry.rwd import (
+    RWDDecoderDiagnostics,
+    RWDFluorescenceRecord,
+    RWDFluorescenceSample,
+    RWDReceivedRecord,
+    RWDWavelength,
+)
+from driftless_photometry.rwd.acquisition import (
+    RWDAcquisitionDiagnostics,
+    RWDAcquisitionEngine,
+    RWDAcquisitionProgress,
+)
+from driftless_photometry.rwd.client import RWDClientDiagnostics
 from driftless_photometry.settings import save_default_settings
 
 
@@ -153,6 +179,140 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.stop_button.objectName() == "attention"
     assert "QPushButton#attention:disabled" in window.styleSheet()
     assert "QScrollBar::handle:vertical" in window.styleSheet()
+
+
+def test_gui_source_selector_hides_inapplicable_native_hardware_controls(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.source_combo.currentData() == "native"
+    assert window.native_channels_group.isVisible()
+    assert not window.rwd_connection_group.isVisible()
+    assert not window.camera_calibration_group.isHidden()
+    assert window.tabs.isTabVisible(2)
+    assert window.preview_button.isVisible()
+    assert not window.start_button.isEnabled()
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+
+    assert not window.native_channels_group.isVisible()
+    assert not window.native_retention_group.isVisible()
+    assert window.rwd_connection_group.isVisible()
+    assert window.camera_calibration_group.isHidden()
+    assert window.tabs.tabText(1) == "Fibers & subjects"
+    assert not window.tabs.isTabVisible(2)
+    assert not window.preview_button.isVisible()
+    assert window.start_button.isEnabled()
+    assert window.backend_badge.text() == "RWD read-only"
+    assert set(window._active_trace_wavelengths) == {410, 470, 560}
+
+
+def test_gui_builds_and_restores_complete_rwd_source_settings(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    base = demo_config(tmp_path, fiber_count=2)
+    source = RWDSourceConfig(
+        host="192.168.1.50",
+        port=4567,
+        connect_timeout_s=2.5,
+        read_timeout_s=4.5,
+        preamble_mode=RWDPreambleMode.MACHINE_NAME_4,
+        timestamp_scale_s=0.002,
+        value_scale=0.004,
+        maximum_expected_record_rate_hz=321,
+        enabled_wavelengths_nm=(410, 560),
+        channel_mappings=(
+            RWDChannelMapping(device_channel=7, fiber_id="fiber_01", label="A"),
+            RWDChannelMapping(device_channel=9, fiber_id="fiber_02", label="B"),
+        ),
+        expected_machine_name="RWD1",
+    )
+    expected = base.model_copy(
+        update={
+            "source": source,
+            "display": TraceDisplayConfig(
+                visible_wavelengths=(410, 560),
+                mode="absolute",
+            ),
+        }
+    )
+
+    window._apply_configuration(expected)
+    restored = window._build_config()
+
+    assert isinstance(restored.source, RWDSourceConfig)
+    assert restored.source.host == "192.168.1.50"
+    assert restored.source.port == 4567
+    assert restored.source.preamble_mode is RWDPreambleMode.MACHINE_NAME_4
+    assert restored.source.timestamp_scale_s == 0.002
+    assert restored.source.value_scale == 0.004
+    assert restored.source.maximum_expected_record_rate_hz == 321
+    assert restored.source.enabled_wavelengths_nm == (410, 560)
+    assert [mapping.device_channel for mapping in restored.source.channel_mappings] == [7, 9]
+    assert restored.display.visible_wavelengths == (410, 560)
+    assert window.source_combo.currentData() == "rwd"
+    assert isinstance(AcquisitionWorker(restored, 1)._engine, RWDAcquisitionEngine)
+
+
+def test_gui_projects_rwd_progress_into_exact_device_wavelength_curve(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    base = demo_config(tmp_path, fiber_count=1)
+    config = base.model_copy(
+        update={
+            "source": RWDSourceConfig(
+                channel_mappings=(
+                    RWDChannelMapping(device_channel=3, fiber_id="fiber_01", label="A"),
+                )
+            )
+        }
+    )
+    window._apply_configuration(config)
+    active = window._build_config()
+    window._prepare_trace_curves(active)
+    decoder = RWDDecoderDiagnostics(
+        bytes_received=31,
+        records_decoded=1,
+        fluorescence_records=1,
+        event_records=0,
+        buffered_bytes=0,
+        configured_preamble_mode=RWDPreambleMode.AUTO,
+        resolved_preamble_mode=RWDPreambleMode.NONE,
+        preamble=None,
+        machine_name=b"RWD1",
+        failed=False,
+    )
+    progress = RWDAcquisitionProgress(
+        record_count=1,
+        received=RWDReceivedRecord(
+            0,
+            0.01,
+            RWDFluorescenceRecord(
+                b"RWD1",
+                3,
+                (RWDFluorescenceSample(RWDWavelength.LED_410, 100, 1234, 1.234),),
+            ),
+        ),
+        diagnostics=RWDAcquisitionDiagnostics(
+            spool=SpoolDiagnostics(0, 4, 1, 1, 1, 0.0, 0.0),
+            client=RWDClientDiagnostics(True, False, 1, decoder),
+        ),
+    )
+
+    window._on_progress(progress)
+
+    assert list(window._trace_times[(410, 0)]) == [0.0]
+    assert list(window._trace_values[(410, 0)]) == pytest.approx([1.234])
+    _, displayed = window._curves[(410, 0)].getData()
+    np.testing.assert_allclose(displayed, [1.234])
+    assert window.frame_counter.text() == "1 RWD records"
 
 
 def test_gui_setting_change_invalidates_passed_preview(qtbot, tmp_path: Path) -> None:
@@ -354,7 +514,7 @@ def test_gui_dff_normalizes_each_roi_and_wavelength_independently(qtbot, tmp_pat
         Wavelength.RED_565: 10_000.0,
     }
     for wavelength, baseline in baselines.items():
-        window._trace_times[wavelength] = array("d", times)
+        window._trace_times[(wavelength, 0)] = array("d", times)
         window._trace_values[(wavelength, 0)] = array("f", [baseline, baseline, baseline * 1.1])
     window._trace_first_s = 0.0
     window._trace_latest_s = 2.0

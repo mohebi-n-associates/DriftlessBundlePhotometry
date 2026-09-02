@@ -243,7 +243,7 @@ control; DBF is a read-only client/recorder. Work proceeds in these gated commit
 4. **Headless TCP bridge — implemented with a synthetic local server in Unreleased**
    - Add a single-owner client worker, bounded queues, prompt stop, timeouts,
      disconnect/malformed-stream faults, and a local fake-server test path.
-5. **Shared trace and startup workflow**
+5. **Shared trace and startup workflow — implemented in Unreleased**
    - Refactor source-neutral trace services, then present native or RWD selection at
      startup and hide inactive hardware controls.
 6. **RWD mapping and analysis GUI**

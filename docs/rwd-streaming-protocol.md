@@ -151,8 +151,12 @@ connection is armed. It never throttles or changes the RWD software's sampling r
 
 The current transitional session model still carries native camera/channel/display
 fields in its complete snapshot so old configurations remain reversible. RWD workers
-must not read those inactive fields. The GUI refactor will hide them rather than
-imply that DBF controls RWD hardware.
+do not read those inactive fields. The desktop source selector hides camera
+calibration, native excitation voltage, raw-frame retention, and wavelength-image
+controls in RWD mode rather than implying that DBF controls RWD hardware. Fiber and
+animal metadata remain available. Until the explicit mapping editor is complete, a
+new RWD GUI setup maps enabled fibers in order to device channels `0..N-1`; imported
+RWD settings preserve their explicit device-channel mappings exactly.
 
 ## Trace-only recovery and NWB boundary
 

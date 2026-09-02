@@ -71,7 +71,9 @@ class RWDNormalizedSession:
     records: tuple[RWDNormalizedRecord, ...]
 
 
-class _RWDClockResolver:
+class RWDTickResolver:
+    """Resolve uint32 ticks independently per stream onto a nearby shared epoch."""
+
     def __init__(self) -> None:
         self._anchor: int | None = None
         self._previous: dict[Hashable, tuple[int, int]] = {}
@@ -128,7 +130,7 @@ def normalize_rwd_session(
         mapping.device_channel: mapping.fiber_id for mapping in source.channel_mappings
     }
     enabled_wavelengths = {RWDWavelength(value) for value in source.enabled_wavelengths_nm}
-    resolver = _RWDClockResolver()
+    resolver = RWDTickResolver()
     samples: list[RWDNormalizedSample] = []
     events: list[RWDNormalizedEvent] = []
     records: list[RWDNormalizedRecord] = []

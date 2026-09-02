@@ -117,8 +117,8 @@ def test_roi_rows_share_x_zoom_and_double_click_resets_all_rows(qtbot, tmp_path:
     config = demo_config(tmp_path, fiber_count=3)
     window._prepare_trace_curves(config)
     for wavelength in Wavelength:
-        window._trace_times[wavelength] = array("d", [0.0, 5.0, 10.0])
         for roi_index in range(3):
+            window._trace_times[(wavelength, roi_index)] = array("d", [0.0, 5.0, 10.0])
             window._trace_values[(wavelength, roi_index)] = array("f", [100.0, 110.0, 105.0])
     window._trace_first_s = 0.0
     window._trace_latest_s = 10.0

@@ -12,8 +12,9 @@ from driftless_photometry.acquisition import (
     preview_duration_s,
     run_preview,
 )
-from driftless_photometry.config import SessionConfig
+from driftless_photometry.config import NativeSourceConfig, RWDSourceConfig, SessionConfig
 from driftless_photometry.hardware import SimulatedRig
+from driftless_photometry.rwd.acquisition import RWDAcquisitionEngine
 from driftless_photometry.state import AcquisitionState
 
 
@@ -28,19 +29,32 @@ class AcquisitionWorker(QObject):
         super().__init__()
         self._config = config
         self._duration_s = duration_s
-        self._engine = AcquisitionEngine()
+        self._engine = (
+            RWDAcquisitionEngine()
+            if isinstance(config.source, RWDSourceConfig)
+            else AcquisitionEngine()
+        )
 
     @Slot()
     def run(self) -> None:
         try:
-            result = self._engine.run(
-                self._config,
-                SimulatedRig(self._config, realtime=True),
-                duration_s=self._duration_s,
-                on_progress=self._emit_progress,
-                on_state=self._emit_state,
-                on_finalization=self.finalization_progress.emit,
-            )
+            if isinstance(self._config.source, RWDSourceConfig):
+                result = self._engine.run(
+                    self._config,
+                    duration_s=self._duration_s,
+                    on_progress=self._emit_progress,
+                    on_state=self._emit_state,
+                    on_finalization=self.finalization_progress.emit,
+                )
+            else:
+                result = self._engine.run(
+                    self._config,
+                    SimulatedRig(self._config, realtime=True),
+                    duration_s=self._duration_s,
+                    on_progress=self._emit_progress,
+                    on_state=self._emit_state,
+                    on_finalization=self.finalization_progress.emit,
+                )
         except BaseException:
             self.failed.emit(traceback.format_exc())
         else:
@@ -67,6 +81,8 @@ class PreviewWorker(QObject):
 
     def __init__(self, config: SessionConfig) -> None:
         super().__init__()
+        if not isinstance(config.source, NativeSourceConfig):
+            raise ValueError("camera preview is available only for the native source")
         self._config = config
         self.duration_s = preview_duration_s(config)
         self._source = SimulatedRig(config, realtime=True)

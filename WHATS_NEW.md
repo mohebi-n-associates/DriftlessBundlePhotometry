@@ -41,6 +41,15 @@ version, move its completed entries into a dated version section.
 - Added `dbf --rwd-settings FILE --duration SECONDS`, combined native/RWD spool
   inspection, and suffix-aware recovery. RWD capacity preflight uses a persisted
   maximum expected record-rate bound without changing the vendor acquisition rate.
+- Added source selection at the top of desktop session setup. Choosing RWD switches
+  to read-only connection settings, exact 410/470/560 visibility, and fiber/subject
+  metadata while hiding camera calibration, raw-frame retention, LED voltage, and
+  wavelength-image controls that the RWD stream cannot support.
+- Native ROI-vector samples and asynchronous RWD device samples now feed one
+  source-neutral immutable live-trace contract keyed by stable `fiber_id` and exact
+  wavelength. Each fiber/wavelength curve owns its timestamps, so display-only
+  windowing, extrema-preserving decimation, and dF/F no longer assume synchronized
+  vector samples and never alter stored raw data.
 - Added typed acquisition-fault and system-event records for camera/controller
   disconnects, malformed controller streams, clock discontinuities, queue pressure,
   and storage failures. When committed samples exist, the fault classification and

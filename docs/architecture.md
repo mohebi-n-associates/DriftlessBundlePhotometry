@@ -68,6 +68,20 @@ while a partially received record gets a bounded drain window and then becomes a
 explicit truncation fault. One connection always defines one session. Disconnects
 are terminal and never trigger an automatic reconnect or silent session join.
 
+Native and RWD progress are projected into immutable live points with four fields:
+session-relative display time, stable `fiber_id`, exact source wavelength, and raw
+source-level value (native camera ROI count or configured-scaled RWD value). The GUI
+keeps one timestamp/value buffer per fiber and wavelength; it therefore does not
+assume synchronous vectors or native 405/470/565 identities. This adapter is
+presentation-only. Native acquisition records and RWD wire records continue directly
+to their separate canonical spools without passing through the display projection.
+
+The desktop source selector is part of the persisted settings workflow. Native mode
+shows camera ROI, excitation-voltage, raw-frame, and wavelength-image controls and
+retains its mandatory preview. RWD mode shows read-only connection fields and
+fiber/subject metadata, hides unsupported native hardware controls, and starts the
+RWD coordinator directly because it cannot perform a camera/LED preflight.
+
 ## Initial delivery gates
 
 ### Gate 0 — contracts and golden file

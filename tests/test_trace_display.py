@@ -87,7 +87,7 @@ def test_full_trace_plot_sends_only_pixel_bounded_extrema(qtbot, tmp_path: Path)
     values = np.sin(times).astype(np.float32)
     values[25_000] = 500.0
     wavelength = Wavelength.CONTROL_405
-    window._trace_times[wavelength] = array("d", times)
+    window._trace_times[(wavelength, 0)] = array("d", times)
     window._trace_values[(wavelength, 0)] = array("f", values)
     window._trace_first_s = float(times[0])
     window._trace_latest_s = float(times[-1])

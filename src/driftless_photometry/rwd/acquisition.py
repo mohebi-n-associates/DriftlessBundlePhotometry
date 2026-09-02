@@ -55,6 +55,12 @@ class RWDAcquisitionRunResult:
     diagnostics: RWDAcquisitionDiagnostics
     storage_capacity: RWDStorageCapacity
 
+    @property
+    def report(self) -> RWDNWBWriteReport:
+        """Return the first mapped-fiber report for shared presentation code."""
+
+        return self.reports[0]
+
 
 RWDProgressCallback = Callable[[RWDAcquisitionProgress], None]
 RWDStateCallback = Callable[[AcquisitionState], None]
