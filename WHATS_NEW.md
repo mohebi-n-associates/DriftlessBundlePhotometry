@@ -8,6 +8,26 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.2.1 - 2026-09-02
+
+### Added
+
+- Added a versioned 64-bit Windows installer build. Each published GitHub release now
+  freezes the GUI and scientific stack, compiles a per-user Setup executable, tests
+  silent installation, launch, and uninstall, and attaches it with SHA-256 checksums
+  and build provenance.
+- Added synchronized PyPI and GitHub Release automation using Trusted
+  Publishing. Exact tag/version/changelog checks prevent mismatched releases, and
+  the wheel and source distribution must pass tests and strict metadata validation
+  before production publication.
+- Added separate end-user installer, developer Conda, and PyPI installation paths,
+  plus a release guide covering protected environments and one-time publisher setup.
+
+### Changed
+
+- The Conda environment now installs the project editably with GUI, development, and
+  release dependencies from `environment.yml`.
+
 ## 0.2.0 - 2026-09-02
 
 ### Added

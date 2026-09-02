@@ -403,6 +403,6 @@ def _fault_code(error: BaseException) -> AcquisitionFaultCode:
         return error.code
     if isinstance(error, SpoolBackpressureError):
         return AcquisitionFaultCode.QUEUE_BACKPRESSURE
-    if isinstance(error, (SpoolError, OSError)):
+    if isinstance(error, SpoolError | OSError):
         return AcquisitionFaultCode.STORAGE_WRITE_FAILURE
     return AcquisitionFaultCode.ACQUISITION_FAILURE

@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: "1"
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  python-distributions:
+    name: Build and verify Python distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Validate synchronized release metadata
+        run: python tools/release.py check "$RELEASE_TAG"
+      - name: Install release tooling
+        run: python -m pip install --upgrade pip && python -m pip install ".[dev,release]"
+      - name: Run release quality gates
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+          python -m pytest -q
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Validate distribution metadata
+        run: python -m twine check --strict dist/*
+      - name: Smoke-test the built wheel outside the checkout
+        run: >-
+          python tools/wheel_smoke.py
+          --wheel-dir dist
+          --mode gui
+          --expected-version "${RELEASE_TAG#v}"
+      - name: Upload exact Python release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  windows-installer:
+    name: Build and verify Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Validate synchronized release metadata
+        run: python tools/release.py check "$env:RELEASE_TAG"
+      - name: Install application and freezer
+        run: python -m pip install --upgrade pip && python -m pip install ".[gui,release]"
+      - name: Create multi-resolution Windows icon
+        run: >-
+          python tools/make_windows_icon.py
+          src/driftless_photometry/gui/assets/driftless-photometry.png
+          build/windows/driftless-photometry.ico
+      - name: Freeze the self-contained desktop application
+        run: python -m PyInstaller --noconfirm --clean packaging/windows/DriftlessBundlePhotometry.spec
+      - name: Smoke-test the frozen application
+        shell: pwsh
+        run: |
+          $desktop = Start-Process `
+            -FilePath "dist/DriftlessBundlePhotometry/DriftlessBundlePhotometry.exe" `
+            -ArgumentList "--desktop-smoke" `
+            -Wait -PassThru
+          if ($desktop.ExitCode -ne 0) {
+            throw "Frozen desktop smoke exited with code $($desktop.ExitCode)"
+          }
+          $outputDir = Join-Path $env:RUNNER_TEMP "dbf-frozen-acquisition"
+          $headless = Start-Process `
+            -FilePath "dist/DriftlessBundlePhotometry/DriftlessBundlePhotometry.exe" `
+            -ArgumentList "--headless", "--duration", "0.04", "--fibers", "1", "--output", $outputDir `
+            -Wait -PassThru
+          if ($headless.ExitCode -ne 0) {
+            throw "Frozen acquisition smoke exited with code $($headless.ExitCode)"
+          }
+          if ((Get-ChildItem $outputDir -Filter "*.nwb").Count -ne 1) {
+            throw "Frozen acquisition smoke did not create exactly one NWB file"
+          }
+      - name: Compile the per-user installer
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.TrimStart("v")
+          $compiler = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6/ISCC.exe"
+          & $compiler `
+            "/DAppVersion=$version" `
+            "/DSourceDir=$((Resolve-Path 'dist/DriftlessBundlePhotometry').Path)" `
+            "/DOutputDir=$((New-Item -ItemType Directory -Force 'release-assets').FullName)" `
+            "/DIconFile=$((Resolve-Path 'build/windows/driftless-photometry.ico').Path)" `
+            "packaging/windows/DriftlessBundlePhotometry.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with code $LASTEXITCODE" }
+      - name: Test silent install, launch, and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-Item "release-assets/*.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "dbf-installer-smoke"
+          $install = Start-Process $installer.FullName `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDir" `
+            -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited with code $($install.ExitCode)" }
+          $app = Start-Process (Join-Path $installDir "DriftlessBundlePhotometry.exe") `
+            -ArgumentList "--desktop-smoke" -Wait -PassThru
+          if ($app.ExitCode -ne 0) { throw "Installed application exited with code $($app.ExitCode)" }
+          $uninstall = Start-Process (Join-Path $installDir "unins000.exe") `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" `
+            -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller exited with code $($uninstall.ExitCode)" }
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer
+          path: release-assets/*.exe
+          if-no-files-found: error
+
+  pypi:
+    name: Publish to PyPI
+    needs: [python-distributions, windows-installer]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/driftless-bundle-photometry
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: python-distributions
+          path: dist
+      - name: Publish the verified distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+
+  github-assets:
+    name: Attach synchronized release assets
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Generate SHA-256 manifest
+        shell: bash
+        run: >-
+          python tools/release.py checksums
+          release-assets/SHA256SUMS.txt
+          release-assets/*.whl
+          release-assets/*.tar.gz
+          release-assets/*.exe
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: |
+            release-assets/*.whl
+            release-assets/*.tar.gz
+            release-assets/*.exe
+            release-assets/SHA256SUMS.txt
+      - name: Upload assets to the matching GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber

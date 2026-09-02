@@ -1,6 +1,6 @@
 # Driftless Bundle Photometry
 
-**Version 0.2.0** · [What's new](WHATS_NEW.md)
+**Version 0.2.1** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
@@ -110,64 +110,62 @@ Each file also embeds a separate runtime provenance snapshot with the applicatio
 Python, operating-system, dependency, adapter, and protocol versions that governed
 acquisition or recovery.
 
-## Installation with Conda
+## Installation choices
 
-Use `dbf` as the short environment and command name. The distribution keeps the
-full `driftless-bundle-photometry` name for PyPI, and Python imports remain under
-`driftless_photometry`.
+End users on 64-bit Windows should use the standalone installer. Developers should
+use the repository's Conda environment. PyPI is also available for users who already
+manage Python environments. The standalone installer includes Python and all normal
+application dependencies; it does not require Conda or a separate Python install.
 
-Create and activate a clean Conda environment:
+### Windows installer for end users
 
-```bash
-conda create --name dbf python=3.13 pip -y
-conda activate dbf
-python -m pip install --upgrade pip
-```
+1. Open the [latest GitHub release](https://github.com/mohebi-n-associates/DriftlessBundlePhotometry/releases/latest).
+2. Download `Driftless-Bundle-Photometry-<version>-Windows-x64-Setup.exe`.
+3. Optionally compare its SHA-256 digest with `SHA256SUMS.txt` from the same release.
+4. Run the installer, then launch **Driftless Bundle Photometry** from the Start menu.
 
-Until the first PyPI release is published, install the current version directly
-from GitHub, including the desktop GUI dependencies:
+The installer is per-user, supports clean uninstall through Windows Settings, and
+does not require administrator access. Current installers are not code-signed, so
+Windows SmartScreen may show an unrecognized-publisher warning. The application can
+run the simulator and RWD read-only path, but the physical Thorlabs/controller path
+must not be treated as validated until the documented Windows bench gates pass.
 
-```bash
-python -m pip install "driftless-bundle-photometry[gui] @ git+https://github.com/mohebi-n-associates/DriftlessBundlePhotometry.git@main"
-```
+### Conda environment for developers
 
-After the package is published on PyPI, the equivalent installation will be:
-
-```bash
-python -m pip install "driftless-bundle-photometry[gui]"
-```
-
-Confirm the installation and launch the GUI:
-
-```bash
-dbf --version
-dbf --demo
-```
-
-The long command remains available as `driftless-photometry`. Run a headless
-simulated acquisition with:
-
-```bash
-dbf --headless --duration 5 --raw
-```
-
-On Windows and macOS, the Conda commands are the same. Physical camera operation is
-supported on Windows; macOS supports the simulator and GUI demo.
-
-## Development installation
-
-Clone the repository, create the same short Conda environment, and install it in
-editable mode with the development tools:
+Clone the repository and let `environment.yml` create the `dbf` environment plus an
+editable install with GUI, test, lint, build, and release tools:
 
 ```bash
 git clone https://github.com/mohebi-n-associates/DriftlessBundlePhotometry.git
 cd DriftlessBundlePhotometry
 conda env create --file environment.yml
 conda activate dbf
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
 python -m pytest
 ```
+
+After pulling dependency changes, synchronize the existing environment with:
+
+```bash
+conda env update --file environment.yml --prune
+```
+
+### PyPI installation
+
+Inside an existing Python 3.11–3.13 environment, install the desktop application
+from PyPI and launch it with:
+
+```bash
+python -m pip install "driftless-bundle-photometry[gui]"
+dbf --version
+dbf --demo
+```
+
+The distribution name is `driftless-bundle-photometry`, the short command and Conda
+environment are `dbf`, and Python imports use `driftless_photometry`. The long
+`driftless-photometry` command remains available. On macOS, use Conda or PyPI for the
+simulator, replay, NWB, analysis, and GUI-demo paths.
+
+## Running developer workflows
 
 Run a headless simulated acquisition:
 
@@ -245,8 +243,12 @@ Run the release gates:
 python -m pytest --cov=driftless_photometry --cov-report=term-missing
 python -m ruff check .
 python -m ruff format --check .
-python -m pip wheel . --no-deps --wheel-dir dist
+python -m build
+python -m twine check --strict dist/*
 ```
+
+The complete release procedure and one-time Trusted Publisher setup are in
+[the release guide](docs/releasing.md).
 
 See [the architecture](docs/architecture.md) and the synchronized agent contracts
 in `AGENTS.md` and `CLAUDE.md`. The planned hardware wire contract is documented in

@@ -564,7 +564,8 @@ or replacing raw data.
 
 ## Phase 8 — Packaging, release, and operational readiness
 
-**Status: Planned; depends on all earlier release gates**
+**Status: In progress; distribution automation implemented in 0.2.1, while clean-machine,
+signing, documentation, and hardware qualification still depend on earlier gates**
 
 ### Goal
 
@@ -574,15 +575,17 @@ replay, analysis, and GUI-demo support.
 
 ### Deliverables
 
-1. **Distribution**
+1. **Distribution — automated in 0.2.1; publisher registration/approval pending**
    - Publish `driftless-bundle-photometry` under the full PyPI name using trusted
-     publishing and attestations.
+     publishing and attestations. The workflow is implemented; the repository owner
+     must register the `pypi` trusted publisher before its first run.
    - Keep `dbf` as the short command and Conda environment name.
    - Build wheel and source distribution from the release tag, install and exercise
-     each artifact rather than importing from the source tree, then verify TestPyPI
-     before publishing to PyPI.
-   - Build a Windows desktop package with the application icon; evaluate signing and
-     installer/uninstaller behavior.
+     the wheel outside the source tree, and validate both artifacts before publishing
+     directly to PyPI. Implemented in 0.2.1.
+   - Build a Windows desktop package with the application icon and validate per-user
+     install/launch/uninstall behavior. Implemented unsigned in 0.2.1; code signing
+     and clean-machine qualification remain open.
 
 2. **Clean-machine qualification**
    - Test installation, launch, simulator acquisition, recovery, NWB validation,
@@ -596,7 +599,7 @@ replay, analysis, and GUI-demo support.
    - Provide a compatibility matrix, known limitations, safety warnings, example
      configuration, and small synthetic NWB example.
 
-4. **Release process**
+4. **Release process — version and artifact synchronization implemented in 0.2.1**
    - Require a clean changelog, version agreement across package/UI/artifacts,
      reproducible validation reports, and release approval.
    - Define deprecation and configuration/NWB migration policies.
@@ -673,10 +676,11 @@ dependencies and do not have a one-to-one relationship with version numbers.
 | --- | --- |
 | 0.1.x | Software baseline, installability, documentation, and corrective fixes |
 | 0.2.0 | Reliability closure, CI matrix, versioned configuration, recovery UX |
+| 0.2.1 | Windows installer and synchronized GitHub/PyPI automation |
 | 0.3.0 | Controller and camera prototypes with separate bench reports |
 | 0.4.0 | Integrated Windows rig and shared-clock validation |
 | 0.5.0 | Operator workflow, replay, analysis, and QC preview |
-| 0.9.0 | Clean-machine, documentation, TestPyPI, and release-candidate qualification |
+| 0.9.0 | Clean-machine, documentation, and release-candidate qualification |
 | 1.0.0 | Clean-machine release backed by full hardware, safety, and soak evidence |
 
 ## Open decisions to resolve through issues
@@ -688,8 +692,7 @@ dependencies and do not have a one-to-one relationship with version numbers.
   thresholds.
 - Default derived-analysis methods and the boundary between acquisition QC and
   exploratory analysis.
-- Windows packaging format, code-signing policy, PyPI trusted-publisher ownership,
-  and release approval roles.
+- Code-signing policy, PyPI trusted-publisher ownership, and release approval roles.
 - Supported upgrade and compatibility policy for configuration files, controller
   firmware, and DBF-authored NWB files.
 

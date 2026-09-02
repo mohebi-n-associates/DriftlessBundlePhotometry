@@ -239,6 +239,6 @@ def _fault_code(error: BaseException) -> AcquisitionFaultCode:
         return AcquisitionFaultCode.CLOCK_DISCONTINUITY
     if isinstance(error, RWDSpoolBackpressureError):
         return AcquisitionFaultCode.QUEUE_BACKPRESSURE
-    if isinstance(error, (RWDSpoolError, OSError)):
+    if isinstance(error, RWDSpoolError | OSError):
         return AcquisitionFaultCode.STORAGE_WRITE_FAILURE
     return AcquisitionFaultCode.ACQUISITION_FAILURE

@@ -80,4 +80,4 @@ jobs:
           python tools/wheel_smoke.py
           --wheel-dir wheelhouse
           --mode ${{ matrix.mode }}
-          --expected-version 0.2.0
+          --expected-version $(python tools/release.py version)

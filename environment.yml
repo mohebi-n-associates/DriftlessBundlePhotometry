@@ -1,6 +1,8 @@
 name: dbf
 channels:
-  - defaults
+  - conda-forge
 dependencies:
   - python=3.13
   - pip
+  - pip:
+      - -e .[dev,release]
