@@ -18,6 +18,12 @@ version, move its completed entries into a dated version section.
 - Added typed RWD fluorescence and event domain records that retain raw machine-name
   bytes, device channel, raw uint32 timestamps/values, exact wavelength identity,
   fixed event-name bytes, and ON/OFF status.
+- Added a pure incremental RWD decoder for arbitrarily fragmented or coalesced TCP
+  input, explicit/automatic four-byte preambles, fixed record validation, stable
+  machine identity, configured channels/wavelengths, EOF truncation, and fail-closed
+  malformed streams. Synthetic golden hex fixtures cover every documented wavelength
+  mask, mixed data/events, rollover endpoints, and faults without containing animal
+  data.
 - Added typed acquisition-fault and system-event records for camera/controller
   disconnects, malformed controller streams, clock discontinuities, queue pressure,
   and storage failures. When committed samples exist, the fault classification and

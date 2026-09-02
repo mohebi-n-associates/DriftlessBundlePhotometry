@@ -154,9 +154,11 @@ initial bridge because safe implementation still needs:
 
 ## Validation gates before a live claim
 
-1. Golden byte fixtures for every wavelength-mask combination, mixed event/data
-   records, fragmentation, coalescing, rollover, malformed types/masks/status/names,
-   truncated EOF, preamble modes, and unknown channels.
+1. **Implemented with synthetic fixtures:** golden bytes for every wavelength-mask
+   combination, mixed event/data records, fragmentation, coalescing, rollover
+   endpoints, malformed types/masks/status/names, truncated EOF, preamble modes, and
+   unknown channels. These fixtures test the documented interpretation but are not a
+   substitute for a real capture.
 2. A replay path that exercises the same parser, bounded queue, trace-only spool,
    recovery, and NWB finalizer without an RWD installation.
 3. A local fake TCP server covering timeouts, reconnect policy, disconnect, queue

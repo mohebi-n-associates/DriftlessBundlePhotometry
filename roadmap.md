@@ -232,7 +232,7 @@ control; DBF is a read-only client/recorder. Work proceeds in these gated commit
    - Add a discriminated native/RWD source, exact 410/470/560 identities, unique
      device-channel/fiber mappings, typed raw records, and explicit settings-v1 to
      native migration.
-2. **Pure incremental parsers**
+2. **Pure incremental parsers — implemented in Unreleased**
    - Parse arbitrary TCP fragmentation/coalescing without using read boundaries.
    - Add golden fixtures for masks, mixed records, preamble modes, malformed input,
      rollover, truncation, and unknown channels.

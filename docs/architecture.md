@@ -42,6 +42,10 @@ trace source with separately validated connection assumptions and device-channel
 mappings. RWD never enters the native camera-exposure path and never fabricates
 camera frames, ROI geometry, LED commands, or numbered TTL lines. Its evidence and
 unknowns are specified in [the RWD streaming contract](rwd-streaming-protocol.md).
+The pure RWD decoder consumes a byte stream rather than socket-read packets, yields
+valid records in order before surfacing a later malformed record, and then remains in
+a failed state. It never scans ahead after an error because the vendor format has no
+documented synchronization marker.
 
 ## Initial delivery gates
 

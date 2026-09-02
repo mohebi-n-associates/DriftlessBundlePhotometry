@@ -61,9 +61,10 @@ Windows rig, vendor SDK, trigger cabling, DAC/driver hardware, and bench timing 
 safety measurements. Simulator success is not evidence of physical validation.
 
 The RWD bridge currently has a documented wire contract, validated source settings,
-and typed raw domain records. The incremental parser, trace-only recovery/NWB path,
-TCP worker, and GUI workflow are still being implemented; current builds must not be
-described as a working or physically validated RWD connection. See
+typed raw domain records, and a fixture-tested incremental fluorescence/event parser.
+The trace-only recovery/NWB path, TCP worker, and GUI workflow are still being
+implemented; current builds must not be described as a working or physically
+validated RWD connection. See
 [the RWD streaming contract](docs/rwd-streaming-protocol.md).
 
 The historical MATLAB, Arduino, and Bonsai sources remain under `old mescoscope/`
