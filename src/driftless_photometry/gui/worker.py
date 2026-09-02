@@ -19,6 +19,7 @@ from driftless_photometry.state import AcquisitionState
 
 class AcquisitionWorker(QObject):
     progress = Signal(object)
+    finalization_progress = Signal(object)
     state_changed = Signal(str)
     completed = Signal(object)
     failed = Signal(str)
@@ -38,6 +39,7 @@ class AcquisitionWorker(QObject):
                 duration_s=self._duration_s,
                 on_progress=self._emit_progress,
                 on_state=self._emit_state,
+                on_finalization=self.finalization_progress.emit,
             )
         except BaseException:
             self.failed.emit(traceback.format_exc())

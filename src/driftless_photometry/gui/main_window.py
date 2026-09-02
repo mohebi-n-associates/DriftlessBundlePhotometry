@@ -53,6 +53,7 @@ from driftless_photometry.config import (
     Wavelength,
     demo_config,
 )
+from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
 from driftless_photometry.settings import (
     SETTINGS_SUFFIX,
     configuration_from_nwb,
@@ -1351,6 +1352,7 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)
+        worker.finalization_progress.connect(self._on_finalization_progress)
         worker.state_changed.connect(self._on_state)
         worker.completed.connect(self._on_completed)
         worker.failed.connect(self._on_failed)
@@ -1630,6 +1632,23 @@ class MainWindow(QMainWindow):
             self._set_system_status("SAVING…", "saving")
             self.live_status.setText("Finalizing and validating NWB…")
             self.statusBar().showMessage("Finalizing and validating NWB…")
+
+    def _on_finalization_progress(self, progress: FinalizationProgress) -> None:
+        stage_labels = {
+            FinalizationStage.PREPARING: "Preparing NWB file set",
+            FinalizationStage.WRITING: "Writing partial NWB",
+            FinalizationStage.VALIDATING: "Validating partial NWB",
+            FinalizationStage.PROMOTING: "Promoting validated NWB file set",
+            FinalizationStage.COMPLETE: "NWB file set complete",
+        }
+        message = stage_labels[progress.stage]
+        if progress.fiber_id is not None:
+            message += f" for {progress.fiber_id}"
+        message += (
+            f" ({progress.completed_roi_files}/{progress.total_roi_files} ROI files complete)"
+        )
+        self.live_status.setText(message)
+        self.statusBar().showMessage(message)
 
     def _on_completed(self, result: AcquisitionRunResult) -> None:
         self.last_result = result

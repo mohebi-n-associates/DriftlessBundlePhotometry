@@ -46,3 +46,17 @@ def test_headless_cli_writes_machine_readable_result(tmp_path: Path, capsys) -> 
         restored, warnings = configuration_from_nwb(nwb_path)
         assert restored.recording_duration_s == 0.04
         assert warnings == []
+
+
+def test_cli_inspects_only_recovery_spools_without_mutating_directory(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    ordinary = tmp_path / "ordinary-directory"
+    ordinary.mkdir()
+
+    exit_code = main(["--inspect-spools", str(tmp_path)])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert ordinary.is_dir()

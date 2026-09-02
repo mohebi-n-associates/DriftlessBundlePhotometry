@@ -54,8 +54,20 @@ the same contracts.
 - Deterministic simulator emits explicit exposure records and synthetic TTL edges.
 - State transitions are enforced.
 - Optional frames are written through a bounded, committed chunk spool.
+- Before arming, a conservative volume check estimates spool plus per-ROI NWB growth,
+  including copied raw frames/reference images and a fixed free-space reserve.
+- Progress snapshots expose queue depth/capacity, peak queue pressure, committed
+  chunks/frames, last/maximum chunk latency, sequence drops, and host/controller
+  transport-offset residuals. Finalization reports preparing, writing, validating,
+  promotion, and completion as typed stages.
 - Stop drains committed data and finalizes the NWB file.
-- Interrupted spools are discoverable and recoverable.
+- Typed source/coordinator faults stop the source first, then drain a machine-readable
+  system event and zero-duration invalid marker before closing an incomplete spool.
+  A writer failure remains a surfaced error even when the failed writer cannot commit
+  its own fault record.
+- Interrupted spools are discoverable and recoverable. Discovery examines only direct
+  `*.photometry-spool` children. Inspection checksum-validates records before showing
+  counts or completeness.
 
 ### Gate 2 — desktop demo
 
@@ -139,6 +151,19 @@ Recovery spool schema v2 persists the per-exposure provenance needed to reconstr
 these fields. Schema-v1 spools remain readable, but recovery adds an explicit invalid
 interval over the affected recording because actual host receipt times and dynamic
 voltage commands were not historically available.
+
+Recovery treats the per-ROI outputs as a validated set. A retry verifies session,
+subject, full settings, runtime provenance, exposure identities/timestamps, trace
+values, images, and event counts before reusing an existing final or partial file.
+This allows safe resumption after interruption between validation and promotion.
+Invalid partials may be regenerated from the unchanged committed spool; a mismatched
+canonical `.nwb` is surfaced and never replaced automatically.
+
+Software capacity gates use small deterministic fixtures: 300 frames/s trace-only
+and 60 frames/s with retained 32 × 24 `uint16` frames, each for one ROI and one
+non-realtime simulated second. They prove bounded-queue correctness at those fixture
+sizes, not sustained physical-camera performance. Windows CS505MU rates, full-frame
+raw retention, disk headroom, and long-run latency remain bench measurements.
 
 ## Known hardware boundary
 

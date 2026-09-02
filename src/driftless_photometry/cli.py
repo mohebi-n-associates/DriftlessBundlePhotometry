@@ -11,7 +11,7 @@ from driftless_photometry import __version__
 from driftless_photometry.acquisition import AcquisitionEngine
 from driftless_photometry.config import demo_config
 from driftless_photometry.hardware import SimulatedRig
-from driftless_photometry.storage import recover_session_spool
+from driftless_photometry.storage import discover_session_spools, recover_session_spool
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="PATH",
         help="finalize committed records from an interrupted session spool",
+    )
+    mode.add_argument(
+        "--inspect-spools",
+        type=Path,
+        metavar="DIRECTORY",
+        help="validate and summarize direct child recovery spools without modifying them",
     )
     parser.add_argument("--duration", type=float, default=5.0, help="recording duration in seconds")
     parser.add_argument("--output", type=Path, default=Path("demo-output"))
@@ -43,6 +49,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.inspect_spools is not None:
+        inspections = discover_session_spools(args.inspect_spools)
+        print(
+            json.dumps(
+                [
+                    {
+                        "path": str(item.path),
+                        "session_id": item.session_id,
+                        "schema_version": item.schema_version,
+                        "acquisition_complete": item.acquisition_complete,
+                        "frames": item.frame_count,
+                        "trace_samples": item.trace_sample_count,
+                        "ttl_edges": item.ttl_edge_count,
+                        "invalid_times": item.invalid_time_count,
+                        "system_events": item.system_event_count,
+                        "roi_files": item.roi_file_count,
+                    }
+                    for item in inspections
+                ],
+                indent=2,
+            )
+        )
+        return 0
     if args.recover_spool is not None:
         recovered = recover_session_spool(args.recover_spool, keep_spool=args.keep_spool)
         print(
@@ -55,6 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "ttl_edges": recovered.nwb.ttl_edge_count,
                     "acquisition_was_complete": recovered.acquisition_was_complete,
                     "spool_removed": recovered.spool_removed,
+                    "reused_existing_outputs": recovered.reused_existing_outputs,
                 },
                 indent=2,
             )

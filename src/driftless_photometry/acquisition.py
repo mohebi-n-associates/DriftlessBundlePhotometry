@@ -10,7 +10,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from driftless_photometry.config import SessionConfig, Wavelength
-from driftless_photometry.domain import TraceSample
+from driftless_photometry.diagnostics import AcquisitionDiagnostics, FinalizationProgress
+from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TraceSample
+from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from driftless_photometry.hardware import RigSource
 from driftless_photometry.provenance import capture_runtime_provenance
 from driftless_photometry.roi import extract_circular_rois
@@ -18,6 +20,10 @@ from driftless_photometry.state import AcquisitionState, AcquisitionStateMachine
 from driftless_photometry.storage import (
     NWBWriteReport,
     SessionSpool,
+    SpoolBackpressureError,
+    SpoolError,
+    StorageCapacity,
+    check_storage_capacity,
     load_session_spool,
     write_session_nwbs,
 )
@@ -28,12 +34,15 @@ class AcquisitionProgress:
     frame_count: int
     sample: TraceSample
     image: np.ndarray
+    diagnostics: AcquisitionDiagnostics | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AcquisitionRunResult:
     reports: tuple[NWBWriteReport, ...]
     stopped_by_request: bool
+    diagnostics: AcquisitionDiagnostics
+    storage_capacity: StorageCapacity
 
     @property
     def report(self) -> NWBWriteReport:
@@ -163,6 +172,7 @@ def run_preview(
 
 ProgressCallback = Callable[[AcquisitionProgress], None]
 StateCallback = Callable[[AcquisitionState], None]
+FinalizationCallback = Callable[[FinalizationProgress], None]
 
 
 class AcquisitionEngine:
@@ -193,6 +203,7 @@ class AcquisitionEngine:
         duration_s: float,
         on_progress: ProgressCallback | None = None,
         on_state: StateCallback | None = None,
+        on_finalization: FinalizationCallback | None = None,
     ) -> AcquisitionRunResult:
         if duration_s <= 0:
             raise ValueError("duration_s must be positive")
@@ -203,6 +214,11 @@ class AcquisitionEngine:
         last_sequence = -1
         last_controller_tick = -1
         last_timestamp = -np.inf
+        first_transport_offset_s: float | None = None
+        clock_residual_s = 0.0
+        maximum_absolute_clock_residual_s = 0.0
+        dropped_frames = 0
+        storage_capacity: StorageCapacity | None = None
         self._source = source
         self._stop_requested.clear()
         try:
@@ -210,6 +226,7 @@ class AcquisitionEngine:
                 self._transition(AcquisitionState.READY, on_state)
             if self.state is not AcquisitionState.READY:
                 raise RuntimeError(f"acquisition cannot start from state {self.state}")
+            storage_capacity = check_storage_capacity(config, duration_s)
             self._transition(AcquisitionState.ARMED, on_state)
             spool = SessionSpool(
                 config,
@@ -233,11 +250,20 @@ class AcquisitionEngine:
                 sequence = packet.exposure.sequence
                 timestamp = packet.exposure.timestamp_s
                 if sequence <= last_sequence:
-                    raise RuntimeError("controller exposure sequence is not strictly increasing")
+                    raise AcquisitionFault(
+                        AcquisitionFaultCode.CLOCK_DISCONTINUITY,
+                        "controller exposure sequence is not strictly increasing",
+                    )
                 if timestamp <= last_timestamp:
-                    raise RuntimeError("camera exposure timestamps are not strictly increasing")
+                    raise AcquisitionFault(
+                        AcquisitionFaultCode.CLOCK_DISCONTINUITY,
+                        "camera exposure timestamps are not strictly increasing",
+                    )
                 if packet.exposure.controller_tick_us <= last_controller_tick:
-                    raise RuntimeError("controller ticks are not strictly increasing")
+                    raise AcquisitionFault(
+                        AcquisitionFaultCode.CLOCK_DISCONTINUITY,
+                        "controller ticks are not strictly increasing",
+                    )
                 if tuple(packet.image.shape) != (
                     config.camera.height_px,
                     config.camera.width_px,
@@ -261,6 +287,16 @@ class AcquisitionEngine:
                 for edge in rig_packet.ttl_edges:
                     spool.submit_ttl(edge)
                 frame_count += 1
+                if last_sequence >= 0 and sequence > last_sequence + 1:
+                    dropped_frames += sequence - last_sequence - 1
+                transport_offset_s = packet.host_received_s - timestamp
+                if first_transport_offset_s is None:
+                    first_transport_offset_s = transport_offset_s
+                clock_residual_s = transport_offset_s - first_transport_offset_s
+                maximum_absolute_clock_residual_s = max(
+                    maximum_absolute_clock_residual_s,
+                    abs(clock_residual_s),
+                )
                 last_sequence = sequence
                 last_controller_tick = packet.exposure.controller_tick_us
                 last_timestamp = timestamp
@@ -270,6 +306,14 @@ class AcquisitionEngine:
                             frame_count=frame_count,
                             sample=sample,
                             image=packet.image,
+                            diagnostics=AcquisitionDiagnostics(
+                                spool=spool.diagnostics,
+                                dropped_frames=dropped_frames,
+                                clock_residual_s=clock_residual_s,
+                                maximum_absolute_clock_residual_s=(
+                                    maximum_absolute_clock_residual_s
+                                ),
+                            ),
                         )
                     )
                 if self._stop_requested.is_set():
@@ -288,17 +332,45 @@ class AcquisitionEngine:
                 frames=loaded.frames,
                 calibration_image=loaded.calibration_image,
                 wavelength_images=loaded.wavelength_images,
+                on_progress=on_finalization,
+            )
+            diagnostics = AcquisitionDiagnostics(
+                spool=spool.diagnostics,
+                dropped_frames=dropped_frames,
+                clock_residual_s=clock_residual_s,
+                maximum_absolute_clock_residual_s=maximum_absolute_clock_residual_s,
             )
             spool.cleanup()
             self._transition(AcquisitionState.READY, on_state)
             return AcquisitionRunResult(
                 reports=reports,
                 stopped_by_request=self._stop_requested.is_set(),
+                diagnostics=diagnostics,
+                storage_capacity=storage_capacity,
             )
-        except BaseException:
+        except BaseException as error:
+            with suppress(BaseException):
+                source.stop()
             if spool is not None:
+                fault_code = _fault_code(error)
+                event_timestamp = max(0.0, last_timestamp) if np.isfinite(last_timestamp) else 0.0
+                invalid_time = None
+                if frame_count:
+                    invalid_time = InvalidTimeInterval(
+                        start_time_s=event_timestamp,
+                        stop_time_s=event_timestamp,
+                        reason=str(error) or type(error).__name__,
+                        source_event=fault_code.value,
+                    )
                 with suppress(BaseException):
-                    spool.abort()
+                    spool.abort(
+                        system_event=SystemEvent(
+                            timestamp_s=event_timestamp,
+                            event=f"acquisition_fault:{fault_code.value}",
+                            detail=str(error),
+                        ),
+                        invalid_time=invalid_time,
+                    )
             if self.state is not AcquisitionState.ERROR:
                 self._transition(AcquisitionState.ERROR, on_state)
             raise
@@ -320,3 +392,13 @@ class AcquisitionEngine:
         self._state.transition(target)
         if callback is not None:
             callback(target)
+
+
+def _fault_code(error: BaseException) -> AcquisitionFaultCode:
+    if isinstance(error, AcquisitionFault):
+        return error.code
+    if isinstance(error, SpoolBackpressureError):
+        return AcquisitionFaultCode.QUEUE_BACKPRESSURE
+    if isinstance(error, (SpoolError, OSError)):
+        return AcquisitionFaultCode.STORAGE_WRITE_FAILURE
+    return AcquisitionFaultCode.ACQUISITION_FAILURE

@@ -93,6 +93,21 @@ class InvalidTimeInterval:
             raise ValueError("invalid-time reason and source_event are required")
 
 
+@dataclass(frozen=True, slots=True)
+class SystemEvent:
+    """A timestamped lifecycle or fault event with stable classification."""
+
+    timestamp_s: float
+    event: str
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.timestamp_s) or self.timestamp_s < 0:
+            raise ValueError("system-event timestamp must be finite and non-negative")
+        if not self.event:
+            raise ValueError("system-event classification is required")
+
+
 @dataclass(slots=True)
 class AcquisitionData:
     """Completed non-frame session data used by the NWB finalizer."""
@@ -103,6 +118,7 @@ class AcquisitionData:
     ttl_edges: list[TTLEdge] = field(default_factory=list)
     dropped_frames: list[DroppedFrameEvent] = field(default_factory=list)
     invalid_times: list[InvalidTimeInterval] = field(default_factory=list)
+    system_events: list[SystemEvent] = field(default_factory=list)
     frame_ids: list[int] = field(default_factory=list)
     frame_timestamps_s: list[float] = field(default_factory=list)
     frame_sequences: list[int] = field(default_factory=list)

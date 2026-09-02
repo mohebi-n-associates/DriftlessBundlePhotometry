@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +39,7 @@ from pynwb.image import GrayscaleImage, ImageSeries, RGBImage
 
 from driftless_photometry import __version__
 from driftless_photometry.config import ROIConfig, SessionConfig, Wavelength
+from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
 from driftless_photometry.domain import AcquisitionData
 from driftless_photometry.provenance import (
     NWB_RUNTIME_PROVENANCE_SCRATCH_NAME,
@@ -601,13 +602,30 @@ def _add_events(
         name="system_events",
         description="Acquisition lifecycle events.",
         source_description="Driftless acquisition coordinator.",
-        columns=(("event", "Lifecycle event name."),),
+        columns=(
+            ("event", "Lifecycle or machine-readable fault classification."),
+            ("detail", "Human-readable detail; empty for ordinary lifecycle events."),
+        ),
     )
-    system.add_row(timestamp=0.0, event="recording_started")
+    system.add_row(timestamp=0.0, event="recording_started", detail="")
     if data.frame_timestamps_s:
-        system.add_row(timestamp=data.frame_timestamps_s[-1], event="recording_stopped")
+        system.add_row(
+            timestamp=data.frame_timestamps_s[-1],
+            event="recording_stopped",
+            detail="",
+        )
+        for event in data.system_events:
+            system.add_row(
+                timestamp=event.timestamp_s,
+                event=event.event,
+                detail=event.detail,
+            )
         for event in additional_system_events:
-            system.add_row(timestamp=data.frame_timestamps_s[-1], event=event)
+            system.add_row(
+                timestamp=data.frame_timestamps_s[-1],
+                event=event,
+                detail="",
+            )
     nwbfile.add_events_table(system)
 
     if data.invalid_times:
@@ -693,10 +711,31 @@ def _round_trip_verify(
 ) -> None:
     with NWBHDF5IO(path, mode="r", load_namespaces=True) as io:
         nwbfile = io.read()
+        roi = config.enabled_rois[roi_index]
+        if nwbfile.session_id != f"{config.session_id}__{roi.fiber_id}":
+            raise RuntimeError("NWB round-trip ROI session identity mismatch")
+        if nwbfile.subject is None or nwbfile.subject.subject_id != roi.animal_id:
+            raise RuntimeError("NWB round-trip subject identity mismatch")
         if NWB_SETTINGS_SCRATCH_NAME not in nwbfile.scratch:
             raise RuntimeError("NWB round-trip settings snapshot is missing")
+        stored_settings = json.loads(str(nwbfile.get_scratch(NWB_SETTINGS_SCRATCH_NAME)))
+        expected_settings = json.loads(settings_json(config))
+        if (
+            stored_settings.get("format") != expected_settings["format"]
+            or stored_settings.get("settings") != expected_settings["settings"]
+        ):
+            raise RuntimeError("NWB round-trip settings snapshot mismatch")
         if NWB_RUNTIME_PROVENANCE_SCRATCH_NAME not in nwbfile.scratch:
             raise RuntimeError("NWB round-trip runtime provenance is missing")
+        expected_provenance = data.runtime_provenance or capture_runtime_provenance(
+            adapter_name="not supplied",
+            protocol_version="native_acquisition_v1",
+        )
+        stored_provenance = json.loads(
+            str(nwbfile.get_scratch(NWB_RUNTIME_PROVENANCE_SCRATCH_NAME))
+        )
+        if stored_provenance != expected_provenance.to_document():
+            raise RuntimeError("NWB round-trip runtime provenance mismatch")
         frame_events = nwbfile.events["camera_frames"]
         if len(frame_events) != len(data.frame_ids):
             raise RuntimeError("NWB round-trip camera event count mismatch")
@@ -704,6 +743,20 @@ def _round_trip_verify(
         if len(excitation_events) != len(data.frame_ids):
             raise RuntimeError("NWB round-trip excitation event count mismatch")
         frame_table = frame_events.to_dataframe()
+        exact_columns = {
+            "camera_frame_id": data.frame_ids,
+            "controller_sequence": data.frame_sequences,
+            "wavelength_nm": data.frame_wavelengths_nm,
+            "controller_tick_us": data.frame_ticks_us,
+        }
+        for column, expected in exact_columns.items():
+            if not np.array_equal(frame_table[column].to_numpy(), np.asarray(expected)):
+                raise RuntimeError(f"NWB round-trip {column} provenance mismatch")
+        if not np.array_equal(
+            frame_table["timestamp"].to_numpy(),
+            np.asarray(data.frame_timestamps_s),
+        ):
+            raise RuntimeError("NWB round-trip frame timestamp mismatch")
         if not np.array_equal(
             frame_table["commanded_voltage_v"].to_numpy(),
             np.asarray(data.frame_commanded_voltages_v),
@@ -732,6 +785,9 @@ def _round_trip_verify(
                 raise RuntimeError("NWB round-trip invalid-time table is missing")
             if len(nwbfile.intervals["invalid_times"]) != len(data.invalid_times):
                 raise RuntimeError("NWB round-trip invalid-time count mismatch")
+        expected_system_count = 2 + len(data.system_events)
+        if len(nwbfile.events["system_events"]) < expected_system_count:
+            raise RuntimeError("NWB round-trip system-event count mismatch")
         if wavelength_images:
             stored_images = nwbfile.processing["photometry"]["wavelength_roi_images"].images
             for wavelength, expected in wavelength_images.items():
@@ -819,6 +875,8 @@ def _write_roi_partial_nwb(
     calibration_image: NDArray[np.uint16] | None = None,
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None = None,
     additional_system_events: tuple[str, ...] = (),
+    on_progress: Callable[[FinalizationProgress], None] | None = None,
+    completed_roi_files: int = 0,
 ) -> NWBWriteReport:
     """Write and validate one ROI's partial NWB without promoting it."""
 
@@ -826,6 +884,15 @@ def _write_roi_partial_nwb(
     output_directory = config.output_directory.expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     final_path, partial_path = _roi_output_paths(config, roi)
+    if on_progress is not None:
+        on_progress(
+            FinalizationProgress(
+                stage=FinalizationStage.WRITING,
+                completed_roi_files=completed_roi_files,
+                total_roi_files=len(config.enabled_rois),
+                fiber_id=roi.fiber_id,
+            )
+        )
 
     nwbfile = _create_nwbfile(config, roi, data)
     _add_photometry_metadata_and_traces(nwbfile, config, data, roi_index)
@@ -842,14 +909,45 @@ def _write_roi_partial_nwb(
     with NWBHDF5IO(partial_path, mode="w") as io:
         io.write(nwbfile, cache_spec=True)
 
-    validation_errors = tuple(str(error) for error in validate(path=partial_path))
+    if on_progress is not None:
+        on_progress(
+            FinalizationProgress(
+                stage=FinalizationStage.VALIDATING,
+                completed_roi_files=completed_roi_files,
+                total_roi_files=len(config.enabled_rois),
+                fiber_id=roi.fiber_id,
+            )
+        )
+    return _validate_roi_nwb(
+        partial_path,
+        final_path,
+        config,
+        data,
+        frames,
+        wavelength_images,
+        roi_index,
+    )
+
+
+def _validate_roi_nwb(
+    candidate_path: Path,
+    final_path: Path,
+    config: SessionConfig,
+    data: AcquisitionData,
+    frames: NDArray[np.uint16] | FrameStream | None,
+    wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
+    roi_index: int,
+) -> NWBWriteReport:
+    """Run the complete validation and exact round-trip gate on one candidate."""
+
+    validation_errors = tuple(str(error) for error in validate(path=candidate_path))
     if validation_errors:
         raise RuntimeError("PyNWB validation failed: " + "; ".join(validation_errors))
 
     inspector_messages = tuple(
         str(message)
         for message in inspect_nwbfile(
-            partial_path,
+            candidate_path,
             skip_validate=True,
             importance_threshold=Importance.CRITICAL,
             ignore=["check_data_orientation"],
@@ -859,7 +957,7 @@ def _write_roi_partial_nwb(
     if inspector_messages:
         raise RuntimeError("NWB Inspector found critical issues: " + "; ".join(inspector_messages))
 
-    _round_trip_verify(partial_path, config, data, frames, wavelength_images, roi_index)
+    _round_trip_verify(candidate_path, config, data, frames, wavelength_images, roi_index)
     trace_sample_count = sum(len(samples) for samples in data.traces.values())
     return NWBWriteReport(
         path=final_path,
@@ -879,6 +977,7 @@ def write_session_nwbs(
     calibration_image: NDArray[np.uint16] | None = None,
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None = None,
     additional_system_events: tuple[str, ...] = (),
+    on_progress: Callable[[FinalizationProgress], None] | None = None,
 ) -> tuple[NWBWriteReport, ...]:
     """Write one self-contained, validated NWB file per enabled ROI and animal."""
 
@@ -891,21 +990,151 @@ def write_session_nwbs(
         rendered = ", ".join(str(path) for path in collisions)
         raise FileExistsError(f"ROI output already exists: {rendered}")
 
-    reports = tuple(
-        _write_roi_partial_nwb(
-            config,
-            data,
-            roi_index,
-            frames=frames,
-            calibration_image=calibration_image,
-            wavelength_images=wavelength_images,
-            additional_system_events=additional_system_events,
+    if on_progress is not None:
+        on_progress(
+            FinalizationProgress(
+                stage=FinalizationStage.PREPARING,
+                completed_roi_files=0,
+                total_roi_files=len(config.enabled_rois),
+            )
         )
-        for roi_index in range(len(config.enabled_rois))
-    )
+    reports = []
+    for roi_index in range(len(config.enabled_rois)):
+        reports.append(
+            _write_roi_partial_nwb(
+                config,
+                data,
+                roi_index,
+                frames=frames,
+                calibration_image=calibration_image,
+                wavelength_images=wavelength_images,
+                additional_system_events=additional_system_events,
+                on_progress=on_progress,
+                completed_roi_files=roi_index,
+            )
+        )
+    if on_progress is not None:
+        on_progress(
+            FinalizationProgress(
+                stage=FinalizationStage.PROMOTING,
+                completed_roi_files=0,
+                total_roi_files=len(config.enabled_rois),
+            )
+        )
     for report, (_, partial_path) in zip(reports, paths, strict=True):
         os.replace(partial_path, report.path)
-    return reports
+    if on_progress is not None:
+        on_progress(
+            FinalizationProgress(
+                stage=FinalizationStage.COMPLETE,
+                completed_roi_files=len(config.enabled_rois),
+                total_roi_files=len(config.enabled_rois),
+            )
+        )
+    return tuple(reports)
+
+
+def recover_or_resume_session_nwbs(
+    config: SessionConfig,
+    data: AcquisitionData,
+    *,
+    frames: NDArray[np.uint16] | FrameStream | None = None,
+    calibration_image: NDArray[np.uint16] | None = None,
+    wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None = None,
+    additional_system_events: tuple[str, ...] = (),
+    on_progress: Callable[[FinalizationProgress], None] | None = None,
+) -> tuple[tuple[NWBWriteReport, ...], bool]:
+    """Validate/reuse prior candidates and finish an interrupted file-set promotion."""
+
+    _validate_inputs(config, data, frames, calibration_image, wavelength_images)
+    output_directory = config.output_directory.expanduser().resolve()
+    output_directory.mkdir(parents=True, exist_ok=True)
+    paths = [_roi_output_paths(config, roi) for roi in config.enabled_rois]
+    if on_progress is not None:
+        on_progress(
+            FinalizationProgress(
+                stage=FinalizationStage.PREPARING,
+                completed_roi_files=0,
+                total_roi_files=len(paths),
+            )
+        )
+    reports: list[NWBWriteReport] = []
+    reused_existing = False
+    for roi_index, (final_path, partial_path) in enumerate(paths):
+        if final_path.exists() and partial_path.exists():
+            raise FileExistsError(
+                f"both canonical and partial ROI outputs exist: {final_path}, {partial_path}"
+            )
+        candidate = final_path if final_path.exists() else partial_path
+        if candidate.exists():
+            reused_existing = True
+            if on_progress is not None:
+                on_progress(
+                    FinalizationProgress(
+                        stage=FinalizationStage.VALIDATING,
+                        completed_roi_files=roi_index,
+                        total_roi_files=len(paths),
+                        fiber_id=config.enabled_rois[roi_index].fiber_id,
+                    )
+                )
+            try:
+                report = _validate_roi_nwb(
+                    candidate,
+                    final_path,
+                    config,
+                    data,
+                    frames,
+                    wavelength_images,
+                    roi_index,
+                )
+            except Exception:
+                if candidate == final_path:
+                    raise
+                candidate.unlink()
+                report = _write_roi_partial_nwb(
+                    config,
+                    data,
+                    roi_index,
+                    frames=frames,
+                    calibration_image=calibration_image,
+                    wavelength_images=wavelength_images,
+                    additional_system_events=additional_system_events,
+                    on_progress=on_progress,
+                    completed_roi_files=roi_index,
+                )
+        else:
+            report = _write_roi_partial_nwb(
+                config,
+                data,
+                roi_index,
+                frames=frames,
+                calibration_image=calibration_image,
+                wavelength_images=wavelength_images,
+                additional_system_events=additional_system_events,
+                on_progress=on_progress,
+                completed_roi_files=roi_index,
+            )
+        reports.append(report)
+    if on_progress is not None:
+        on_progress(
+            FinalizationProgress(
+                stage=FinalizationStage.PROMOTING,
+                completed_roi_files=sum(final.exists() for final, _partial in paths),
+                total_roi_files=len(paths),
+            )
+        )
+    for report, (final_path, partial_path) in zip(reports, paths, strict=True):
+        if not final_path.exists():
+            os.replace(partial_path, report.path)
+    if on_progress is not None:
+        on_progress(
+            FinalizationProgress(
+                stage=FinalizationStage.COMPLETE,
+                completed_roi_files=len(paths),
+                total_roi_files=len(paths),
+            )
+        )
+    return tuple(reports), reused_existing
 
 
 def write_session_nwb(

@@ -17,6 +17,10 @@ target; the simulator and GUI demo are cross-platform.
   lifecycle states.
 - Bounded, checksummed, chunked session spools that survive interruption and disk or
   finalizer errors.
+- Pre-arm storage-capacity checks and structured live diagnostics for queue pressure,
+  write latency, dropped frames, clock residuals, and NWB finalization stages.
+- Typed acquisition faults are committed as system events and invalid-time markers
+  before an incomplete spool closes whenever committed samples can be recovered.
 - Canonical NWB finalization using PyNWB, `ndx-fiber-photometry`, and
   `ndx-ophys-devices`, including a separate subject, brain region, sensor type, and
   validated file for every ROI.
@@ -156,11 +160,28 @@ Recover all committed data from a complete or interrupted spool:
 dbf --recover-spool path/to/session.photometry-spool
 ```
 
-Successful recovery validates the NWB before removing the spool. Add `--keep-spool`
-to retain it for forensic inspection. Incomplete acquisitions are explicitly marked
-in the NWB system event table. Legacy schema-v1 spools remain recoverable, but the
-resulting invalid-time record identifies the per-frame host receipt and commanded
+Inspect direct child spools without creating or removing files:
+
+```bash
+dbf --inspect-spools path/to/output-directory
+```
+
+Inspection verifies checksums and reports completeness plus recoverable frame, trace,
+TTL, invalid-time, system-event, schema, and ROI-file counts. It deliberately does
+not recurse into unrelated directories. Successful recovery validates the complete
+NWB set before removing the spool; add `--keep-spool` for forensic retention.
+Recovery is idempotent and can resume if a process stopped after validating partials
+or while promoting the multi-ROI set. Existing canonical files must match the spool
+exactly and are never overwritten silently. Incomplete acquisitions are explicitly
+marked in the NWB system event table. Legacy schema-v1 spools remain recoverable, but
+the resulting invalid-time record identifies the per-frame host receipt and commanded
 intensity provenance that those older spools never persisted.
+
+The storage estimate uses configured duration, total frame rate, image dimensions,
+raw-retention policy, enabled ROI count, and a 64 MiB reserve. CI correctness tests
+exercise non-realtime simulator sessions at 300 frames/s trace-only and 60 frames/s
+with raw 32 × 24 frames for one ROI. These small-fixture bounds test queue/data
+integrity; they are not throughput claims for the CS505MU or any physical rig.
 
 Run the release gates:
 

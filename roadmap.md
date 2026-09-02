@@ -115,7 +115,7 @@ acquisition and time base feeding them have passed integrated validation.
 
 ## Phase 1 — Reliability closure and continuous integration
 
-**Status: In progress**
+**Status: Completed in Unreleased**
 
 **0.1.6 foundation:** The versioned v1 JSON format, complete GUI save/load/default
 workflow, redirected-Windows-Documents location, exact NWB settings snapshots, and
@@ -130,8 +130,12 @@ The Windows/macOS Python 3.11-3.13 CI matrix and isolated core/GUI wheel smoke g
 are implemented in 0.1.6. Unreleased work closes the native canonical data contract:
 actual per-exposure voltage commands, host receipt times, ROI saturation QC,
 excitation events, invalid intervals, runtime provenance, and recoverable spool-v1
-limitations now round-trip explicitly. The remaining fault, recovery, migration, and
-capacity work continues in dependency order.
+limitations now round-trip explicitly. Unreleased reliability closure adds typed
+fault journaling, deterministic coverage for every listed software fault, safe spool
+inspection/discovery, idempotent interrupted recovery, structured diagnostics,
+storage preflight, and small-fixture capacity bounds. A future configuration version
+must add its migration at the same time it is introduced; unknown versions remain
+rejected.
 
 ### Goal
 
@@ -148,7 +152,7 @@ system before connecting it to physical devices.
    - Add a clean-wheel smoke test for `dbf --version`, headless acquisition, GUI
      import, and packaged logo availability.
 
-2. **Complete fault-injection coverage**
+2. **Complete fault-injection coverage — implemented in Unreleased**
    - Retain existing stop, drop-event, non-monotonic sequence/tick, spool corruption,
      writer failure, and finalizer failure tests.
    - Add deterministic tests for queue saturation, malformed controller streams,
@@ -177,12 +181,12 @@ system before connecting it to physical devices.
    - Capture application, dependency, operating-system, adapter, and protocol
      versions in the final NWB provenance.
 
-5. **Recovery workflow**
+5. **Recovery workflow — implemented in Unreleased**
    - Discover incomplete spools safely without scanning unrelated directories.
    - Report recoverable counts and acquisition completeness before finalization.
    - Make recovery idempotent and test interrupted recovery itself.
 
-6. **Observability and capacity limits**
+6. **Observability and capacity limits — implemented in Unreleased**
    - Define structured diagnostics for queue depth, write latency, dropped frames,
      clock residuals, and finalization progress.
    - Establish tested bounds for simulator throughput, raw-frame retention, and

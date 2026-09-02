@@ -8,6 +8,19 @@ version, move its completed entries into a dated version section.
 
 ### Added
 
+- Added typed acquisition-fault and system-event records for camera/controller
+  disconnects, malformed controller streams, clock discontinuities, queue pressure,
+  and storage failures. When committed samples exist, the fault classification and
+  invalid-time marker are drained into the recoverable spool before it closes.
+- Added structured diagnostics for bounded spool queue depth/capacity, peak pressure,
+  committed chunks/frames, write latency, dropped frames, clock residuals, and each
+  multi-ROI NWB finalization stage.
+- Added conservative storage preflight before arming. Estimates account for the
+  recovery spool, one independently useful NWB per ROI, optional duplicated raw
+  frames, reference images, overhead, and a free-space reserve.
+- Added read-only direct-child spool discovery and inspection with checksum-validated
+  frame, trace, TTL, invalid-time, system-event, completeness, schema, and ROI counts.
+  The CLI exposes this as `dbf --inspect-spools DIRECTORY`.
 - Every native camera exposure now retains its actual commanded LED voltage, host
   receipt time, and per-ROI saturation fraction through the recovery spool and into
   each independently validated animal NWB file.
@@ -18,6 +31,11 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- Recovery is now idempotent. It validates and reuses matching canonical or partial
+  ROI outputs, resumes an interrupted all-ROI promotion, and rewrites only a corrupt
+  unvalidated partial. Existing canonical files are never silently replaced.
+- Closing the GUI during recording or draining requests a safe stop and defers window
+  destruction until the acquisition worker has drained and finished.
 - Commanded-voltage series now contain one value per observed exposure instead of a
   single value reconstructed from the initial configuration. Interrupted recordings
   retain empty series for configured wavelengths that were not observed.

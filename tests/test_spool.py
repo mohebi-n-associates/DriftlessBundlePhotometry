@@ -1,5 +1,6 @@
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -10,38 +11,49 @@ from driftless_photometry.domain import (
     ExposureRecord,
     FramePacket,
     InvalidTimeInterval,
+    SystemEvent,
     TraceSample,
     TTLEdge,
 )
 from driftless_photometry.provenance import RuntimeProvenance
-from driftless_photometry.storage import SessionSpool, SpoolError, load_session_spool
+from driftless_photometry.storage import (
+    SessionSpool,
+    SpoolBackpressureError,
+    SpoolError,
+    load_session_spool,
+)
 
 
 def _submit_frames(spool: SessionSpool, count: int) -> list[np.ndarray]:
     images = []
     for index in range(count):
-        wavelength = list(Wavelength)[index % 3]
-        image = np.full((24, 32), index + 10, dtype=np.uint16)
+        image = _submit_frame(spool, index)
         images.append(image)
-        exposure = ExposureRecord(
-            index,
-            index * 0.1,
-            index * 100_000,
-            wavelength,
-            0.5 + index * 0.1,
-        )
-        packet = FramePacket(index + 1, image, exposure, index * 0.1 + 0.001)
-        sample = TraceSample(
-            timestamp_s=index * 0.1,
-            frame_id=index + 1,
-            sequence=index,
-            controller_tick_us=index * 100_000,
-            wavelength_nm=wavelength,
-            values=np.asarray([100 + index, 200 + index], dtype=np.float32),
-            saturation_fractions=np.asarray([index / 100, (index + 1) / 100], dtype=np.float32),
-        )
-        spool.submit_frame(packet, sample)
     return images
+
+
+def _submit_frame(spool: SessionSpool, index: int) -> np.ndarray:
+    wavelength = list(Wavelength)[index % 3]
+    image = np.full((24, 32), index + 10, dtype=np.uint16)
+    exposure = ExposureRecord(
+        index,
+        index * 0.1,
+        index * 100_000,
+        wavelength,
+        0.5 + index * 0.1,
+    )
+    packet = FramePacket(index + 1, image, exposure, index * 0.1 + 0.001)
+    sample = TraceSample(
+        timestamp_s=index * 0.1,
+        frame_id=index + 1,
+        sequence=index,
+        controller_tick_us=index * 100_000,
+        wavelength_nm=wavelength,
+        values=np.asarray([100 + index, 200 + index], dtype=np.float32),
+        saturation_fractions=np.asarray([index / 100, (index + 1) / 100], dtype=np.float32),
+    )
+    spool.submit_frame(packet, sample)
+    return image
 
 
 @pytest.mark.parametrize("raw_capture", [False, True])
@@ -227,3 +239,55 @@ def test_background_writer_failure_is_surfaced_and_spool_is_preserved(
         spool.close()
     assert spool.path.exists()
     assert (spool.path / "manifest.json").exists()
+
+
+def test_bounded_queue_saturation_is_surfaced_and_fault_record_is_recoverable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = demo_config(
+        tmp_path,
+        fiber_count=2,
+        raw_capture=False,
+        width_px=32,
+        height_px=24,
+    )
+    spool = SessionSpool(
+        config,
+        chunk_size=1,
+        queue_size=1,
+        submit_timeout_s=0.02,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    original_commit = spool._commit_chunk
+
+    def blocked_commit(items) -> None:
+        entered.set()
+        assert release.wait(2.0)
+        original_commit(items)
+
+    monkeypatch.setattr(spool, "_commit_chunk", blocked_commit)
+    _submit_frame(spool, 0)
+    assert entered.wait(1.0)
+    _submit_frame(spool, 1)
+
+    with pytest.raises(SpoolBackpressureError, match="queue is full"):
+        _submit_frame(spool, 2)
+
+    assert spool.diagnostics.queue_capacity == 1
+    assert spool.diagnostics.peak_queue_depth == 1
+    release.set()
+    spool.abort(
+        system_event=SystemEvent(
+            timestamp_s=0.1,
+            event="acquisition_fault:queue_backpressure",
+            detail="bounded spool queue is full",
+        )
+    )
+    loaded = load_session_spool(spool.path)
+    assert loaded.complete is False
+    assert loaded.data.frame_ids == [1, 2]
+    assert loaded.data.system_events[-1].event == "acquisition_fault:queue_backpressure"
+    assert spool.diagnostics.committed_frames == 2
+    assert spool.diagnostics.maximum_write_latency_s > 0

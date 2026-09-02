@@ -12,6 +12,7 @@ from driftless_photometry.domain import (
     ExposureRecord,
     FramePacket,
     InvalidTimeInterval,
+    SystemEvent,
     TraceSample,
     TTLEdge,
 )
@@ -87,6 +88,13 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
             source_event="test_clock_discontinuity",
         )
     )
+    data.system_events.append(
+        SystemEvent(
+            timestamp_s=0.15,
+            event="acquisition_fault:test_clock_discontinuity",
+            detail="synthetic fault detail",
+        )
+    )
     return config, data, frames
 
 
@@ -156,6 +164,13 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
             np.testing.assert_allclose(invalid_times["stop_time"], [0.15])
             assert invalid_times["reason"].tolist() == ["synthetic clock uncertainty"]
             assert invalid_times["source_event"].tolist() == ["test_clock_discontinuity"]
+            system_events = nwbfile.events["system_events"].to_dataframe()
+            assert system_events["event"].tolist() == [
+                "recording_started",
+                "recording_stopped",
+                "acquisition_fault:test_clock_discontinuity",
+            ]
+            assert system_events.iloc[-1]["detail"] == "synthetic fault detail"
             assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
             images = nwbfile.processing["photometry"]["wavelength_roi_images"].images
             assert len(images) == 6

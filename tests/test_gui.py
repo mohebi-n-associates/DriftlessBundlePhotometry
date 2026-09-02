@@ -2,11 +2,14 @@ from array import array
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QAbstractSpinBox
 
 from driftless_photometry import __version__
 from driftless_photometry.config import SessionConfig, TraceDisplayConfig, Wavelength, demo_config
+from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
 from driftless_photometry.gui.main_window import MainWindow
 from driftless_photometry.settings import save_default_settings
 
@@ -57,6 +60,61 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
     for wavelength in window.wavelength_image_items:
         assert window.wavelength_image_items[wavelength].image.shape == (256, 256)
         assert window.wavelength_frame_labels[wavelength].text().startswith("Frame ")
+
+
+@pytest.mark.parametrize("operation_state", ["recording", "draining"])
+def test_gui_close_requests_safe_stop_and_waits_for_worker(
+    qtbot,
+    tmp_path: Path,
+    operation_state: str,
+) -> None:
+    class RunningThread:
+        def isRunning(self) -> bool:
+            return True
+
+    class StopTrackingWorker:
+        def __init__(self) -> None:
+            self.stop_requested = False
+
+        def request_stop(self) -> None:
+            self.stop_requested = True
+
+    window = MainWindow(output_directory=tmp_path)
+    qtbot.addWidget(window)
+    worker = StopTrackingWorker()
+    window._thread = RunningThread()
+    window._worker = worker
+    window._operation_kind = "recording"
+    if operation_state == "draining":
+        window._on_state("draining")
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+
+    assert event.isAccepted() is False
+    assert window._close_pending is True
+    assert worker.stop_requested is True
+    assert window.stop_button.isEnabled() is False
+    window._thread = None
+    window._worker = None
+    window._close_pending = False
+
+
+def test_gui_presents_structured_finalization_progress(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path)
+    qtbot.addWidget(window)
+
+    window._on_finalization_progress(
+        FinalizationProgress(
+            stage=FinalizationStage.VALIDATING,
+            completed_roi_files=1,
+            total_roi_files=3,
+            fiber_id="fiber_02",
+        )
+    )
+
+    assert "Validating partial NWB for fiber_02" in window.live_status.text()
+    assert "1/3 ROI files complete" in window.statusBar().currentMessage()
 
 
 def test_gui_roi_count_rebuilds_calibration_circles(qtbot, tmp_path: Path) -> None:

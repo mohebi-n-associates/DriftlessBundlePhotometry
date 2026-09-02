@@ -1,5 +1,7 @@
 """Hardware interfaces and simulator backends."""
 
+from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
+
 from .base import RigPacket, RigSource
 from .controller_protocol import (
     PROTOCOL_VERSION,
@@ -18,6 +20,8 @@ from .thorlabs import ThorlabsSDKStatus, ThorlabsSDKUnavailable, require_sdk, sd
 
 __all__ = [
     "PROTOCOL_VERSION",
+    "AcquisitionFault",
+    "AcquisitionFaultCode",
     "ControllerLifecycleGuard",
     "ControllerMessage",
     "ControllerState",

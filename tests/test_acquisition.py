@@ -8,10 +8,13 @@ from pynwb import NWBHDF5IO
 
 from driftless_photometry.acquisition import AcquisitionEngine, preview_duration_s, run_preview
 from driftless_photometry.config import demo_config
+from driftless_photometry.diagnostics import FinalizationStage
+from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from driftless_photometry.hardware import RigPacket, SimulatedRig
 from driftless_photometry.provenance import NWB_RUNTIME_PROVENANCE_SCRATCH_NAME
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
+from driftless_photometry.storage import InsufficientStorageError, load_session_spool
 
 
 def test_preview_validates_all_channels_without_creating_output(tmp_path: Path) -> None:
@@ -58,6 +61,7 @@ def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Pat
     )
     states = []
     progress = []
+    finalization = []
     engine = AcquisitionEngine(spool_chunk_size=2, spool_queue_size=4)
     result = engine.run(
         config,
@@ -65,10 +69,24 @@ def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Pat
         duration_s=0.2,
         on_state=states.append,
         on_progress=progress.append,
+        on_finalization=finalization.append,
     )
     assert len(result.reports) == 2
     assert result.report.frame_count == 6
     assert len(progress) == 6
+    assert [item.stage for item in finalization] == [
+        FinalizationStage.PREPARING,
+        FinalizationStage.WRITING,
+        FinalizationStage.VALIDATING,
+        FinalizationStage.WRITING,
+        FinalizationStage.VALIDATING,
+        FinalizationStage.PROMOTING,
+        FinalizationStage.COMPLETE,
+    ]
+    assert result.diagnostics.spool.committed_frames == 6
+    assert result.diagnostics.spool.committed_chunks == 3
+    assert result.diagnostics.spool.maximum_write_latency_s >= 0
+    assert result.storage_capacity.estimated_frame_count == 6
     assert engine.state is AcquisitionState.READY
     assert states == [
         AcquisitionState.READY,
@@ -143,6 +161,7 @@ def test_sequence_gap_is_preserved_as_drop_event(tmp_path: Path) -> None:
         _GapRig(config),
         duration_s=0.2,
     )
+    assert result.diagnostics.dropped_frames == 1
     with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
         nwbfile = io.read()
         dropped = nwbfile.events["dropped_frame_events"].to_dataframe()
@@ -153,6 +172,33 @@ def test_sequence_gap_is_preserved_as_drop_event(tmp_path: Path) -> None:
         invalid = nwbfile.intervals["invalid_times"].to_dataframe()
         assert len(invalid) == 1
         assert invalid.iloc[0]["source_event"] == "controller_sequence_gap"
+
+
+class _ClockResidualRig(_GapRig):
+    def packets(self, duration_s: float) -> Iterator[RigPacket]:
+        del duration_s
+        first, second = self._packets[:2]
+        yield replace(first, frame=replace(first.frame, host_received_s=0.010))
+        yield replace(
+            second,
+            frame=replace(
+                second.frame,
+                host_received_s=second.frame.exposure.timestamp_s + 0.015,
+            ),
+        )
+
+
+def test_clock_residual_diagnostic_tracks_transport_offset_change(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+
+    result = AcquisitionEngine(spool_chunk_size=2).run(
+        config,
+        _ClockResidualRig(config),
+        duration_s=0.2,
+    )
+
+    assert result.diagnostics.clock_residual_s == pytest.approx(0.005)
+    assert result.diagnostics.maximum_absolute_clock_residual_s == pytest.approx(0.005)
 
 
 class _DuplicateSequenceRig(_GapRig):
@@ -228,6 +274,73 @@ def test_non_increasing_controller_tick_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="controller ticks are not strictly increasing"):
         engine.run(config, _BadTickRig(config), duration_s=0.2)
     assert engine.state is AcquisitionState.ERROR
+    loaded = load_session_spool(next(tmp_path.glob("*.photometry-spool")))
+    assert loaded.data.system_events[-1].event == "acquisition_fault:clock_discontinuity"
+    assert loaded.data.invalid_times[-1].source_event == "clock_discontinuity"
+
+
+class _FaultingRig:
+    def __init__(self, config, code: AcquisitionFaultCode) -> None:
+        self._first = next(SimulatedRig(config, seed=31).packets(0.1))
+        self._code = code
+        self.stop_called = False
+
+    def packets(self, duration_s: float) -> Iterator[RigPacket]:
+        del duration_s
+        yield self._first
+        raise AcquisitionFault(self._code, f"simulated {self._code.value}")
+
+    def stop(self) -> None:
+        self.stop_called = True
+
+
+@pytest.mark.parametrize(
+    "fault_code",
+    [
+        AcquisitionFaultCode.CAMERA_DISCONNECT,
+        AcquisitionFaultCode.CONTROLLER_DISCONNECT,
+        AcquisitionFaultCode.MALFORMED_CONTROLLER_STREAM,
+    ],
+)
+def test_source_fault_is_committed_before_incomplete_spool_is_closed(
+    tmp_path: Path,
+    fault_code: AcquisitionFaultCode,
+) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    source = _FaultingRig(config, fault_code)
+    engine = AcquisitionEngine(spool_chunk_size=4)
+
+    with pytest.raises(AcquisitionFault, match="simulated"):
+        engine.run(config, source, duration_s=0.2)
+
+    loaded = load_session_spool(next(tmp_path.glob("*.photometry-spool")))
+    assert loaded.complete is False
+    assert loaded.data.frame_ids == [1]
+    assert loaded.data.system_events[-1].event == f"acquisition_fault:{fault_code.value}"
+    assert loaded.data.invalid_times[-1].source_event == fault_code.value
+    assert source.stop_called is True
+    assert engine.state is AcquisitionState.ERROR
+
+
+def test_insufficient_storage_fails_before_arming_or_creating_a_spool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    source = _FaultingRig(config, AcquisitionFaultCode.CAMERA_DISCONNECT)
+
+    def fail_capacity(*args, **kwargs):
+        del args, kwargs
+        raise InsufficientStorageError("simulated insufficient disk")
+
+    monkeypatch.setattr("driftless_photometry.acquisition.check_storage_capacity", fail_capacity)
+    engine = AcquisitionEngine()
+    with pytest.raises(InsufficientStorageError, match="insufficient disk"):
+        engine.run(config, source, duration_s=0.2)
+
+    assert source.stop_called is True
+    assert engine.state is AcquisitionState.ERROR
+    assert not list(tmp_path.glob("*.photometry-spool"))
 
 
 def test_finalizer_failure_preserves_complete_spool(

@@ -8,6 +8,7 @@ import os
 import queue
 import shutil
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -16,11 +17,13 @@ from typing import IO
 import numpy as np
 
 from driftless_photometry.config import SessionConfig, Wavelength
+from driftless_photometry.diagnostics import SpoolDiagnostics
 from driftless_photometry.domain import (
     AcquisitionData,
     DroppedFrameEvent,
     FramePacket,
     InvalidTimeInterval,
+    SystemEvent,
     TraceSample,
     TTLEdge,
 )
@@ -69,11 +72,16 @@ class _InvalidTimeWork:
 
 
 @dataclass(frozen=True, slots=True)
+class _SystemEventWork:
+    event: SystemEvent
+
+
+@dataclass(frozen=True, slots=True)
 class _StopWork:
     complete: bool
 
 
-_Work = _FrameWork | _TTLWork | _InvalidTimeWork | _StopWork
+_Work = _FrameWork | _TTLWork | _InvalidTimeWork | _SystemEventWork | _StopWork
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +121,11 @@ class SessionSpool:
         self._chunk_size = chunk_size
         self._submit_timeout_s = submit_timeout_s
         self._queue: queue.Queue[_Work] = queue.Queue(maxsize=queue_size)
+        self._queue_capacity = queue_size
+        self._peak_queue_depth = 0
+        self._last_write_latency_s = 0.0
+        self._maximum_write_latency_s = 0.0
+        self._diagnostics_lock = threading.Lock()
         self._error: BaseException | None = None
         self._closed = False
         self._wavelengths_submitted: set[Wavelength] = set()
@@ -123,6 +136,7 @@ class SessionSpool:
             "frame_count": 0,
             "ttl_edge_count": 0,
             "invalid_time_count": 0,
+            "system_event_count": 0,
             "chunks": [],
             "calibration_image": None,
             "wavelength_images": {},
@@ -174,6 +188,25 @@ class SessionSpool:
         self._ensure_open()
         self._put(_InvalidTimeWork(interval=interval))
 
+    def submit_system_event(self, event: SystemEvent) -> None:
+        self._ensure_open()
+        self._put(_SystemEventWork(event=event))
+
+    @property
+    def diagnostics(self) -> SpoolDiagnostics:
+        """Return a thread-safe snapshot without blocking the writer."""
+
+        with self._diagnostics_lock:
+            return SpoolDiagnostics(
+                queue_depth=self._queue.qsize(),
+                queue_capacity=self._queue_capacity,
+                peak_queue_depth=self._peak_queue_depth,
+                committed_frames=int(self._manifest["frame_count"]),
+                committed_chunks=len(self._manifest["chunks"]),
+                last_write_latency_s=self._last_write_latency_s,
+                maximum_write_latency_s=self._maximum_write_latency_s,
+            )
+
     def close(self, *, complete: bool = True) -> None:
         if self._closed:
             return
@@ -182,7 +215,18 @@ class SessionSpool:
         self._closed = True
         self._raise_if_error()
 
-    def abort(self) -> None:
+    def abort(
+        self,
+        *,
+        system_event: SystemEvent | None = None,
+        invalid_time: InvalidTimeInterval | None = None,
+    ) -> None:
+        if self._closed:
+            return
+        if system_event is not None:
+            self._enqueue_critical(_SystemEventWork(event=system_event))
+        if invalid_time is not None:
+            self._enqueue_critical(_InvalidTimeWork(interval=invalid_time))
         self.close(complete=False)
 
     def cleanup(self) -> None:
@@ -200,7 +244,25 @@ class SessionSpool:
             self._queue.put(work, timeout=self._submit_timeout_s)
         except queue.Full as error:
             raise SpoolBackpressureError("bounded spool queue is full") from error
+        with self._diagnostics_lock:
+            self._peak_queue_depth = max(self._peak_queue_depth, self._queue.qsize())
         self._raise_if_error()
+
+    def _enqueue_critical(self, work: _Work) -> None:
+        """Queue a fault record during cleanup without losing it to prior pressure."""
+
+        while True:
+            self._raise_if_error()
+            try:
+                self._queue.put(work, timeout=0.1)
+                with self._diagnostics_lock:
+                    self._peak_queue_depth = max(
+                        self._peak_queue_depth,
+                        self._queue.qsize(),
+                    )
+                return
+            except queue.Full:
+                continue
 
     def _enqueue_stop(self, work: _StopWork) -> None:
         while True:
@@ -219,29 +281,35 @@ class SessionSpool:
         frame_buffer: list[_FrameWork] = []
         ttl_path = self.path / "ttl_edges.jsonl"
         invalid_path = self.path / "invalid_times.jsonl"
+        system_path = self.path / "system_events.jsonl"
         try:
             with (
                 ttl_path.open("a", encoding="utf-8") as ttl_file,
                 invalid_path.open("a", encoding="utf-8") as invalid_file,
+                system_path.open("a", encoding="utf-8") as system_file,
             ):
                 while True:
                     work = self._queue.get()
                     if isinstance(work, _FrameWork):
                         frame_buffer.append(work)
                         if len(frame_buffer) >= self._chunk_size:
-                            self._commit_chunk(frame_buffer)
+                            self._commit_timed_chunk(frame_buffer)
                             frame_buffer.clear()
                     elif isinstance(work, _TTLWork):
                         self._write_ttl(ttl_file, work.edge)
                     elif isinstance(work, _InvalidTimeWork):
                         self._write_invalid_time(invalid_file, work.interval)
+                    elif isinstance(work, _SystemEventWork):
+                        self._write_system_event(system_file, work.event)
                     else:
                         if frame_buffer:
-                            self._commit_chunk(frame_buffer)
+                            self._commit_timed_chunk(frame_buffer)
                         ttl_file.flush()
                         os.fsync(ttl_file.fileno())
                         invalid_file.flush()
                         os.fsync(invalid_file.fileno())
+                        system_file.flush()
+                        os.fsync(system_file.fileno())
                         self._manifest["complete"] = work.complete
                         self._write_manifest()
                         self._queue.task_done()
@@ -263,6 +331,19 @@ class SessionSpool:
         invalid_file.write(json.dumps(asdict(interval), separators=(",", ":")) + "\n")
         invalid_file.flush()
         self._manifest["invalid_time_count"] = int(self._manifest["invalid_time_count"]) + 1
+
+    def _write_system_event(self, system_file: IO[str], event: SystemEvent) -> None:
+        system_file.write(json.dumps(asdict(event), separators=(",", ":")) + "\n")
+        system_file.flush()
+        self._manifest["system_event_count"] = int(self._manifest["system_event_count"]) + 1
+
+    def _commit_timed_chunk(self, items: list[_FrameWork]) -> None:
+        started = time.perf_counter()
+        self._commit_chunk(items)
+        elapsed = time.perf_counter() - started
+        with self._diagnostics_lock:
+            self._last_write_latency_s = elapsed
+            self._maximum_write_latency_s = max(self._maximum_write_latency_s, elapsed)
 
     def _commit_chunk(self, items: list[_FrameWork]) -> None:
         chunk_index = len(self._manifest["chunks"])
@@ -453,6 +534,12 @@ def load_session_spool(path: Path) -> LoadedSpool:
                 data.invalid_times.append(InvalidTimeInterval(**json.loads(line)))
                 explicit_invalid_count += 1
 
+    system_path = path / "system_events.jsonl"
+    if system_path.exists():
+        for line in system_path.read_text(encoding="utf-8").splitlines():
+            if line:
+                data.system_events.append(SystemEvent(**json.loads(line)))
+
     if schema_version >= 2:
         provenance_document = json.loads(
             (path / "runtime_provenance.json").read_text(encoding="utf-8")
@@ -519,6 +606,9 @@ def load_session_spool(path: Path) -> LoadedSpool:
     expected_invalid_count = int(manifest.get("invalid_time_count", 0))
     if explicit_invalid_count != expected_invalid_count:
         raise SpoolError("manifest invalid-time count does not match interval log")
+    expected_system_count = int(manifest.get("system_event_count", 0))
+    if len(data.system_events) != expected_system_count:
+        raise SpoolError("manifest system-event count does not match event log")
     return LoadedSpool(
         path=path,
         config=config,
