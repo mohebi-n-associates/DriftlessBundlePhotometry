@@ -24,6 +24,10 @@ _BASE_SIGNAL = {
 class SimulatedRig:
     """A repeatable software rig using the production frame/event contracts."""
 
+    adapter_name = "driftless_simulator"
+    adapter_version = "1"
+    protocol_version = "simulated_explicit_exposure_v1"
+
     def __init__(
         self,
         config: SessionConfig,

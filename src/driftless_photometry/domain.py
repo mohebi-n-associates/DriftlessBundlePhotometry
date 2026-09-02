@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .config import Wavelength
+from .provenance import RuntimeProvenance
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,24 @@ class DroppedFrameEvent:
     reason: str = "controller sequence gap"
 
 
+@dataclass(frozen=True, slots=True)
+class InvalidTimeInterval:
+    """A continuous session span whose scientific validity is compromised."""
+
+    start_time_s: float
+    stop_time_s: float
+    reason: str
+    source_event: str
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.start_time_s) or not np.isfinite(self.stop_time_s):
+            raise ValueError("invalid-time bounds must be finite")
+        if self.start_time_s < 0 or self.stop_time_s < self.start_time_s:
+            raise ValueError("invalid-time bounds must be ordered and non-negative")
+        if not self.reason or not self.source_event:
+            raise ValueError("invalid-time reason and source_event are required")
+
+
 @dataclass(slots=True)
 class AcquisitionData:
     """Completed non-frame session data used by the NWB finalizer."""
@@ -83,12 +102,17 @@ class AcquisitionData:
     )
     ttl_edges: list[TTLEdge] = field(default_factory=list)
     dropped_frames: list[DroppedFrameEvent] = field(default_factory=list)
+    invalid_times: list[InvalidTimeInterval] = field(default_factory=list)
     frame_ids: list[int] = field(default_factory=list)
     frame_timestamps_s: list[float] = field(default_factory=list)
     frame_sequences: list[int] = field(default_factory=list)
     frame_ticks_us: list[int] = field(default_factory=list)
     frame_wavelengths_nm: list[int] = field(default_factory=list)
+    frame_commanded_voltages_v: list[float] = field(default_factory=list)
+    frame_host_received_s: list[float] = field(default_factory=list)
+    frame_saturation_fractions: list[NDArray[np.float32]] = field(default_factory=list)
     frame_saved_indices: list[int] = field(default_factory=list)
+    runtime_provenance: RuntimeProvenance | None = None
 
     def append_frame(self, packet: FramePacket, sample: TraceSample, saved_index: int) -> None:
         self.traces[sample.wavelength_nm].append(sample)
@@ -97,4 +121,7 @@ class AcquisitionData:
         self.frame_sequences.append(packet.exposure.sequence)
         self.frame_ticks_us.append(packet.exposure.controller_tick_us)
         self.frame_wavelengths_nm.append(int(packet.exposure.wavelength_nm))
+        self.frame_commanded_voltages_v.append(packet.exposure.commanded_voltage_v)
+        self.frame_host_received_s.append(packet.host_received_s)
+        self.frame_saturation_fractions.append(sample.saturation_fractions.copy())
         self.frame_saved_indices.append(saved_index)

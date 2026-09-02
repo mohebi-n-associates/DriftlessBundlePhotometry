@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -8,6 +9,7 @@ from pynwb import NWBHDF5IO
 from driftless_photometry.acquisition import AcquisitionEngine, preview_duration_s, run_preview
 from driftless_photometry.config import demo_config
 from driftless_photometry.hardware import RigPacket, SimulatedRig
+from driftless_photometry.provenance import NWB_RUNTIME_PROVENANCE_SCRATCH_NAME
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
 
@@ -82,6 +84,9 @@ def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Pat
             assert nwbfile.subject.subject_id == config.rois[roi_index].animal_id
             assert nwbfile.acquisition["camera_frames"].data.shape == (6, 24, 32)
             assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
+            provenance = json.loads(str(nwbfile.get_scratch(NWB_RUNTIME_PROVENANCE_SCRATCH_NAME)))
+            assert provenance["adapter_name"] == "driftless_simulator"
+            assert provenance["protocol_version"] == "simulated_explicit_exposure_v1"
 
 
 def test_headless_engine_records_only_enabled_rois(tmp_path: Path) -> None:
@@ -139,11 +144,15 @@ def test_sequence_gap_is_preserved_as_drop_event(tmp_path: Path) -> None:
         duration_s=0.2,
     )
     with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
-        dropped = io.read().events["dropped_frame_events"].to_dataframe()
+        nwbfile = io.read()
+        dropped = nwbfile.events["dropped_frame_events"].to_dataframe()
         assert len(dropped) == 1
         assert dropped.iloc[0]["expected_sequence"] == 1
         assert dropped.iloc[0]["observed_sequence"] == 2
         assert dropped.iloc[0]["missing_count"] == 1
+        invalid = nwbfile.intervals["invalid_times"].to_dataframe()
+        assert len(invalid) == 1
+        assert invalid.iloc[0]["source_event"] == "controller_sequence_gap"
 
 
 class _DuplicateSequenceRig(_GapRig):

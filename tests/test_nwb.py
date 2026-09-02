@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import h5py
@@ -10,8 +11,13 @@ from driftless_photometry.domain import (
     AcquisitionData,
     ExposureRecord,
     FramePacket,
+    InvalidTimeInterval,
     TraceSample,
     TTLEdge,
+)
+from driftless_photometry.provenance import (
+    NWB_RUNTIME_PROVENANCE_SCRATCH_NAME,
+    RuntimeProvenance,
 )
 from driftless_photometry.settings import (
     NWB_SETTINGS_SCRATCH_NAME,
@@ -30,6 +36,15 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
     )
     frames = np.empty((6, 24, 32), dtype=np.uint16)
     data = AcquisitionData()
+    data.runtime_provenance = RuntimeProvenance(
+        application_version="test-application",
+        python_version="test-python",
+        operating_system="test-os",
+        adapter_name="golden-rig",
+        adapter_version="2",
+        protocol_version="golden-protocol-v3",
+        dependencies=(("pynwb", "test-version"),),
+    )
     wavelengths = list(Wavelength)
     for index in range(6):
         wavelength = wavelengths[index % 3]
@@ -40,7 +55,7 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
             timestamp_s=index * 0.05,
             controller_tick_us=index * 50_000,
             wavelength_nm=wavelength,
-            commanded_voltage_v=1.0,
+            commanded_voltage_v=0.5 + index * 0.1,
         )
         packet = FramePacket(
             frame_id=1000 + index,
@@ -55,7 +70,7 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
             controller_tick_us=exposure.controller_tick_us,
             wavelength_nm=wavelength,
             values=np.asarray([100 + index, 200 + index], dtype=np.float32),
-            saturation_fractions=np.zeros(2, dtype=np.float32),
+            saturation_fractions=np.asarray([index / 100, (index + 1) / 100], dtype=np.float32),
         )
         data.append_frame(packet, sample, index if raw_capture else -1)
     data.ttl_edges.extend(
@@ -63,6 +78,14 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
             TTLEdge(0.10, 100_000, 1, "behavior_1", "rising", True, 10),
             TTLEdge(0.20, 200_000, 1, "behavior_1", "falling", False, 11),
         ]
+    )
+    data.invalid_times.append(
+        InvalidTimeInterval(
+            start_time_s=0.10,
+            stop_time_s=0.15,
+            reason="synthetic clock uncertainty",
+            source_event="test_clock_discontinuity",
+        )
     )
     return config, data, frames
 
@@ -94,11 +117,45 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
         with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
             nwbfile = io.read()
             assert NWB_SETTINGS_SCRATCH_NAME in nwbfile.scratch
+            provenance = json.loads(str(nwbfile.get_scratch(NWB_RUNTIME_PROVENANCE_SCRATCH_NAME)))
+            assert provenance["adapter_name"] == "golden-rig"
+            assert provenance["protocol_version"] == "golden-protocol-v3"
             assert nwbfile.subject.subject_id == config.rois[roi_index].animal_id
             assert nwbfile.acquisition["camera_frames"].data.dtype == np.dtype("uint16")
             assert nwbfile.acquisition["camera_frames"].data.shape == (6, 24, 32)
             assert len(nwbfile.events["camera_frames"]) == 6
+            frame_events = nwbfile.events["camera_frames"].to_dataframe()
+            assert frame_events["camera_frame_id"].tolist() == data.frame_ids
+            assert frame_events["controller_sequence"].tolist() == data.frame_sequences
+            assert frame_events["controller_tick_us"].tolist() == data.frame_ticks_us
+            assert frame_events["wavelength_nm"].tolist() == data.frame_wavelengths_nm
+            np.testing.assert_allclose(
+                frame_events["commanded_voltage_v"],
+                data.frame_commanded_voltages_v,
+            )
+            np.testing.assert_allclose(
+                frame_events["host_received_s"],
+                data.frame_host_received_s,
+            )
+            np.testing.assert_allclose(
+                frame_events["roi_saturation_fraction"],
+                [values[roi_index] for values in data.frame_saturation_fractions],
+            )
+            excitation_events = nwbfile.events["excitation_events"].to_dataframe()
+            assert len(excitation_events) == 6
+            assert excitation_events["controller_sequence"].tolist() == data.frame_sequences
+            assert excitation_events["controller_tick_us"].tolist() == data.frame_ticks_us
+            assert excitation_events["wavelength_nm"].tolist() == data.frame_wavelengths_nm
+            np.testing.assert_allclose(
+                excitation_events["commanded_voltage_v"],
+                data.frame_commanded_voltages_v,
+            )
             assert len(nwbfile.events["ttl_edges"]) == 2
+            invalid_times = nwbfile.intervals["invalid_times"].to_dataframe()
+            np.testing.assert_allclose(invalid_times["start_time"], [0.10])
+            np.testing.assert_allclose(invalid_times["stop_time"], [0.15])
+            assert invalid_times["reason"].tolist() == ["synthetic clock uncertainty"]
+            assert invalid_times["source_event"].tolist() == ["test_clock_discontinuity"]
             assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
             images = nwbfile.processing["photometry"]["wavelength_roi_images"].images
             assert len(images) == 6
@@ -121,6 +178,16 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
                 np.testing.assert_array_equal(
                     series.data[:, 0],
                     [sample.values[roi_index] for sample in samples],
+                )
+                frame_indices = [
+                    index
+                    for index, observed in enumerate(data.frame_wavelengths_nm)
+                    if observed == int(wavelength)
+                ]
+                voltage = nwbfile.stimulus[f"led_{int(wavelength)}_commanded_voltage"]
+                np.testing.assert_allclose(
+                    voltage.data[:],
+                    [data.frame_commanded_voltages_v[index] for index in frame_indices],
                 )
 
         restored, warnings = configuration_from_nwb(report.path)

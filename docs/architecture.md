@@ -25,6 +25,8 @@ Camera worker ----------> uint16 frames -------------------+
                               |
                               +--> optional bounded raw-frame spool
 
+Per-exposure command, host-receipt, and saturation QC -----> provenance stream
+
 TTL interrupt records -------------------------------------> event stream
 
 trace + event + optional frame streams --> per-ROI NWB finalizer --> validate --> ROI files
@@ -43,7 +45,8 @@ the same contracts.
 - Tick rollover and wavelength scheduling have unit tests.
 - ROI extraction has numerical tests and never mutates source frames.
 - A two-fiber, three-wavelength NWB fixture round-trips frames, traces, frame events,
-  TTL edges, ROI geometry, and metadata.
+  excitation events, actual commanded voltages, host receipt times, saturation QC,
+  invalid intervals, TTL edges, ROI geometry, runtime provenance, and metadata.
 - PyNWB validation and NWB Inspector pass at the pinned dependency versions.
 
 ### Gate 1 — headless acquisition
@@ -103,8 +106,11 @@ NWBFile
 │   └── camera_frames              # optional
 ├── events
 │   ├── camera_frames
+│   ├── excitation_events
 │   ├── ttl_edges
 │   └── system_events
+├── intervals
+│   └── invalid_times
 └── processing/photometry
     ├── camera_rois
     ├── calibration_images
@@ -113,8 +119,10 @@ NWBFile
 ```
 
 All time-series timestamps are explicit seconds from the NWB session reference time.
-Raw controller ticks and camera frame IDs are retained as separate columns. Derived
-signals never replace raw response series.
+Raw controller ticks, camera frame IDs, actual commanded voltages, host receipt
+times, and the represented ROI's saturation fraction are retained as separate event
+columns. Commanded-voltage stimulus series contain one value for every observed
+exposure. Derived signals never replace raw response series.
 
 Every per-ROI NWB also carries a
 `scratch/driftless_bundle_photometry_settings_json` value. This is a versioned JSON
@@ -124,6 +132,13 @@ any current-format file restores the whole setup exactly. The legacy importer ca
 assemble sibling DBF files written before this snapshot existed, but it reports
 unrecoverable legacy fields instead of presenting inferred defaults as exact
 provenance.
+
+The separate `scratch/driftless_runtime_provenance_json` snapshot records the exact
+application, Python, operating-system, dependency, adapter, and protocol versions.
+Recovery spool schema v2 persists the per-exposure provenance needed to reconstruct
+these fields. Schema-v1 spools remain readable, but recovery adds an explicit invalid
+interval over the affected recording because actual host receipt times and dynamic
+voltage commands were not historically available.
 
 ## Known hardware boundary
 

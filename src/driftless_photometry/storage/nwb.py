@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -32,12 +33,17 @@ from ndx_ophys_devices import (
 from nwbinspector import Importance, inspect_nwbfile
 from pynwb import NWBHDF5IO, NWBFile, validate
 from pynwb.base import Images
+from pynwb.epoch import TimeIntervals
 from pynwb.file import EventsTable, Subject
 from pynwb.image import GrayscaleImage, ImageSeries, RGBImage
 
 from driftless_photometry import __version__
 from driftless_photometry.config import ROIConfig, SessionConfig, Wavelength
 from driftless_photometry.domain import AcquisitionData
+from driftless_photometry.provenance import (
+    NWB_RUNTIME_PROVENANCE_SCRATCH_NAME,
+    capture_runtime_provenance,
+)
 from driftless_photometry.roi import render_annotated_rois
 from driftless_photometry.settings import NWB_SETTINGS_SCRATCH_NAME, settings_json
 
@@ -104,11 +110,28 @@ def _validate_inputs(
         len(data.frame_sequences),
         len(data.frame_ticks_us),
         len(data.frame_wavelengths_nm),
+        len(data.frame_commanded_voltages_v),
+        len(data.frame_host_received_s),
+        len(data.frame_saturation_fractions),
         len(data.frame_saved_indices),
         frame_count,
     }
     if len(parallel_lengths) != 1:
         raise ValueError("camera frame metadata columns have different lengths")
+
+    expected_roi_count = len(config.enabled_rois)
+    for index in range(frame_count):
+        voltage = data.frame_commanded_voltages_v[index]
+        host_received_s = data.frame_host_received_s[index]
+        saturation = data.frame_saturation_fractions[index]
+        if not np.isfinite(voltage) or not 0 <= voltage <= 5:
+            raise ValueError("per-frame commanded voltage must be finite and between 0 and 5 V")
+        if not np.isfinite(host_received_s):
+            raise ValueError("per-frame host receipt time must be finite")
+        if saturation.shape != (expected_roi_count,):
+            raise ValueError("per-frame saturation ROI count does not match configuration")
+        if not np.all(np.isfinite(saturation)) or np.any((saturation < 0) | (saturation > 1)):
+            raise ValueError("per-frame saturation fractions must be finite and within [0, 1]")
 
     if isinstance(frames, np.ndarray):
         if frames.dtype != np.uint16 or frames.ndim != 3:
@@ -146,7 +169,6 @@ def _validate_inputs(
                 f"{int(wavelength)} nm reference image shape does not match configured camera"
             )
 
-    expected_roi_count = len(config.enabled_rois)
     for wavelength, samples in data.traces.items():
         previous_timestamp = -np.inf
         for sample in samples:
@@ -159,7 +181,7 @@ def _validate_inputs(
             previous_timestamp = sample.timestamp_s
 
 
-def _create_nwbfile(config: SessionConfig, roi: ROIConfig) -> NWBFile:
+def _create_nwbfile(config: SessionConfig, roi: ROIConfig, data: AcquisitionData) -> NWBFile:
     roi_session_id = f"{config.session_id}__{roi.fiber_id}"
     nwbfile = NWBFile(
         session_description=config.session_description,
@@ -193,6 +215,18 @@ def _create_nwbfile(config: SessionConfig, roi: ROIConfig) -> NWBFile:
         description=(
             "Versioned complete application settings used for this recording, including "
             "all configured ROIs and display preferences."
+        ),
+    )
+    provenance = data.runtime_provenance or capture_runtime_provenance(
+        adapter_name="not supplied",
+        protocol_version="native_acquisition_v1",
+    )
+    nwbfile.add_scratch(
+        json.dumps(provenance.to_document(), indent=2, sort_keys=True) + "\n",
+        name=NWB_RUNTIME_PROVENANCE_SCRATCH_NAME,
+        description=(
+            "Runtime application, Python, operating-system, dependency, adapter, and "
+            "protocol versions used to acquire or finalize this recording."
         ),
     )
     return nwbfile
@@ -270,14 +304,27 @@ def _add_photometry_metadata_and_traces(
         )
         nwbfile.add_device(source)
         excitation_sources[wavelength] = source
+        frame_indices = [
+            index
+            for index, observed in enumerate(data.frame_wavelengths_nm)
+            if observed == int(wavelength)
+        ]
         command = CommandedVoltageSeries(
             name=f"led_{int(wavelength)}_commanded_voltage",
             description=(
-                "Commanded analog intensity setpoint; this is not an optical-power readback."
+                "Actual commanded analog intensity for every observed exposure; this is "
+                "not an optical-power readback. An empty series means the wavelength was "
+                "configured but not observed before an interrupted stop."
             ),
-            data=np.asarray([channel.voltage_v], dtype=np.float32),
+            data=np.asarray(
+                [data.frame_commanded_voltages_v[index] for index in frame_indices],
+                dtype=np.float32,
+            ),
             unit="volts",
-            timestamps=np.asarray([0.0], dtype=np.float64),
+            timestamps=np.asarray(
+                [data.frame_timestamps_s[index] for index in frame_indices],
+                dtype=np.float64,
+            ),
         )
         nwbfile.add_stimulus(command)
         voltage_series[wavelength] = command
@@ -295,21 +342,22 @@ def _add_photometry_metadata_and_traces(
     )
     row_indices: dict[Wavelength, list[int]] = {}
     for row_index, channel in enumerate(config.enabled_channels):
-        table.add_row(
-            location=roi.brain_region,
-            excitation_wavelength_in_nm=float(channel.wavelength_nm),
-            emission_wavelength_in_nm=float(channel.emission_wavelength_nm),
-            indicator=indicator,
-            optical_fiber=optical_fiber,
-            excitation_source=excitation_sources[channel.wavelength_nm],
-            commanded_voltage_series=voltage_series[channel.wavelength_nm],
-            photodetector=camera,
-            camera_roi_id=roi.fiber_id,
-            signal_role=str(channel.role),
-            notes=(
+        row: dict[str, object] = {
+            "location": roi.brain_region,
+            "excitation_wavelength_in_nm": float(channel.wavelength_nm),
+            "emission_wavelength_in_nm": float(channel.emission_wavelength_nm),
+            "indicator": indicator,
+            "optical_fiber": optical_fiber,
+            "excitation_source": excitation_sources[channel.wavelength_nm],
+            "photodetector": camera,
+            "camera_roi_id": roi.fiber_id,
+            "signal_role": str(channel.role),
+            "notes": (
                 f"Animal {roi.animal_id}; camera-space geometry is stored in the camera_rois table."
             ),
-        )
+        }
+        row["commanded_voltage_series"] = voltage_series[channel.wavelength_nm]
+        table.add_row(**row)
         row_indices[channel.wavelength_nm] = [row_index]
 
     photometry_metadata = FiberPhotometry(
@@ -442,6 +490,7 @@ def _add_rois_and_calibration(
 def _add_events(
     nwbfile: NWBFile,
     data: AcquisitionData,
+    roi_index: int,
     additional_system_events: tuple[str, ...],
 ) -> None:
     frames = _make_events_table(
@@ -453,6 +502,12 @@ def _add_events(
             ("controller_sequence", "Monotonic exposure sequence reported by the controller."),
             ("wavelength_nm", "Explicit excitation wavelength active for this exposure."),
             ("controller_tick_us", "Unwrapped raw controller tick in microseconds."),
+            ("commanded_voltage_v", "Actual commanded LED intensity for this exposure."),
+            ("host_received_s", "Host receipt time on the session-relative monotonic clock."),
+            (
+                "roi_saturation_fraction",
+                "Fraction of pixels saturated inside the ROI represented by this file.",
+            ),
             ("raw_saved", "Whether the original frame is embedded in camera_frames ImageSeries."),
             ("raw_image_index", "Index into camera_frames ImageSeries, or -1 when not saved."),
         ),
@@ -465,10 +520,34 @@ def _add_events(
             controller_sequence=data.frame_sequences[index],
             wavelength_nm=data.frame_wavelengths_nm[index],
             controller_tick_us=data.frame_ticks_us[index],
+            commanded_voltage_v=data.frame_commanded_voltages_v[index],
+            host_received_s=data.frame_host_received_s[index],
+            roi_saturation_fraction=float(data.frame_saturation_fractions[index][roi_index]),
             raw_saved=saved_index >= 0,
             raw_image_index=saved_index,
         )
     nwbfile.add_events_table(frames)
+
+    excitation = _make_events_table(
+        name="excitation_events",
+        description="One explicit excitation command record for every observed exposure.",
+        source_description="Deterministic hardware controller exposure records.",
+        columns=(
+            ("controller_sequence", "Monotonic exposure sequence reported by the controller."),
+            ("wavelength_nm", "Explicit excitation wavelength commanded for the exposure."),
+            ("controller_tick_us", "Unwrapped raw controller tick in microseconds."),
+            ("commanded_voltage_v", "Actual commanded LED intensity for the exposure."),
+        ),
+    )
+    for index in range(len(data.frame_ids)):
+        excitation.add_row(
+            timestamp=data.frame_timestamps_s[index],
+            controller_sequence=data.frame_sequences[index],
+            wavelength_nm=data.frame_wavelengths_nm[index],
+            controller_tick_us=data.frame_ticks_us[index],
+            commanded_voltage_v=data.frame_commanded_voltages_v[index],
+        )
+    nwbfile.add_events_table(excitation)
 
     if data.ttl_edges:
         ttl = _make_events_table(
@@ -530,6 +609,29 @@ def _add_events(
         for event in additional_system_events:
             system.add_row(timestamp=data.frame_timestamps_s[-1], event=event)
     nwbfile.add_events_table(system)
+
+    if data.invalid_times:
+        invalid_times = TimeIntervals(
+            name="invalid_times",
+            description=(
+                "Continuous session spans whose scientific validity is compromised; the "
+                "reason and originating event are retained explicitly."
+            ),
+        )
+        invalid_times.add_column(name="reason", description="Human-readable invalidity reason.")
+        invalid_times.add_column(
+            name="source_event",
+            description="Machine-readable event or fault that created this invalid span.",
+        )
+        for interval in data.invalid_times:
+            invalid_times.add_row(
+                start_time=interval.start_time_s,
+                stop_time=interval.stop_time_s,
+                tags=(interval.source_event,),
+                reason=interval.reason,
+                source_event=interval.source_event,
+            )
+        nwbfile.add_time_intervals(invalid_times)
 
 
 def _add_raw_frames(
@@ -593,13 +695,43 @@ def _round_trip_verify(
         nwbfile = io.read()
         if NWB_SETTINGS_SCRATCH_NAME not in nwbfile.scratch:
             raise RuntimeError("NWB round-trip settings snapshot is missing")
+        if NWB_RUNTIME_PROVENANCE_SCRATCH_NAME not in nwbfile.scratch:
+            raise RuntimeError("NWB round-trip runtime provenance is missing")
         frame_events = nwbfile.events["camera_frames"]
         if len(frame_events) != len(data.frame_ids):
             raise RuntimeError("NWB round-trip camera event count mismatch")
+        excitation_events = nwbfile.events["excitation_events"]
+        if len(excitation_events) != len(data.frame_ids):
+            raise RuntimeError("NWB round-trip excitation event count mismatch")
+        frame_table = frame_events.to_dataframe()
+        if not np.array_equal(
+            frame_table["commanded_voltage_v"].to_numpy(),
+            np.asarray(data.frame_commanded_voltages_v),
+        ):
+            raise RuntimeError("NWB round-trip commanded-voltage provenance mismatch")
+        if not np.array_equal(
+            frame_table["host_received_s"].to_numpy(),
+            np.asarray(data.frame_host_received_s),
+        ):
+            raise RuntimeError("NWB round-trip host-receipt provenance mismatch")
+        expected_saturation = np.asarray(
+            [values[roi_index] for values in data.frame_saturation_fractions],
+            dtype=np.float32,
+        )
+        if not np.array_equal(
+            frame_table["roi_saturation_fraction"].to_numpy(),
+            expected_saturation,
+        ):
+            raise RuntimeError("NWB round-trip saturation provenance mismatch")
         if "ttl_edges" in nwbfile.events and len(nwbfile.events["ttl_edges"]) != len(
             data.ttl_edges
         ):
             raise RuntimeError("NWB round-trip TTL event count mismatch")
+        if data.invalid_times:
+            if "invalid_times" not in nwbfile.intervals:
+                raise RuntimeError("NWB round-trip invalid-time table is missing")
+            if len(nwbfile.intervals["invalid_times"]) != len(data.invalid_times):
+                raise RuntimeError("NWB round-trip invalid-time count mismatch")
         if wavelength_images:
             stored_images = nwbfile.processing["photometry"]["wavelength_roi_images"].images
             for wavelength, expected in wavelength_images.items():
@@ -647,6 +779,20 @@ def _round_trip_verify(
                     expected_values,
                 ):
                     raise RuntimeError(f"NWB round-trip trace values mismatch for {name}")
+            voltage_name = f"led_{int(channel.wavelength_nm)}_commanded_voltage"
+            frame_indices = [
+                index
+                for index, wavelength in enumerate(data.frame_wavelengths_nm)
+                if wavelength == int(channel.wavelength_nm)
+            ]
+            if frame_indices:
+                stored_voltages = nwbfile.stimulus[voltage_name]
+                expected_voltages = np.asarray(
+                    [data.frame_commanded_voltages_v[index] for index in frame_indices],
+                    dtype=np.float32,
+                )
+                if not np.array_equal(stored_voltages.data[:], expected_voltages):
+                    raise RuntimeError(f"NWB round-trip voltage mismatch for {voltage_name}")
 
 
 def _roi_output_paths(config: SessionConfig, roi: ROIConfig) -> tuple[Path, Path]:
@@ -681,7 +827,7 @@ def _write_roi_partial_nwb(
     output_directory.mkdir(parents=True, exist_ok=True)
     final_path, partial_path = _roi_output_paths(config, roi)
 
-    nwbfile = _create_nwbfile(config, roi)
+    nwbfile = _create_nwbfile(config, roi, data)
     _add_photometry_metadata_and_traces(nwbfile, config, data, roi_index)
     _add_rois_and_calibration(
         nwbfile,
@@ -690,7 +836,7 @@ def _write_roi_partial_nwb(
         wavelength_images,
         roi_index,
     )
-    _add_events(nwbfile, data, additional_system_events)
+    _add_events(nwbfile, data, roi_index, additional_system_events)
     _add_raw_frames(nwbfile, config, data, frames)
 
     with NWBHDF5IO(partial_path, mode="w") as io:

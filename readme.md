@@ -20,6 +20,9 @@ target; the simulator and GUI demo are cross-platform.
 - Canonical NWB finalization using PyNWB, `ndx-fiber-photometry`, and
   `ndx-ophys-devices`, including a separate subject, brain region, sensor type, and
   validated file for every ROI.
+- Exact per-exposure commanded voltage, controller sequence/tick, camera frame ID,
+  host receipt time, per-ROI saturation QC, explicit excitation events, and marked
+  invalid continuous spans in every independently interpretable animal file.
 - Trace-first PySide6/pyqtgraph desktop demo with a separate calibration image and
   draggable circular fiber ROIs, plus separate live camera panels for 405, 470, and
   565 nm exposures.
@@ -72,6 +75,9 @@ Every newly recorded per-ROI NWB file embeds the complete settings snapshot, so 
 one of those files can restore the whole multi-ROI setup. DBF can also import older
 per-ROI DBF NWBs: it gathers matching sibling files to recover all available ROIs and
 warns when an old file never recorded a setting that must use a safe default.
+Each file also embeds a separate runtime provenance snapshot with the application,
+Python, operating-system, dependency, adapter, and protocol versions that governed
+acquisition or recovery.
 
 ## Installation with Conda
 
@@ -152,7 +158,9 @@ dbf --recover-spool path/to/session.photometry-spool
 
 Successful recovery validates the NWB before removing the spool. Add `--keep-spool`
 to retain it for forensic inspection. Incomplete acquisitions are explicitly marked
-in the NWB system event table.
+in the NWB system event table. Legacy schema-v1 spools remain recoverable, but the
+resulting invalid-time record identifies the per-frame host receipt and commanded
+intensity provenance that those older spools never persisted.
 
 Run the release gates:
 

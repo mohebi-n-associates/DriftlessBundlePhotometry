@@ -6,7 +6,24 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Every native camera exposure now retains its actual commanded LED voltage, host
+  receipt time, and per-ROI saturation fraction through the recovery spool and into
+  each independently validated animal NWB file.
+- Added explicit excitation event records and `invalid_times` intervals with both a
+  human-readable reason and the originating fault/event.
+- Added an embedded runtime provenance snapshot containing the application, Python,
+  operating system, dependency, acquisition-adapter, and protocol versions.
+
+### Changed
+
+- Commanded-voltage series now contain one value per observed exposure instead of a
+  single value reconstructed from the initial configuration. Interrupted recordings
+  retain empty series for configured wavelengths that were not observed.
+- Recovery spools now use schema version 2 while retaining explicit, marked recovery
+  support for schema version 1 spools that did not store per-frame host receipt and
+  intensity provenance.
 
 ## 0.1.6 - 2026-08-29
 

@@ -12,6 +12,7 @@ import numpy as np
 from driftless_photometry.config import SessionConfig, Wavelength
 from driftless_photometry.domain import TraceSample
 from driftless_photometry.hardware import RigSource
+from driftless_photometry.provenance import capture_runtime_provenance
 from driftless_photometry.roi import extract_circular_rois
 from driftless_photometry.state import AcquisitionState, AcquisitionStateMachine
 from driftless_photometry.storage import (
@@ -214,6 +215,17 @@ class AcquisitionEngine:
                 config,
                 chunk_size=self._spool_chunk_size,
                 queue_size=self._spool_queue_size,
+                runtime_provenance=capture_runtime_provenance(
+                    adapter_name=str(
+                        getattr(
+                            source,
+                            "adapter_name",
+                            f"{type(source).__module__}.{type(source).__qualname__}",
+                        )
+                    ),
+                    adapter_version=str(getattr(source, "adapter_version", "not supplied")),
+                    protocol_version=str(getattr(source, "protocol_version", "not supplied")),
+                ),
             )
             self._transition(AcquisitionState.RECORDING, on_state)
             for rig_packet in source.packets(duration_s):

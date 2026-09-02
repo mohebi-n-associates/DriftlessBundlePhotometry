@@ -11,7 +11,7 @@ validation.
 
 **Current baseline:** 0.1.6
 
-**Last updated:** 2026-08-29
+**Last updated:** 2026-09-01
 
 ## How to use this roadmap
 
@@ -127,8 +127,11 @@ The simulator GUI now requires a non-writing acquisition preflight before each
 recording and invalidates that approval when recording-relevant settings change. The
 same preview validation contract must be exercised by physical adapters in Phases 3-5.
 The Windows/macOS Python 3.11-3.13 CI matrix and isolated core/GUI wheel smoke gates
-are implemented in 0.1.6; the remaining Phase 1 data, fault, recovery, and capacity
-work continues in dependency order.
+are implemented in 0.1.6. Unreleased work closes the native canonical data contract:
+actual per-exposure voltage commands, host receipt times, ROI saturation QC,
+excitation events, invalid intervals, runtime provenance, and recoverable spool-v1
+limitations now round-trip explicitly. The remaining fault, recovery, migration, and
+capacity work continues in dependency order.
 
 ### Goal
 
@@ -154,7 +157,7 @@ system before connecting it to physical devices.
    - Verify every failure becomes an event or surfaced error and leaves a recoverable
      spool when committed data exists.
 
-3. **Canonical data-contract closure**
+3. **Canonical data-contract closure — implemented in Unreleased**
    - Persist actual commanded intensity for every exposure instead of reconstructing
      it from the initial channel configuration.
    - Add explicit excitation-event records alongside camera exposure, TTL, dropped-
@@ -166,7 +169,7 @@ system before connecting it to physical devices.
    - Preserve host receipt time and extracted saturation metrics as provenance/QC
      rather than calculating them and then dropping them during finalization.
 
-4. **Configuration and provenance**
+4. **Configuration and provenance — runtime provenance implemented; migration pending**
    - Maintain the implemented versioned v1 on-disk session configuration format and
      its complete save, load, default, and NWB restoration workflows.
    - Add explicit migration or rejection rules when a future configuration format is
