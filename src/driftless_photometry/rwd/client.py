@@ -126,7 +126,15 @@ class RWDStreamClient:
                 raise RuntimeError("an RWD stream client cannot be reused")
             self._started = True
             self._owner_thread_id = owner
-        connection = self._connect()
+        try:
+            connection = self._connect()
+        except AcquisitionFault as error:
+            if (
+                error.code is AcquisitionFaultCode.RWD_CONNECT_FAILURE
+                and self._stop_requested.is_set()
+            ):
+                return
+            raise
         started = self._monotonic()
         deadline = started + duration_s
         last_byte_at = started

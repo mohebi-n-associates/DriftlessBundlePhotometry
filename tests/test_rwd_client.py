@@ -213,6 +213,44 @@ def test_tcp_client_stop_unblocks_idle_read_promptly() -> None:
         assert client.diagnostics.stop_requested is True
 
 
+def test_tcp_client_stop_during_connect_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    reservation.bind(("127.0.0.1", 0))
+    port = int(reservation.getsockname()[1])
+    reservation.close()
+    client = RWDStreamClient(_source_config(port, read_timeout_s=1))
+    entered_connect = threading.Event()
+    release_connect = threading.Event()
+    outcome: list[object] = []
+    original_connect = client._connect
+
+    def delayed_connect() -> socket.socket:
+        entered_connect.set()
+        assert release_connect.wait(timeout=1)
+        return original_connect()
+
+    monkeypatch.setattr(client, "_connect", delayed_connect)
+
+    def consume() -> None:
+        try:
+            outcome.extend(client.records(5))
+        except BaseException as error:
+            outcome.append(error)
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    assert entered_connect.wait(timeout=1)
+    client.stop()
+    release_connect.set()
+    thread.join(timeout=0.5)
+
+    assert not thread.is_alive()
+    assert outcome == []
+    assert client.diagnostics.stop_requested is True
+
+
 def test_tcp_client_connect_failure_has_stable_fault_code() -> None:
     reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     reservation.bind(("127.0.0.1", 0))
