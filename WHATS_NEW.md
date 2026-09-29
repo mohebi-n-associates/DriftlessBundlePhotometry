@@ -6,7 +6,11 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-_No unreleased changes._
+### Fixed
+
+- Stopping an RWD TCP acquisition while the client is still connecting now exits
+  cleanly instead of surfacing a connect-failure fault, removing a Windows CI race
+  in the idle-stop path.
 
 ## 0.2.1 - 2026-09-02
 
