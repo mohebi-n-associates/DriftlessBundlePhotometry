@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from pynwb import NWBHDF5IO, validate
 
-from driftless_photometry.config import Wavelength, demo_config
+from driftless_photometry.config import CUSTOM_PROFILE, demo_config
 from driftless_photometry.domain import (
     AcquisitionData,
     ExposureRecord,
@@ -46,7 +46,7 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
         protocol_version="golden-protocol-v3",
         dependencies=(("pynwb", "test-version"),),
     )
-    wavelengths = list(Wavelength)
+    wavelengths = list(CUSTOM_PROFILE.wavelengths)
     for index in range(6):
         wavelength = wavelengths[index % 3]
         image = np.full((24, 32), 100 + index, dtype=np.uint16)
@@ -100,7 +100,9 @@ def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
 
 def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
     config, data, frames = _golden_data(tmp_path, raw_capture=True)
-    wavelength_images = {wavelength: frames[index] for index, wavelength in enumerate(Wavelength)}
+    wavelength_images = {
+        wavelength: frames[index] for index, wavelength in enumerate(CUSTOM_PROFILE.wavelengths)
+    }
     reports = write_session_nwbs(
         config,
         data,
@@ -174,7 +176,7 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
             assert len(nwbfile.processing["photometry"]["camera_rois"]) == 1
             images = nwbfile.processing["photometry"]["wavelength_roi_images"].images
             assert len(images) == 6
-            for wavelength in Wavelength:
+            for wavelength in CUSTOM_PROFILE.wavelengths:
                 raw = images[f"raw_reference_{int(wavelength)}nm"].data
                 overlay = images[f"roi_overlay_{int(wavelength)}nm"].data
                 np.testing.assert_array_equal(raw, wavelength_images[wavelength])
@@ -186,7 +188,7 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
             assert set(table.to_dataframe()["location"]) == {config.rois[roi_index].brain_region}
             indicators = nwbfile.lab_meta_data["FiberPhotometry"].fiber_photometry_indicators
             assert indicators.indicators["indicator_01"].label == config.rois[roi_index].sensor_type
-            for wavelength in Wavelength:
+            for wavelength in CUSTOM_PROFILE.wavelengths:
                 series = nwbfile.acquisition[f"raw_fluorescence_{int(wavelength)}"]
                 assert series.data.shape == (2, 1)
                 samples = data.traces[wavelength]
@@ -221,7 +223,7 @@ def test_legacy_per_roi_nwbs_restore_available_sibling_settings(
         frames=frames if raw_capture else None,
         calibration_image=frames[0],
         wavelength_images={
-            wavelength: frames[index] for index, wavelength in enumerate(Wavelength)
+            wavelength: frames[index] for index, wavelength in enumerate(CUSTOM_PROFILE.wavelengths)
         },
     )
     for report in reports:
@@ -232,7 +234,9 @@ def test_legacy_per_roi_nwbs_restore_available_sibling_settings(
 
     assert len(restored.rois) == 2
     assert [roi.animal_id for roi in restored.rois] == ["animal-01", "animal-02"]
-    assert [channel.wavelength_nm for channel in restored.channels] == list(Wavelength)
+    assert [channel.wavelength_nm for channel in restored.channels] == list(
+        CUSTOM_PROFILE.wavelengths
+    )
     assert restored.camera.raw_capture is raw_capture
     assert restored.output_directory == tmp_path
     assert warnings and "legacy NWB" in warnings[0]
@@ -240,7 +244,9 @@ def test_legacy_per_roi_nwbs_restore_available_sibling_settings(
 
 def test_nwb_without_raw_frames_retains_frame_provenance(tmp_path: Path) -> None:
     config, data, frames = _golden_data(tmp_path, raw_capture=False)
-    wavelength_images = {wavelength: frames[index] for index, wavelength in enumerate(Wavelength)}
+    wavelength_images = {
+        wavelength: frames[index] for index, wavelength in enumerate(CUSTOM_PROFILE.wavelengths)
+    }
     reports = write_session_nwbs(
         config,
         data,

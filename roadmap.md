@@ -262,9 +262,18 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      frames to golden fixtures and close the design record's open questions.
 3. **Serial transport — implemented; simulator-tested and checked on an R821**
 4. **Alvium camera adapter — implemented; simulator-tested and checked on an R821**
-5. **RWD rig source with phase-derived wavelength identity and gap detection —
-   planned; depends on steps 3 and 4.** Adds exact 410/470/560 channel identities,
-   records the phase-derived provenance in every NWB, and lifts the step-0 refusals.
+5. **RWD rig source with phase-derived wavelength identity and gap detection — in
+   progress.** Records the phase-derived provenance in every NWB and lifts the step-0
+   refusals. Parts:
+   1. System profile and settings — implemented. Exact 410/560 nm wavelengths, percent
+      power, per-fiber camera-2 circles, profile-driven validation and GUI, and
+      migration of v2 RWD settings to runnable RWD settings.
+   2. Rig source with phase assignment, gap detection, and board-clock TTL timing,
+      against the simulated board — planned.
+   3. Camera-aware ROI extraction and NWB — planned.
+   4. GUI RWD controls: COM port, camera-2 ROI placement, preview, and TTL outputs —
+      planned.
+   5. Bench validation on the R821 and an operator guide — hardware required.
 6. **Bench characterization — hardware required**
    - LED/trigger timing, disconnect and watchdog LED state, TTL latency, and clock drift
      must be measured before any animal recording.

@@ -46,9 +46,20 @@ Planned gated steps:
    applies OFRS's trigger setup in every session, restoring the previous settings on
    exit. It delivers `uint16` frames with hardware frame IDs and timestamps through a
    bounded queue, and counts incomplete frames and overflows.
-5. **RWD rig source — planned.** Pairs the transport and cameras, assigns wavelength
-   identity as described below, and emits `RigPacket`s. Each fiber gets its own
-   camera-2 ROI for 560 nm, placed separately as in OFRS (decided 2026-10-20).
+5. **RWD rig source — in progress.** Pairs the transport and cameras, assigns
+   wavelength identity as described below, and emits `RigPacket`s. Each fiber gets its
+   own camera-2 ROI for 560 nm, placed separately as in OFRS (decided 2026-10-20).
+   Built in five parts:
+   1. **System profile and settings — implemented.** See
+      [System profiles](#system-profiles).
+   2. **Rig source** — planned. Phase assignment, gap detection, invalidation of the
+      truncated last exposure, and TTL timing from the board clock, tested against the
+      simulated board.
+   3. **Camera-aware ROI extraction and NWB** — planned. Camera identity, phase-derived
+      provenance, commanded power in percent, and the step-0 refusals lifted.
+   4. **GUI controls** — planned. COM port, camera-2 ROI placement, live preview, TTL
+      outputs, and the no-fail-safe warning.
+   5. **Bench validation and operator guide** — hardware required.
 6. **Bench characterization — hardware required.** LED/trigger timing, the
    disconnect and watchdog LED state, TTL latency, and clock drift.
 
@@ -94,8 +105,50 @@ The approved method for the RWD direct track, recorded 2026-10-20:
 assignment until the rig source (step 5) exists.
 
 RWD hardware uses 410, 470, and 560 nm LEDs, while the Custom system's channel model is
-405, 470, and 565 nm. Step 5 must add exact RWD channel identities rather than relabel
-RWD exposures as Custom wavelengths.
+405, 470, and 565 nm. `Wavelength` therefore has exact `CONTROL_410` and `RED_560`
+members, and RWD exposures are never relabeled as Custom wavelengths.
+
+## System profiles
+
+The GUI is the same for both systems. A `SystemProfile` in `config.py` describes what
+each system's hardware can do, and both validation and the GUI read from it. Custom
+settings are unchanged. `profile_for(source)` picks the profile.
+
+| Property | Custom | RWD R821 |
+| --- | --- | --- |
+| Excitation wavelengths | 405, 470, 565 nm | 410, 470, 560 nm |
+| Intensity | `voltage_v`, 0–5 V | `power_percent`, 0–100 % |
+| Cameras | 1 | 2 (410/470 nm on camera 1, 560 nm on camera 2) |
+| Interleaved sets | any | one LED, 410+470, 470+560, or all three (no 410+560) |
+| Frame rate | any | whole hertz, 10–250 Hz (total trigger rate) |
+| Exposure | any | 500 µs to (1000 // fps) ms − 2.63 ms |
+| Sensor | any | full 728 × 544 Alvium 1800 U-040m |
+| TTL outputs | — | 4 |
+| Hardware fail-safe | yes | **no** |
+
+For RWD settings, validation also requires:
+
+- every enabled ROI has camera-2 geometry whenever 560 nm is enabled;
+- camera-2 circles fit the sensor;
+- the trace display shows only the system's wavelengths.
+
+Custom settings may not set camera-2 geometry. `RWDSourceConfig.controller_port`
+optionally pins the controller's COM port.
+
+Switching the GUI between systems swaps the channel group, the trace and image
+wavelengths, and the camera template. Fiber circles are laid out again if they do not
+fit the new sensor. Until camera-2 placement arrives in part 4, each camera-2 circle
+starts at its camera-1 position and is kept from loaded settings.
+
+Settings v2 files for the removed TCP bridge migrate as follows:
+
+- Session and fiber metadata are kept.
+- Channels reset to the three RWD LEDs at 5 %. They stay enabled as the TCP stream
+  listed them when the board can run that set; otherwise all three are enabled.
+- The camera resets to the Alvium defaults.
+- Circles are rescaled when they do not fit the 728 × 544 sensor, and camera 2 copies
+  camera 1.
+- The warning names each of these changes and every dropped TCP field.
 
 ## Recovered system architecture
 

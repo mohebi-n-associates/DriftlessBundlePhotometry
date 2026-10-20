@@ -28,12 +28,12 @@ target; the simulator and GUI demo are cross-platform.
   host receipt time, per-ROI saturation QC, explicit excitation events, and marked
   invalid continuous spans in every independently interpretable animal file.
 - Trace-first PySide6/pyqtgraph desktop demo with a separate calibration image and
-  draggable circular fiber ROIs, plus separate live camera panels for 405, 470, and
-  565 nm exposures.
+  draggable circular fiber ROIs, plus separate live camera panels for each excitation
+  wavelength (405, 470, and 565 nm on Custom; 410, 470, and 560 nm on RWD).
 - Selectable 15 s, 1 min, 10 min, 1 h, and Full trace horizons with display-only
   extrema-preserving decimation, keeping long recordings responsive without changing
   acquired or stored samples.
-- One live plot row per ROI with overlaid 405, 470, and 565 nm traces, independent
+- One live plot row per ROI with overlaid per-wavelength traces, independent
   wavelength visibility controls, and Absolute or display-only dF/F views with a
   configurable per-ROI/per-wavelength median baseline window.
 - Optional display-only trailing-mean smoothing uses elapsed seconds, works with

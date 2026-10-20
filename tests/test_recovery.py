@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from pynwb import NWBHDF5IO
 
-from driftless_photometry.config import Wavelength, demo_config
+from driftless_photometry.config import CUSTOM_PROFILE, demo_config
 from driftless_photometry.domain import ExposureRecord, FramePacket, TraceSample
 from driftless_photometry.storage import (
     SessionSpool,
@@ -17,7 +17,7 @@ from driftless_photometry.storage import (
 
 def _submit_frames(spool: SessionSpool, count: int) -> None:
     for index in range(count):
-        wavelength = list(Wavelength)[index % 3]
+        wavelength = list(CUSTOM_PROFILE.wavelengths)[index % 3]
         image = np.full((24, 32), index + 10, dtype=np.uint16)
         exposure = ExposureRecord(index, index * 0.1, index * 100_000, wavelength, 1.0)
         packet = FramePacket(index + 1, image, exposure, index * 0.1 + 0.001)

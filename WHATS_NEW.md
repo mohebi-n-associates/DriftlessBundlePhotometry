@@ -30,6 +30,18 @@ version, move its completed entries into a dated version section.
   adapter (VmbPy, via the new `rwd` extra) as the building blocks for RWD acquisition.
   They are checked on an R821 but not yet wired into recording.
 
+- RWD settings now describe the RWD hardware as it is:
+  - exact 410, 470, and 560 nm LEDs, with power in percent;
+  - a separate camera-2 circle per fiber for 560 nm;
+  - an optional controller COM port.
+
+  A system profile drives both validation and the excitation panel. Validation rejects
+  RWD settings the board cannot run: the 410+560 nm pair, fractional or out-of-range
+  frame rates, exposures past the per-frame-rate ceiling, and a cropped sensor. The
+  setup window is the same for both systems. Choosing RWD swaps in the RWD
+  wavelengths, a percent power slider, and the Alvium camera; switching back restores
+  the Custom camera.
+
 ### Changed
 
 - Setup now offers exactly two acquisition systems: **Custom** (DBF's own camera and
@@ -38,8 +50,10 @@ version, move its completed entries into a dated version section.
   keeps preview and recording disabled until its controller and camera backend exists.
 - Settings files are now format v3 with source kinds `custom` and `rwd`. Settings v1
   files and v2 `native` sources migrate to Custom. v2 RWD TCP-bridge sources migrate to
-  RWD mode with a warning naming every dropped connection field. The same migration
-  applies to settings embedded in earlier NWB recordings.
+  RWD mode. Their session and fiber metadata are kept. Channels reset to the RWD LEDs
+  at 5 % and the camera to the Alvium defaults. Circles are rescaled to fit the RWD
+  sensor if needed. A warning names each change and every dropped connection field.
+  The same migration applies to settings embedded in earlier NWB recordings.
 
 ### Removed
 

@@ -45,15 +45,19 @@ from driftless_photometry.acquisition import (
     PreviewResult,
 )
 from driftless_photometry.config import (
+    CUSTOM_PROFILE,
+    RWD_PROFILE,
     CameraConfig,
     ChannelConfig,
     CustomSourceConfig,
     ROIConfig,
     RWDSourceConfig,
     SessionConfig,
+    SystemProfile,
     TraceDisplayConfig,
     Wavelength,
     demo_config,
+    profile_for,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
@@ -103,7 +107,9 @@ _WAVELENGTH_COLORS = {
 
 _WAVELENGTH_TITLES = {
     Wavelength.CONTROL_405: "405 nm — isosbestic control",
+    Wavelength.CONTROL_410: "410 nm — isosbestic control",
     Wavelength.GREEN_470: "470 nm — green signal",
+    Wavelength.RED_560: "560 nm — red signal",
     Wavelength.RED_565: "565 nm — red signal",
 }
 
@@ -238,6 +244,7 @@ class MainWindow(QMainWindow):
             raw_capture=default_raw,
             recording_duration_s=default_duration_s,
         )
+        self._custom_camera = self._session_template.camera
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -433,42 +440,12 @@ class MainWindow(QMainWindow):
         session_form.addRow("Duration", self.duration_spin)
         controls_layout.addWidget(session_group)
 
-        channels_group = QGroupBox("Excitation schedule")
-        channels_layout = QVBoxLayout(channels_group)
-        channels_layout.setSpacing(8)
-        self.channel_checks: dict[Wavelength, QCheckBox] = {}
-        self.channel_voltages: dict[Wavelength, QSlider] = {}
-        self.channel_voltage_labels: dict[Wavelength, QLabel] = {}
-        for wavelength in Wavelength:
-            check = QCheckBox(_WAVELENGTH_TITLES[wavelength])
-            check.setChecked(True)
-            voltage = QSlider(Qt.Orientation.Horizontal)
-            voltage.setRange(0, 500)
-            voltage.setSingleStep(5)
-            voltage.setPageStep(25)
-            voltage.setTickInterval(50)
-            voltage.setValue(100)
-            voltage.setAccessibleName(f"{int(wavelength)} nanometer excitation voltage")
-            voltage_label = QLabel("1.00 V")
-            voltage_label.setObjectName("voltageReadout")
-            voltage_label.setMinimumWidth(54)
-            voltage.valueChanged.connect(
-                lambda value, label=voltage_label: label.setText(f"{value / 100:.2f} V")
-            )
-            row = QWidget()
-            row_layout = QVBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(3)
-            heading = QHBoxLayout()
-            heading.addWidget(check, stretch=1)
-            heading.addWidget(voltage_label)
-            row_layout.addLayout(heading)
-            row_layout.addWidget(voltage)
-            channels_layout.addWidget(row)
-            self.channel_checks[wavelength] = check
-            self.channel_voltages[wavelength] = voltage
-            self.channel_voltage_labels[wavelength] = voltage_label
-        controls_layout.addWidget(channels_group)
+        self._channel_controls: dict[
+            str, tuple[dict[Wavelength, QCheckBox], dict[Wavelength, QSlider], QGroupBox]
+        ] = {}
+        self._channel_readouts: dict[str, dict[Wavelength, QLabel]] = {}
+        for profile in (CUSTOM_PROFILE, RWD_PROFILE):
+            controls_layout.addWidget(self._build_channel_group(profile))
 
         retention_group = QGroupBox("Data retention")
         retention_layout = QVBoxLayout(retention_group)
@@ -642,16 +619,17 @@ class MainWindow(QMainWindow):
             source_group,
             settings_group,
             session_group,
-            channels_group,
+            *(group for _checks, _sliders, group in self._channel_controls.values()),
             retention_group,
             self.rwd_group,
             browse,
         ]
-        for check in self.channel_checks.values():
-            check.toggled.connect(self._update_overview)
-            check.toggled.connect(self._invalidate_preview)
-        for voltage in self.channel_voltages.values():
-            voltage.valueChanged.connect(self._invalidate_preview)
+        for checks, sliders, _group in self._channel_controls.values():
+            for check in checks.values():
+                check.toggled.connect(self._update_overview)
+                check.toggled.connect(self._invalidate_preview)
+            for slider in sliders.values():
+                slider.valueChanged.connect(self._invalidate_preview)
         for edit in (
             self.experimenter_edit,
             self.session_description_edit,
@@ -676,6 +654,108 @@ class MainWindow(QMainWindow):
             self.fibers_summary.value_label.setText(f"{active_count}/{fiber_count}")
             self.format_summary.value_label.setText(str(active_count))
 
+    def _build_channel_group(self, profile: SystemProfile) -> QGroupBox:
+        group = QGroupBox("Excitation schedule")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+        percent = profile.intensity_unit == "%"
+        scale = self._intensity_scale(profile)
+        default = round((5.0 if percent else 1.0) * scale)
+        checks: dict[Wavelength, QCheckBox] = {}
+        sliders: dict[Wavelength, QSlider] = {}
+        readouts: dict[Wavelength, QLabel] = {}
+        for wavelength in profile.wavelengths:
+            check = QCheckBox(_WAVELENGTH_TITLES[wavelength])
+            check.setChecked(True)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, round(profile.intensity_maximum * scale))
+            slider.setSingleStep(1 if percent else 5)
+            slider.setPageStep(10 if percent else 25)
+            slider.setTickInterval(100 if percent else 50)
+            slider.setValue(default)
+            noun = "power" if percent else "voltage"
+            slider.setAccessibleName(f"{int(wavelength)} nanometer excitation {noun}")
+            readout = QLabel(self._format_intensity(default, profile))
+            readout.setObjectName("voltageReadout")
+            readout.setMinimumWidth(54)
+            slider.valueChanged.connect(
+                lambda value, label=readout, prof=profile: label.setText(
+                    self._format_intensity(value, prof)
+                )
+            )
+            row = QWidget()
+            row_layout = QVBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(3)
+            heading = QHBoxLayout()
+            heading.addWidget(check, stretch=1)
+            heading.addWidget(readout)
+            row_layout.addLayout(heading)
+            row_layout.addWidget(slider)
+            layout.addWidget(row)
+            checks[wavelength] = check
+            sliders[wavelength] = slider
+            readouts[wavelength] = readout
+        group.setVisible(profile is CUSTOM_PROFILE)
+        self._channel_controls[profile.kind] = (checks, sliders, group)
+        self._channel_readouts[profile.kind] = readouts
+        return group
+
+    @staticmethod
+    def _intensity_scale(profile: SystemProfile) -> int:
+        """Slider steps per unit: 0.1 % for RWD power, 0.01 V for Custom voltage."""
+
+        return 10 if profile.intensity_unit == "%" else 100
+
+    @classmethod
+    def _format_intensity(cls, value: int, profile: SystemProfile) -> str:
+        if profile.intensity_unit == "%":
+            return f"{value / cls._intensity_scale(profile):.1f} %"
+        return f"{value / cls._intensity_scale(profile):.2f} V"
+
+    @property
+    def _active_profile(self) -> SystemProfile:
+        return RWD_PROFILE if self._is_rwd_mode() else CUSTOM_PROFILE
+
+    @property
+    def channel_checks(self) -> dict[Wavelength, QCheckBox]:
+        return self._channel_controls[self._active_profile.kind][0]
+
+    @property
+    def channel_voltages(self) -> dict[Wavelength, QSlider]:
+        """Intensity sliders of the active system (volts for Custom, percent for RWD)."""
+
+        return self._channel_controls[self._active_profile.kind][1]
+
+    @property
+    def channel_voltage_labels(self) -> dict[Wavelength, QLabel]:
+        return self._channel_readouts[self._active_profile.kind]
+
+    def _use_profile_camera(self, profile: SystemProfile) -> None:
+        camera = self._session_template.camera
+        if profile.sensor_size_px is not None:
+            if (camera.width_px, camera.height_px) == profile.sensor_size_px:
+                return
+            self._custom_camera = camera
+            replacement = profile.default_camera
+        else:
+            if camera.model_name != RWD_PROFILE.default_camera.model_name:
+                return
+            replacement = self._custom_camera
+        replacement = replacement.model_copy(update={"raw_capture": camera.raw_capture})
+        rois = self._roi_configs_from_controls() if self._roi_items else ()
+        self._session_template = self._session_template.model_copy(update={"camera": replacement})
+        fits = all(
+            roi.radius_px <= roi.center_x_px <= replacement.width_px - roi.radius_px
+            and roi.radius_px <= roi.center_y_px <= replacement.height_px - roi.radius_px
+            for roi in rois
+        )
+        if rois and fits:
+            self._set_roi_items(rois, replacement)
+        elif rois:
+            # Circles from the other sensor do not fit; lay fibers out again for this one.
+            self._rebuild_roi_items()
+
     def _is_rwd_mode(self) -> bool:
         return hasattr(self, "source_combo") and self.source_combo.currentData() == "rwd"
 
@@ -683,8 +763,14 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "rwd_group"):
             return
         is_rwd = self._is_rwd_mode()
+        profile = self._active_profile
         self.rwd_group.setVisible(is_rwd)
-        self._active_trace_wavelengths = _CUSTOM_TRACE_WAVELENGTHS
+        for kind, (_checks, _sliders, group) in self._channel_controls.items():
+            group.setVisible(kind == profile.kind)
+        for wavelength, image_group in self.wavelength_image_groups.items():
+            image_group.setVisible(wavelength in profile.wavelengths)
+        self._use_profile_camera(profile)
+        self._active_trace_wavelengths = tuple(int(w) for w in profile.wavelengths)
         for wavelength_nm, check in self.trace_wavelength_checks.items():
             check.setVisible(wavelength_nm in self._active_trace_wavelengths)
         if is_rwd:
@@ -763,8 +849,11 @@ class MainWindow(QMainWindow):
         self.wavelength_image_items: dict[Wavelength, pg.ImageItem] = {}
         self.wavelength_image_plots: dict[Wavelength, pg.PlotWidget] = {}
         self.wavelength_frame_labels: dict[Wavelength, QLabel] = {}
+        self.wavelength_image_groups: dict[Wavelength, QGroupBox] = {}
         for wavelength in Wavelength:
             group = QGroupBox(_WAVELENGTH_TITLES[wavelength])
+            group.setVisible(wavelength in CUSTOM_PROFILE.wavelengths)
+            self.wavelength_image_groups[wavelength] = group
             group_layout = QVBoxLayout(group)
             plot = pg.PlotWidget()
             plot.setAspectLocked(True)
@@ -1136,13 +1225,22 @@ class MainWindow(QMainWindow):
         self.output_edit.setText(str(config.output_directory))
         self.raw_checkbox.setChecked(config.camera.raw_capture)
 
+        profile = profile_for(config.source)
+        if profile is CUSTOM_PROFILE:
+            self._custom_camera = config.camera
+        checks, sliders, _group = self._channel_controls[profile.kind]
+        scale = self._intensity_scale(profile)
         configured_channels = {channel.wavelength_nm: channel for channel in config.channels}
-        for wavelength in Wavelength:
+        for wavelength in profile.wavelengths:
             channel = configured_channels.get(wavelength)
-            self.channel_checks[wavelength].setChecked(channel.enabled if channel else False)
-            self.channel_voltages[wavelength].setValue(
-                round((channel.voltage_v if channel else 1.0) * 100)
-            )
+            checks[wavelength].setChecked(channel.enabled if channel else False)
+            if channel is None:
+                value = 5.0 if profile.intensity_unit == "%" else 1.0
+            elif profile.intensity_unit == "%":
+                value = channel.power_percent or 0.0
+            else:
+                value = channel.voltage_v or 0.0
+            sliders[wavelength].setValue(round(value * scale))
 
         blocker = QSignalBlocker(self.fiber_count_spin)
         self.fiber_count_spin.setValue(len(config.rois))
@@ -1301,6 +1399,8 @@ class MainWindow(QMainWindow):
     def _roi_configs_from_controls(self) -> tuple[ROIConfig, ...]:
         rois: list[ROIConfig] = []
         used_fiber_ids: set[str] = set()
+        template_rois = {roi.fiber_id: roi for roi in self._session_template.rois}
+        two_cameras = self._active_profile.camera_count > 1
         for index, item in enumerate(self._roi_items):
             metadata = self._roi_metadata_editors[index]
             position = item.pos()
@@ -1319,6 +1419,22 @@ class MainWindow(QMainWindow):
                     fiber_id = f"{base}_{suffix}"
                     suffix += 1
             used_fiber_ids.add(fiber_id)
+            center_x = float(position.x()) + radius
+            center_y = float(position.y()) + radius
+            camera2: dict[str, float] = {}
+            template_roi = template_rois.get(fiber_id)
+            if two_cameras and template_roi is not None and template_roi.has_camera2_geometry:
+                camera2 = {
+                    "camera2_center_x_px": float(template_roi.camera2_center_x_px or 0.0),
+                    "camera2_center_y_px": float(template_roi.camera2_center_y_px or 0.0),
+                    "camera2_radius_px": float(template_roi.camera2_radius_px or 0.0),
+                }
+            elif two_cameras:
+                camera2 = {
+                    "camera2_center_x_px": center_x,
+                    "camera2_center_y_px": center_y,
+                    "camera2_radius_px": radius,
+                }
             rois.append(
                 ROIConfig(
                     fiber_id=fiber_id,
@@ -1329,30 +1445,37 @@ class MainWindow(QMainWindow):
                     sensor_type=metadata.sensor_type_edit.text().strip(),
                     subject_age=metadata.age_edit.text().strip() or None,
                     subject_sex=metadata.sex_combo.currentText(),
-                    center_x_px=float(position.x()) + radius,
-                    center_y_px=float(position.y()) + radius,
+                    center_x_px=center_x,
+                    center_y_px=center_y,
                     radius_px=radius,
+                    **camera2,
                 )
             )
         return tuple(rois)
 
     def _build_config(self) -> SessionConfig:
         output = Path(self.output_edit.text()).expanduser()
-        configured_channels = {
-            wavelength: ChannelConfig(wavelength_nm=wavelength) for wavelength in Wavelength
+        profile = self._active_profile
+        checks, sliders, _group = self._channel_controls[profile.kind]
+        scale = self._intensity_scale(profile)
+        percent = profile.intensity_unit == "%"
+        template_channels = {
+            channel.wavelength_nm: channel for channel in self._session_template.channels
         }
-        configured_channels.update(
-            {channel.wavelength_nm: channel for channel in self._session_template.channels}
-        )
         channels = tuple(
             ChannelConfig(
                 wavelength_nm=wavelength,
-                enabled=self.channel_checks[wavelength].isChecked(),
-                voltage_v=self.channel_voltages[wavelength].value() / 100.0,
-                role=configured_channels[wavelength].role,
-                emission_wavelength_nm=configured_channels[wavelength].emission_wavelength_nm,
+                enabled=checks[wavelength].isChecked(),
+                voltage_v=None if percent else sliders[wavelength].value() / scale,
+                power_percent=sliders[wavelength].value() / scale if percent else None,
+                role=template_channels[wavelength].role
+                if wavelength in template_channels
+                else None,
+                emission_wavelength_nm=template_channels[wavelength].emission_wavelength_nm
+                if wavelength in template_channels
+                else None,
             )
-            for wavelength in Wavelength
+            for wavelength in profile.wavelengths
         )
         rois = self._roi_configs_from_controls()
         visible_wavelengths = tuple(

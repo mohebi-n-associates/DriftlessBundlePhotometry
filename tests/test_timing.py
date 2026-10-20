@@ -1,11 +1,13 @@
 import pytest
 
-from driftless_photometry.config import ChannelConfig, Wavelength
+from driftless_photometry.config import CUSTOM_PROFILE, ChannelConfig, Wavelength
 from driftless_photometry.timing import LinearClockMapper, TickUnwrapper, WavelengthSchedule
 
 
 def test_schedule_cycles_configured_order() -> None:
-    channels = tuple(ChannelConfig(wavelength_nm=wavelength) for wavelength in Wavelength)
+    channels = tuple(
+        ChannelConfig(wavelength_nm=wavelength) for wavelength in CUSTOM_PROFILE.wavelengths
+    )
     schedule = WavelengthSchedule(channels)
     assert [schedule.channel_for_sequence(index).wavelength_nm for index in range(5)] == [
         Wavelength.CONTROL_405,

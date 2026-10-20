@@ -5,7 +5,7 @@ import pyqtgraph as pg
 import pytest
 from PySide6.QtCore import QPoint, QPointF, Qt
 
-from driftless_photometry.config import Wavelength, demo_config
+from driftless_photometry.config import CUSTOM_PROFILE, demo_config
 from driftless_photometry.gui.main_window import MainWindow
 from driftless_photometry.gui.plot_interaction import TraceViewBox, dominant_drag_axis
 
@@ -116,7 +116,7 @@ def test_roi_rows_share_x_zoom_and_double_click_resets_all_rows(qtbot, tmp_path:
     window.show()
     config = demo_config(tmp_path, fiber_count=3)
     window._prepare_trace_curves(config)
-    for wavelength in Wavelength:
+    for wavelength in CUSTOM_PROFILE.wavelengths:
         for roi_index in range(3):
             window._trace_times[(wavelength, roi_index)] = array("d", [0.0, 5.0, 10.0])
             window._trace_values[(wavelength, roi_index)] = array("f", [100.0, 110.0, 105.0])

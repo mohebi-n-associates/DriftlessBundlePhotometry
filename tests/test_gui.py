@@ -9,6 +9,8 @@ from PySide6.QtWidgets import QAbstractSpinBox
 
 from driftless_photometry import __version__
 from driftless_photometry.config import (
+    CUSTOM_PROFILE,
+    RWD_PROFILE,
     RWDSourceConfig,
     SessionConfig,
     TraceDisplayConfig,
@@ -67,7 +69,7 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
     assert window.system_status.text() == "COMPLETE"
     assert window.system_status.property("state") == "complete"
     assert window.progress_bar.value() == 1000
-    for wavelength in window.wavelength_image_items:
+    for wavelength in CUSTOM_PROFILE.wavelengths:
         assert window.wavelength_image_items[wavelength].image.shape == (256, 256)
         assert window.wavelength_frame_labels[wavelength].text().startswith("Frame ")
 
@@ -450,7 +452,7 @@ def test_gui_dff_normalizes_each_roi_and_wavelength_independently(qtbot, tmp_pat
     window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff"))
 
     assert window.trace_baseline_spin.isEnabled()
-    for wavelength in Wavelength:
+    for wavelength in CUSTOM_PROFILE.wavelengths:
         _, displayed = window._curves[(wavelength, 0)].getData()
         np.testing.assert_allclose(displayed, [0.0, 0.0, 10.0], atol=1e-5)
 
@@ -458,3 +460,71 @@ def test_gui_dff_normalizes_each_roi_and_wavelength_independently(qtbot, tmp_pat
     assert not window.trace_baseline_spin.isEnabled()
     _, absolute = window._curves[(Wavelength.RED_565, 0)].getData()
     np.testing.assert_allclose(absolute, [10_000.0, 10_000.0, 11_000.0])
+
+
+def test_gui_shows_the_rwd_profile_when_rwd_is_selected(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.show()
+    custom_camera = window._session_template.camera
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+
+    assert list(window.channel_checks) == list(RWD_PROFILE.wavelengths)
+    slider = window.channel_voltages[Wavelength.GREEN_470]
+    assert slider.maximum() == 1000
+    assert window.channel_voltage_labels[Wavelength.GREEN_470].text() == "5.0 %"
+    slider.setValue(125)
+    assert window.channel_voltage_labels[Wavelength.GREEN_470].text() == "12.5 %"
+    camera = window._session_template.camera
+    assert (camera.width_px, camera.height_px) == (728, 544)
+    for wavelength, group in window.wavelength_image_groups.items():
+        assert group.isHidden() is (wavelength not in RWD_PROFILE.wavelengths)
+    for wavelength_nm, check in window.trace_wavelength_checks.items():
+        assert check.isVisible() is (wavelength_nm in (410, 470, 560))
+
+    config = window._build_config()
+    assert config.source == RWDSourceConfig()
+    assert [channel.wavelength_nm for channel in config.channels] == list(RWD_PROFILE.wavelengths)
+    green = config.channels[1]
+    assert (green.voltage_v, green.power_percent) == (None, 12.5)
+    assert all(roi.has_camera2_geometry for roi in config.rois)
+    assert set(config.display.visible_wavelengths) <= {410, 470, 560}
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+
+    assert list(window.channel_checks) == list(CUSTOM_PROFILE.wavelengths)
+    assert window._session_template.camera == custom_camera
+    config = window._build_config()
+    assert config.source != RWDSourceConfig()
+    assert all(channel.power_percent is None for channel in config.channels)
+    assert not any(roi.has_camera2_geometry for roi in config.rois)
+
+
+def test_gui_round_trips_rwd_settings_with_camera2_circles(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    original = demo_config(tmp_path, fiber_count=2, system="rwd")
+    payload = original.model_dump()
+    payload["channels"][0]["power_percent"] = 7.5
+    payload["channels"][2]["enabled"] = False
+    payload["rois"][1].update(
+        camera2_center_x_px=400.0, camera2_center_y_px=300.0, camera2_radius_px=30.0
+    )
+    original = SessionConfig.model_validate(payload)
+
+    window._apply_configuration(original)
+
+    assert window.source_combo.currentData() == "rwd"
+    assert window.channel_voltage_labels[Wavelength.CONTROL_410].text() == "7.5 %"
+    rebuilt = window._build_config()
+    assert [channel.enabled for channel in rebuilt.channels] == [True, True, False]
+    assert rebuilt.channels[0].power_percent == 7.5
+    assert rebuilt.camera.model_dump(exclude={"raw_capture"}) == original.camera.model_dump(
+        exclude={"raw_capture"}
+    )
+    assert (
+        rebuilt.rois[1].camera2_center_x_px,
+        rebuilt.rois[1].camera2_center_y_px,
+        rebuilt.rois[1].camera2_radius_px,
+    ) == (400.0, 300.0, 30.0)
