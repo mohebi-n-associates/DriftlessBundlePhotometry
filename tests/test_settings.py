@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from driftless_photometry.config import (
+    RWD_PROFILE,
     CustomSourceConfig,
     RWDSourceConfig,
     SessionConfig,
@@ -130,7 +131,22 @@ def test_v2_rwd_tcp_settings_keep_session_and_name_dropped_fields(tmp_path: Path
 
     restored, warnings = import_settings_with_warnings(path)
 
-    assert restored == original.model_copy(update={"source": RWDSourceConfig()})
+    assert restored.source == RWDSourceConfig()
+    assert restored.session_id == original.session_id
+    assert restored.experimenter == original.experimenter
+    assert [channel.wavelength_nm for channel in restored.channels] == list(RWD_PROFILE.wavelengths)
+    assert all(channel.enabled for channel in restored.channels)
+    assert all(channel.power_percent == 5.0 for channel in restored.channels)
+    assert restored.camera.model_name == RWD_PROFILE.default_camera.model_name
+    assert restored.camera.raw_capture is original.camera.raw_capture
+    assert restored.display.visible_wavelengths == (410, 470, 560)
+    for kept, roi in zip(original.rois, restored.rois, strict=True):
+        assert roi.animal_id == kept.animal_id
+        assert (roi.center_x_px, roi.center_y_px) == (kept.center_x_px, kept.center_y_px)
+        assert (roi.camera2_center_x_px, roi.camera2_radius_px) == (
+            kept.center_x_px,
+            kept.radius_px,
+        )
     assert len(warnings) == 1
     assert "removed RWD read-only TCP bridge" in warnings[0]
     assert "dropped: channel_mappings, host, port" in warnings[0]
@@ -145,11 +161,45 @@ def test_v2_settings_require_a_known_source(tmp_path: Path) -> None:
 
 
 def test_v3_rwd_settings_round_trip_without_warnings(tmp_path: Path) -> None:
-    base = demo_config(tmp_path / "recordings", fiber_count=1)
-    original = base.model_copy(update={"source": RWDSourceConfig()})
+    original = demo_config(tmp_path / "recordings", fiber_count=2, system="rwd")
 
     written = export_settings(tmp_path / "rwd.settings.json", original)
     restored, warnings = import_settings_with_warnings(written)
 
     assert restored == original
     assert warnings == []
+
+
+def test_v2_rwd_settings_keep_a_runnable_stream_wavelength_set(tmp_path: Path) -> None:
+    original = demo_config(tmp_path / "recordings", fiber_count=1)
+    tcp_source = {"kind": "rwd", "enabled_wavelengths_nm": [470, 560]}
+    path = _write_v2(tmp_path / "rwd-v2.json", original, tcp_source)
+
+    restored, _warnings = import_settings_with_warnings(path)
+
+    assert [channel.enabled for channel in restored.channels] == [False, True, True]
+
+
+def test_v2_rwd_settings_enable_all_leds_when_stream_set_cannot_run(tmp_path: Path) -> None:
+    original = demo_config(tmp_path / "recordings", fiber_count=1)
+    tcp_source = {"kind": "rwd", "enabled_wavelengths_nm": [410, 560]}
+    path = _write_v2(tmp_path / "rwd-v2.json", original, tcp_source)
+
+    restored, _warnings = import_settings_with_warnings(path)
+
+    assert all(channel.enabled for channel in restored.channels)
+
+
+def test_v2_rwd_settings_rescale_circles_that_do_not_fit_the_rwd_sensor(tmp_path: Path) -> None:
+    original = demo_config(tmp_path / "recordings", fiber_count=2, width_px=1456, height_px=1088)
+    assert any(roi.center_x_px + roi.radius_px > 728 for roi in original.rois)
+    path = _write_v2(tmp_path / "rwd-v2.json", original, {"kind": "rwd"})
+
+    restored, warnings = import_settings_with_warnings(path)
+
+    for kept, roi in zip(original.rois, restored.rois, strict=True):
+        assert roi.center_x_px == pytest.approx(kept.center_x_px * 728 / 1456)
+        assert roi.center_y_px == pytest.approx(kept.center_y_px * 544 / 1088)
+        assert roi.radius_px == pytest.approx(kept.radius_px * 0.5)
+        assert roi.camera2_center_x_px == roi.center_x_px
+    assert "rescaled to the 728x544 RWD sensor" in warnings[0]

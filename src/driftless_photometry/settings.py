@@ -16,6 +16,7 @@ from pynwb import NWBHDF5IO
 
 from driftless_photometry import __version__
 from driftless_photometry.config import (
+    RWD_PROFILE,
     CameraConfig,
     ChannelConfig,
     EdgeSelection,
@@ -142,11 +143,87 @@ def _migrate_v2_source(values: dict[str, Any], source_name: str) -> tuple[dict[s
             "camera/controller system."
         )
     dropped = ", ".join(sorted(key for key in source if key != "kind")) or "none"
-    return {**values, "source": {"kind": "rwd"}}, (
-        f"{source_name} used settings v2 for the removed RWD read-only TCP bridge. Session, "
-        "camera, fiber, and channel settings were kept and now select RWD direct control; "
-        f"these TCP source fields were dropped: {dropped}."
+    stream_wavelengths = {
+        Wavelength(nm) for nm in source.get("enabled_wavelengths_nm", ()) if nm in (410, 470, 560)
+    }
+    allowed = RWD_PROFILE.allowed_wavelength_sets or frozenset()
+    enabled = stream_wavelengths if frozenset(stream_wavelengths) in allowed else None
+    channels = [
+        {
+            "wavelength_nm": int(wavelength),
+            "enabled": enabled is None or wavelength in enabled,
+            "voltage_v": None,
+            "power_percent": 5.0,
+        }
+        for wavelength in RWD_PROFILE.wavelengths
+    ]
+    camera = values.get("camera") if isinstance(values.get("camera"), dict) else {}
+    width, height = RWD_PROFILE.sensor_size_px or (0, 0)
+    rois = [dict(roi) for roi in values.get("rois", ()) if isinstance(roi, dict)]
+    rescaled = _fit_circles_to_sensor(rois, camera, (width, height))
+    rois = [
+        {
+            **roi,
+            "camera2_center_x_px": roi.get("center_x_px"),
+            "camera2_center_y_px": roi.get("center_y_px"),
+            "camera2_radius_px": roi.get("radius_px"),
+        }
+        for roi in rois
+    ]
+    display = values.get("display") if isinstance(values.get("display"), dict) else {}
+    migrated = {
+        **values,
+        "source": {"kind": "rwd"},
+        "channels": channels,
+        "camera": RWD_PROFILE.default_camera.model_dump(mode="json")
+        | {"raw_capture": bool(camera.get("raw_capture", False))},
+        "rois": rois,
+        "display": display
+        | {"visible_wavelengths": [int(wavelength) for wavelength in RWD_PROFILE.wavelengths]},
+    }
+    circles = (
+        f"rescaled to the {width}x{height} RWD sensor, and each camera-2 circle was set to"
+        if rescaled
+        else "kept, and each camera-2 circle was set to"
     )
+    return migrated, (
+        f"{source_name} used settings v2 for the removed RWD read-only TCP bridge and now "
+        "selects RWD direct control. Session and fiber metadata were kept. Channels were "
+        "reset to the RWD 410/470/560 nm LEDs at 5 % power and the camera to the RWD Alvium "
+        f"defaults. Fiber circles were {circles} its camera-1 position; place the fiber ROIs "
+        f"on both cameras before recording. These TCP source fields were dropped: {dropped}."
+    )
+
+
+def _fit_circles_to_sensor(
+    rois: list[dict[str, Any]], camera: dict[str, Any], sensor: tuple[int, int]
+) -> bool:
+    """Scale ROI circles in place from the old camera to ``sensor`` when any would not fit."""
+
+    width, height = sensor
+
+    def fits(roi: dict[str, Any]) -> bool:
+        try:
+            x, y, r = (float(roi[key]) for key in ("center_x_px", "center_y_px", "radius_px"))
+        except (KeyError, TypeError, ValueError):
+            return True
+        return r <= x <= width - r and r <= y <= height - r
+
+    if all(fits(roi) for roi in rois):
+        return False
+    try:
+        scale_x = width / float(camera["width_px"])
+        scale_y = height / float(camera["height_px"])
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return False
+    for roi in rois:
+        try:
+            roi["center_x_px"] = float(roi["center_x_px"]) * scale_x
+            roi["center_y_px"] = float(roi["center_y_px"]) * scale_y
+            roi["radius_px"] = float(roi["radius_px"]) * min(scale_x, scale_y)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return True
 
 
 def export_settings(path: str | Path, config: SessionConfig) -> Path:

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from driftless_photometry.config import Wavelength, demo_config
+from driftless_photometry.config import CUSTOM_PROFILE, demo_config
 from driftless_photometry.domain import (
     ExposureRecord,
     FramePacket,
@@ -33,7 +33,7 @@ def _submit_frames(spool: SessionSpool, count: int) -> list[np.ndarray]:
 
 
 def _submit_frame(spool: SessionSpool, index: int) -> np.ndarray:
-    wavelength = list(Wavelength)[index % 3]
+    wavelength = list(CUSTOM_PROFILE.wavelengths)[index % 3]
     image = np.full((24, 32), index + 10, dtype=np.uint16)
     exposure = ExposureRecord(
         index,
@@ -106,8 +106,8 @@ def test_spool_commits_and_round_trips(tmp_path: Path, raw_capture: bool) -> Non
         [[0.00, 0.01], [0.01, 0.02], [0.02, 0.03], [0.03, 0.04], [0.04, 0.05]],
     )
     np.testing.assert_array_equal(loaded.calibration_image, images[0])
-    assert set(loaded.wavelength_images) == set(Wavelength)
-    for index, wavelength in enumerate(Wavelength):
+    assert set(loaded.wavelength_images) == set(CUSTOM_PROFILE.wavelengths)
+    for index, wavelength in enumerate(CUSTOM_PROFILE.wavelengths):
         np.testing.assert_array_equal(loaded.wavelength_images[wavelength], images[index])
     if raw_capture:
         assert loaded.frames is not None

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from driftless_photometry.config import Wavelength, demo_config
+from driftless_photometry.config import CUSTOM_PROFILE, demo_config
 from driftless_photometry.hardware import SimulatedRig
 from driftless_photometry.roi import extract_circular_rois
 
@@ -12,7 +12,9 @@ def test_simulator_is_deterministic_and_explicitly_cycles_wavelengths(tmp_path: 
     first = list(SimulatedRig(config, seed=7).packets(0.2))
     second = list(SimulatedRig(config, seed=7).packets(0.2))
     assert len(first) == 6
-    assert [packet.frame.exposure.wavelength_nm for packet in first] == list(Wavelength) * 2
+    assert [packet.frame.exposure.wavelength_nm for packet in first] == list(
+        CUSTOM_PROFILE.wavelengths
+    ) * 2
     for left, right in zip(first, second, strict=True):
         np.testing.assert_array_equal(left.frame.image, right.frame.image)
         assert left.frame.exposure == right.frame.exposure
