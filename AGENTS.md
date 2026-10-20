@@ -133,6 +133,11 @@ file set passes validation. Never label an unvalidated partial file as complete.
 - `hardware.rwd_controller_protocol` and `hardware.rwd_usb_capture`: the RWD
   controller codec and the offline decoder for USB captures of RWD software sessions.
   Neither may touch hardware.
+- `hardware.rwd_timing`: RWD wavelength identity, trigger-grid timing, and TTL clock
+  alignment. Pure; it must not touch hardware.
+- `hardware.rwd_transport`, `hardware.alvium`, and `hardware.rwd_rig`: the only RWD
+  modules that touch hardware. `hardware.rwd_board_simulator` and
+  `hardware.rwd_rig_simulator` are their test and simulator stand-ins.
 - `acquisition`: explicit state machine and coordination; no GUI dependencies.
 - `storage`: append-safe spool/recovery and NWB finalization/validation.
 - `gui`: PySide6/pyqtgraph presentation; communicates with workers through signals.

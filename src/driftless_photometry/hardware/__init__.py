@@ -29,6 +29,8 @@ from .rwd_controller_protocol import (
     decode_rwd_frame,
     encode_rwd_message,
 )
+from .rwd_rig import RWDRig, RWDRigTiming
+from .rwd_timing import RWDExcitationPlan
 from .rwd_transport import (
     RWDControllerIdentity,
     RWDControllerTransport,
@@ -59,6 +61,7 @@ __all__ = [
     "RWDControllerIdentity",
     "RWDControllerTransport",
     "RWDExcitationMode",
+    "RWDExcitationPlan",
     "RWDFrameError",
     "RWDFrameStreamDecoder",
     "RWDFunction",
@@ -68,6 +71,8 @@ __all__ = [
     "RWDMessageType",
     "RWDPollResult",
     "RWDReceivedEdge",
+    "RWDRig",
+    "RWDRigTiming",
     "RWDUSBCaptureDecode",
     "RWDUSBCaptureError",
     "RigPacket",

@@ -96,6 +96,8 @@ def run_preview(
     try:
         for rig_packet in source.packets(planned_duration_s):
             packet = rig_packet.frame
+            if packet is None:
+                continue
             exposure = packet.exposure
             if packet.frame_id <= last_frame_id:
                 raise RuntimeError("preview camera frame IDs are not strictly increasing")
@@ -256,7 +258,15 @@ class AcquisitionEngine:
             )
             self._transition(AcquisitionState.RECORDING, on_state)
             for rig_packet in source.packets(duration_s):
+                for interval in rig_packet.invalid_times:
+                    spool.submit_invalid_time(interval)
+                for event in rig_packet.system_events:
+                    spool.submit_system_event(event)
                 packet = rig_packet.frame
+                if packet is None:
+                    for edge in rig_packet.ttl_edges:
+                        spool.submit_ttl(edge)
+                    continue
                 sequence = packet.exposure.sequence
                 timestamp = packet.exposure.timestamp_s
                 if sequence <= last_sequence:
@@ -326,8 +336,8 @@ class AcquisitionEngine:
                             ),
                         )
                     )
-                if self._stop_requested.is_set():
-                    break
+                # After stop(), keep reading until the source ends so that it can hand
+                # over the events it observed while shutting down.
             if frame_count == 0:
                 raise RuntimeError("recording ended without receiving a camera frame")
 

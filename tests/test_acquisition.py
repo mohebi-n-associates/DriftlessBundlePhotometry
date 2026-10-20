@@ -9,6 +9,7 @@ from pynwb import NWBHDF5IO
 from driftless_photometry.acquisition import AcquisitionEngine, preview_duration_s, run_preview
 from driftless_photometry.config import RWDSourceConfig, demo_config
 from driftless_photometry.diagnostics import FinalizationStage
+from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TTLEdge
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from driftless_photometry.hardware import RigPacket, SimulatedRig
 from driftless_photometry.provenance import NWB_RUNTIME_PROVENANCE_SCRATCH_NAME
@@ -388,3 +389,64 @@ def test_finalizer_failure_preserves_complete_spool(
 
     assert load_session_spool(spools[0]).complete is True
     assert engine.state is AcquisitionState.ERROR
+
+
+class _EventRig:
+    """Simulator frames plus source-reported spans and events, then a frame-less packet."""
+
+    def __init__(self, config) -> None:
+        self._source = SimulatedRig(config, seed=23)
+
+    def packets(self, duration_s: float) -> Iterator[RigPacket]:
+        for index, packet in enumerate(self._source.packets(duration_s)):
+            if index == 1:
+                packet = replace(
+                    packet,
+                    invalid_times=(
+                        InvalidTimeInterval(0.01, 0.02, "source restart", "source_restart"),
+                    ),
+                    system_events=(SystemEvent(0.01, "source_restart", "reason"),),
+                )
+            yield packet
+        edge = TTLEdge(
+            timestamp_s=0.09,
+            controller_tick_us=90_000,
+            line=1,
+            label="behavior_1",
+            edge="rising",
+            new_level=True,
+            sequence=0,
+        )
+        yield RigPacket(
+            frame=None,
+            ttl_edges=(edge,),
+            system_events=(SystemEvent(0.09, "source_stopped"),),
+        )
+
+    def stop(self) -> None:
+        self._source.stop()
+
+
+def test_engine_records_source_spans_events_and_final_frameless_packet(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+
+    result = AcquisitionEngine().run(config, _EventRig(config), duration_s=0.1)
+
+    assert result.report.frame_count == 3
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        nwbfile = io.read()
+        invalid = nwbfile.intervals["invalid_times"].to_dataframe()
+        assert invalid["source_event"].tolist() == ["source_restart"]
+        events = nwbfile.events["system_events"].to_dataframe()["event"].tolist()
+        assert "source_restart" in events
+        assert "source_stopped" in events
+        ttl = nwbfile.events["ttl_edges"].to_dataframe()
+        assert 0.09 in ttl["timestamp"].round(6).tolist()
+
+
+def test_preview_ignores_frameless_packets(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+
+    result = run_preview(config, _EventRig(config))
+
+    assert result.frame_count == 15

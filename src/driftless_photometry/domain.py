@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -10,14 +11,38 @@ from numpy.typing import NDArray
 from .config import Wavelength
 from .provenance import RuntimeProvenance
 
+WavelengthSource = Literal["controller", "phase_derived"]
+"""How an exposure's wavelength is known.
+
+``controller`` means the timing controller reported it for that exposure.
+``phase_derived`` means it was derived from camera identity and the sequence position
+after a sequencer restart; only the RWD system does this (see the agent contract).
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class ExposureRecord:
+    """One camera exposure on the shared session clock.
+
+    ``commanded_voltage_v`` is set by the Custom system and ``commanded_power_percent``
+    by RWD hardware. ``controller_tick_us`` is the controller's own tick on Custom
+    hardware; RWD exposures carry ticks derived from the board's trigger grid.
+    """
+
     sequence: int
     timestamp_s: float
     controller_tick_us: int
     wavelength_nm: Wavelength
-    commanded_voltage_v: float
+    commanded_voltage_v: float | None
+    commanded_power_percent: float | None = None
+    camera_index: int = 1
+    wavelength_source: WavelengthSource = "controller"
+
+    def __post_init__(self) -> None:
+        if self.camera_index < 1:
+            raise ValueError("camera_index starts at 1")
+        if (self.commanded_voltage_v is None) == (self.commanded_power_percent is None):
+            raise ValueError("an exposure commands either a voltage or a power percentage")
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +53,8 @@ class FramePacket:
     image: NDArray[np.uint16]
     exposure: ExposureRecord
     host_received_s: float
+    camera_timestamp_ns: int | None = None
+    """The camera's own hardware timestamp, when the camera reports one."""
 
     def __post_init__(self) -> None:
         if self.frame_id < 0:

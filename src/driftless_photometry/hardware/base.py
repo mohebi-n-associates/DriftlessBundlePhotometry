@@ -6,13 +6,21 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
-from driftless_photometry.domain import FramePacket, TTLEdge
+from driftless_photometry.domain import FramePacket, InvalidTimeInterval, SystemEvent, TTLEdge
 
 
 @dataclass(frozen=True, slots=True)
 class RigPacket:
-    frame: FramePacket
+    """One camera frame and the events a source observed since its previous packet.
+
+    ``frame`` is None only for a source's final packet, which carries events that
+    arrived after its last frame.
+    """
+
+    frame: FramePacket | None
     ttl_edges: tuple[TTLEdge, ...] = ()
+    invalid_times: tuple[InvalidTimeInterval, ...] = ()
+    system_events: tuple[SystemEvent, ...] = ()
 
 
 class RigSource(Protocol):
