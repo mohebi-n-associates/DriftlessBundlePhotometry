@@ -24,6 +24,7 @@ from driftless_photometry.hardware.rwd_controller_protocol import (
     host_heartbeat,
     led_enable,
     led_power,
+    model_query,
     output_config,
     output_enable,
     parse_input_edge,
@@ -247,3 +248,100 @@ def test_message_fields_are_range_checked() -> None:
         RWDMessage(RWDMessageType.COMMAND, 0x10000, 0x41)
     with pytest.raises(ValueError, match="8 bits"):
         RWDMessage(RWDMessageType.COMMAND, 1, 0x100)
+
+
+# Exact bytes received from a physical RWD controller on 2026-10-20 (firmware 2.0.0,
+# build 37619) during a probe that sent only VERSION_QUERY (seq 1) and QUERY_MODEL (seq 2).
+BENCH_BOARD_BYTES_2026_10_20 = bytes.fromhex(
+    "7eff03002104 00e1 3100000000 84c37e"
+    "7eff03002102 0001 4900000000 c4f57e"
+    "7eff03002102 0002 4e00000000 37407e"
+    "7eff03002103 00e4 2602000000 8cf77e"
+    "7eff03002103 00e5 27000092f34f465253 e8bc7e"
+    "7eff03002103 00e6 2b00 a7b27e"
+    "7eff03002104 00ec 3100000000 99c27e"
+)
+
+
+def test_decodes_bench_bytes_from_a_physical_controller() -> None:
+    decoder = RWDFrameStreamDecoder()
+    results = [r for byte in BENCH_BOARD_BYTES_2026_10_20 for r in decoder.feed(bytes([byte]))]
+    heartbeat = (RWDMessageType.INFO, RWDFunction.CONTROLLER_HEARTBEAT, bytes(4))
+
+    assert all(isinstance(result, RWDMessage) for result in results)
+    assert [(r.message_type, r.sequence, r.function, r.data) for r in results] == [
+        (heartbeat[0], 225, heartbeat[1], heartbeat[2]),
+        (RWDMessageType.ACK, 1, RWDFunction.VERSION_QUERY, bytes(4)),
+        (RWDMessageType.ACK, 2, RWDFunction.QUERY_MODEL, bytes(4)),
+        (RWDMessageType.REPLY, 228, RWDFunction.VERSION_REPLY, bytes.fromhex("02000000")),
+        (RWDMessageType.REPLY, 229, RWDFunction.VERSION_DETAIL_REPLY, b"\x00\x00\x92\xf3OFRS"),
+        (RWDMessageType.REPLY, 230, RWDFunction.MODEL_REPLY, b"\x00"),
+        (heartbeat[0], 236, heartbeat[1], heartbeat[2]),
+    ]
+    assert results[1] == ack_for(version_query().to_message(1))
+    assert results[2] == ack_for(model_query().to_message(2))
+    assert parse_version_reply(results[3].data) == (2, 0, 0)
+    assert parse_version_detail(results[4].data) == (37619, True)
+    assert describe_rwd_message(results[5]) == "model code 0"
+
+
+# Exact board frames from the 2026-10-20 LED test: 470 nm at 5 %, continuous mode,
+# 20 Hz / 40 ms, sequencer on (light observed), then sequencer off (light stopped).
+BENCH_LED_TEST_BOARD_FRAMES_2026_10_20 = [
+    "7eff03002102000841000000009c147e",
+    "7eff03002103026521010001f4ce7f7e",
+    "7eff03002102000942000000004d517e",
+    "7eff03002103026622010127677e",
+    "7eff03002102000a44000000007d5ed97e",
+    "7eff0300210302672400000000c7b37e",
+    "7eff03002102000b43000000006f6d7e",
+    "7eff030021030268230014a00ff87d5e7e",
+    "7eff03002102000c4500000000d8e47e",
+    "7eff03002103026a2501000000e68e7e",
+    "7eff030021020012450000000066e77e",
+    "7eff0300210302702500000000208d7e",
+    "7eff03002103026421020000004c7d5e7e",
+]
+
+
+def test_decodes_bench_led_test_confirmations_from_a_physical_controller() -> None:
+    stream = bytes.fromhex("".join(BENCH_LED_TEST_BOARD_FRAMES_2026_10_20))
+    results = RWDFrameStreamDecoder().feed(stream)
+
+    assert all(isinstance(result, RWDMessage) for result in results)
+    acks = [r for r in results if r.message_type is RWDMessageType.ACK]
+    assert [(r.sequence, r.function) for r in acks] == [
+        (8, RWDFunction.LED_VALUE),
+        (9, RWDFunction.LED_ENABLE),
+        (10, RWDFunction.EXCITATION_MODE),
+        (11, RWDFunction.CAMERA_TIMING),
+        (12, RWDFunction.DEVICE_ENABLE),
+        (18, RWDFunction.DEVICE_ENABLE),
+    ]
+    assert all(r.data == bytes(4) for r in acks)
+    replies = [
+        (r.function, describe_rwd_message(r))
+        for r in results
+        if r.message_type is RWDMessageType.REPLY
+    ]
+    assert replies == [
+        (RWDFunction.LED_VALUE_REPLY, "470 nm power 5.00%"),
+        (RWDFunction.LED_ENABLE_REPLY, "470 nm on"),
+        (RWDFunction.EXCITATION_MODE_REPLY, "single LED, continuous"),
+        (RWDFunction.CAMERA_TIMING_REPLY, "20 Hz, exposure bytes a0 0f (byte order unconfirmed)"),
+        (RWDFunction.STATE_REPLY, "sequencer enabled"),
+        (RWDFunction.STATE_REPLY, "sequencer disabled"),
+        (RWDFunction.LED_VALUE_REPLY, "560 nm power 0.00%"),
+    ]
+
+
+def test_decodes_bench_interleaved_mode_confirmation() -> None:
+    """Board replies from the 2026-10-20 sequence run: 10 Hz / 50 ms, then all LEDs interleaved."""
+
+    timing, mode = (
+        decode_rwd_frame(bytes.fromhex(frame)[1:-1])
+        for frame in ["7eff03002103037623000a881349127e", "7eff0300210303852403000000c1b47e"]
+    )
+    assert describe_rwd_message(timing) == "10 Hz, exposure bytes 88 13 (byte order unconfirmed)"
+    assert mode.function is RWDFunction.EXCITATION_MODE_REPLY
+    assert describe_rwd_message(mode) == "410+470+560 interleaved"

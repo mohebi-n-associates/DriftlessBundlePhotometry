@@ -66,6 +66,9 @@ class RWDFunction(IntEnum):
     HOST_HEARTBEAT = 0x71
     LED_VALUE_REPLY = 0x21
     LED_ENABLE_REPLY = 0x22
+    # Confirmations seen on firmware 2.0.0 (bench); absent from OFRS's identifier list.
+    CAMERA_TIMING_REPLY = 0x23
+    EXCITATION_MODE_REPLY = 0x24
     STATE_REPLY = 0x25
     VERSION_REPLY = 0x26
     VERSION_DETAIL_REPLY = 0x27
@@ -453,12 +456,15 @@ def describe_rwd_message(message: RWDMessage) -> str:
     if function is RWDFunction.CAMERA_TIMING and len(data) >= 4:
         exposure = int.from_bytes(data[2:4], "big")
         return f"{int.from_bytes(data[0:2], 'big')} Hz, exposure {exposure / 100:.2f} ms"
-    if function is RWDFunction.EXCITATION_MODE and data:
+    if function is RWDFunction.CAMERA_TIMING_REPLY and len(data) >= 4:
+        fps = int.from_bytes(data[0:2], "big")
+        return f"{fps} Hz, exposure bytes {data[2:4].hex(' ')} (byte order unconfirmed)"
+    if function in {RWDFunction.EXCITATION_MODE, RWDFunction.EXCITATION_MODE_REPLY} and data:
         try:
             return _MODE_TEXT[RWDExcitationMode(data[0])]
         except ValueError:
             return f"unknown excitation mode {data[0]}"
-    if function is RWDFunction.DEVICE_ENABLE and data:
+    if function in {RWDFunction.DEVICE_ENABLE, RWDFunction.STATE_REPLY} and data:
         return "sequencer enabled" if data[0] else "sequencer disabled"
     if function is RWDFunction.OUTPUT_ENABLE and len(data) >= 2:
         return f"Output{data[0]} {'on' if data[1] else 'off'}"
@@ -478,4 +484,6 @@ def describe_rwd_message(message: RWDMessage) -> str:
         return f"malformed payload: {error}"
     if function in {RWDFunction.HOST_HEARTBEAT, RWDFunction.CONTROLLER_HEARTBEAT}:
         return "heartbeat"
+    if function is RWDFunction.MODEL_REPLY and data:
+        return f"model code {data[0]}"
     return ""
