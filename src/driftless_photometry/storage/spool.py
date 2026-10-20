@@ -16,7 +16,7 @@ from typing import IO
 
 import numpy as np
 
-from driftless_photometry.config import CustomSourceConfig, SessionConfig, Wavelength
+from driftless_photometry.config import SessionConfig, Wavelength
 from driftless_photometry.diagnostics import SpoolDiagnostics
 from driftless_photometry.domain import (
     AcquisitionData,
@@ -35,8 +35,10 @@ from driftless_photometry.provenance import (
 from .frames import FrameStream
 from .nwb import _safe_filename
 
-_SPOOL_SCHEMA_VERSION = 2
-_SUPPORTED_SPOOL_SCHEMA_VERSIONS = {1, _SPOOL_SCHEMA_VERSION}
+_SPOOL_SCHEMA_VERSION = 3
+_SUPPORTED_SPOOL_SCHEMA_VERSIONS = {1, 2, _SPOOL_SCHEMA_VERSION}
+_WAVELENGTH_SOURCE_CODES = {"controller": 0, "phase_derived": 1}
+_WAVELENGTH_SOURCES = {code: name for name, code in _WAVELENGTH_SOURCE_CODES.items()}
 
 
 class SpoolError(RuntimeError):
@@ -54,7 +56,11 @@ class _FrameWork:
     sequence: int
     controller_tick_us: int
     wavelength_nm: int
-    commanded_voltage_v: float
+    commanded_voltage_v: float | None
+    commanded_power_percent: float | None
+    camera_index: int
+    wavelength_source: str
+    camera_timestamp_ns: int | None
     host_received_s: float
     values: np.ndarray
     saturation_fractions: np.ndarray
@@ -108,11 +114,6 @@ class SessionSpool:
         submit_timeout_s: float = 2.0,
         runtime_provenance: RuntimeProvenance | None = None,
     ) -> None:
-        if not isinstance(config.source, CustomSourceConfig):
-            raise ValueError(
-                "session spool requires the custom acquisition system; RWD direct "
-                "control has no recording backend yet"
-            )
         if chunk_size <= 0 or queue_size <= 0 or submit_timeout_s <= 0:
             raise ValueError("chunk_size, queue_size, and submit timeout must be positive")
         self.config = config
@@ -178,6 +179,10 @@ class SessionSpool:
             controller_tick_us=sample.controller_tick_us,
             wavelength_nm=int(sample.wavelength_nm),
             commanded_voltage_v=packet.exposure.commanded_voltage_v,
+            commanded_power_percent=packet.exposure.commanded_power_percent,
+            camera_index=packet.exposure.camera_index,
+            wavelength_source=packet.exposure.wavelength_source,
+            camera_timestamp_ns=packet.camera_timestamp_ns,
             host_received_s=packet.host_received_s,
             values=sample.values.astype(np.float32, copy=True),
             saturation_fractions=sample.saturation_fractions.astype(np.float32, copy=True),
@@ -364,7 +369,22 @@ class SessionSpool:
             ),
             "wavelengths_nm": np.asarray([item.wavelength_nm for item in items], dtype=np.uint16),
             "commanded_voltages_v": np.asarray(
-                [item.commanded_voltage_v for item in items], dtype=np.float32
+                [_or_nan(item.commanded_voltage_v) for item in items], dtype=np.float32
+            ),
+            "commanded_power_percent": np.asarray(
+                [_or_nan(item.commanded_power_percent) for item in items], dtype=np.float32
+            ),
+            "camera_indices": np.asarray([item.camera_index for item in items], dtype=np.uint8),
+            "wavelength_sources": np.asarray(
+                [_WAVELENGTH_SOURCE_CODES[item.wavelength_source] for item in items],
+                dtype=np.uint8,
+            ),
+            "camera_timestamps_ns": np.asarray(
+                [
+                    -1 if item.camera_timestamp_ns is None else item.camera_timestamp_ns
+                    for item in items
+                ],
+                dtype=np.int64,
             ),
             "host_received_s": np.asarray(
                 [item.host_received_s for item in items], dtype=np.float64
@@ -451,7 +471,8 @@ def load_session_spool(path: Path) -> LoadedSpool:
     expected_sequence = 0
     previous_timestamp: float | None = None
     channel_voltages = {
-        int(channel.wavelength_nm): channel.voltage_v for channel in config.enabled_channels
+        int(channel.wavelength_nm): float(channel.voltage_v or 0.0)
+        for channel in config.enabled_channels
     }
     for entry in manifest["chunks"]:
         chunk_path = path / entry["file"]
@@ -474,6 +495,16 @@ def load_session_spool(path: Path) -> LoadedSpool:
                 else:
                     commanded_voltage_v = channel_voltages[int(wavelength)]
                     host_received_s = float(chunk["timestamps_s"][index])
+                if schema_version >= 3:
+                    commanded_power_percent = float(chunk["commanded_power_percent"][index])
+                    camera_index = int(chunk["camera_indices"][index])
+                    wavelength_source = _WAVELENGTH_SOURCES[int(chunk["wavelength_sources"][index])]
+                    camera_timestamp_ns = int(chunk["camera_timestamps_ns"][index])
+                else:
+                    commanded_power_percent = float("nan")
+                    camera_index = 1
+                    wavelength_source = "controller"
+                    camera_timestamp_ns = -1
                 sample = TraceSample(
                     timestamp_s=float(chunk["timestamps_s"][index]),
                     frame_id=int(chunk["frame_ids"][index]),
@@ -516,6 +547,10 @@ def load_session_spool(path: Path) -> LoadedSpool:
                 data.frame_ticks_us.append(sample.controller_tick_us)
                 data.frame_wavelengths_nm.append(int(wavelength))
                 data.frame_commanded_voltages_v.append(commanded_voltage_v)
+                data.frame_commanded_power_percent.append(commanded_power_percent)
+                data.frame_camera_indices.append(camera_index)
+                data.frame_wavelength_sources.append(wavelength_source)
+                data.frame_camera_timestamps_ns.append(camera_timestamp_ns)
                 data.frame_host_received_s.append(host_received_s)
                 data.frame_saturation_fractions.append(sample.saturation_fractions.copy())
                 data.frame_saved_indices.append(
@@ -642,6 +677,10 @@ def remove_session_spool(path: Path) -> None:
             shutil.rmtree(resolved)
             return
     raise SpoolError(f"refusing to remove unrecognized spool path: {resolved}")
+
+
+def _or_nan(value: float | None) -> float:
+    return float("nan") if value is None else float(value)
 
 
 def _atomic_write_json(path: Path, value: object) -> None:

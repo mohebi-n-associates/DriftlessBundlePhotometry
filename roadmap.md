@@ -271,7 +271,8 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
    2. Rig source with phase assignment, gap detection, and board-clock TTL timing —
       implemented and tested against simulated board and cameras; not yet run on
       hardware.
-   3. Camera-aware ROI extraction and NWB — planned.
+   3. Camera-aware ROI extraction and NWB — implemented; spool schema v3 and RWD
+      NWB layout tested end to end against simulated hardware.
    4. GUI RWD controls: COM port, camera-2 ROI placement, preview, and TTL outputs —
       planned.
    5. Bench validation on the R821 and an operator guide — hardware required.

@@ -135,6 +135,10 @@ class SystemEvent:
             raise ValueError("system-event classification is required")
 
 
+def _or_nan(value: float | None) -> float:
+    return float("nan") if value is None else float(value)
+
+
 @dataclass(slots=True)
 class AcquisitionData:
     """Completed non-frame session data used by the NWB finalizer."""
@@ -152,6 +156,13 @@ class AcquisitionData:
     frame_ticks_us: list[int] = field(default_factory=list)
     frame_wavelengths_nm: list[int] = field(default_factory=list)
     frame_commanded_voltages_v: list[float] = field(default_factory=list)
+    """Commanded LED voltage per frame; NaN where the system commands percent."""
+    frame_commanded_power_percent: list[float] = field(default_factory=list)
+    """Commanded LED power per frame; NaN where the system commands volts."""
+    frame_camera_indices: list[int] = field(default_factory=list)
+    frame_wavelength_sources: list[str] = field(default_factory=list)
+    frame_camera_timestamps_ns: list[int] = field(default_factory=list)
+    """The camera's own hardware timestamp per frame; -1 where none was reported."""
     frame_host_received_s: list[float] = field(default_factory=list)
     frame_saturation_fractions: list[NDArray[np.float32]] = field(default_factory=list)
     frame_saved_indices: list[int] = field(default_factory=list)
@@ -164,7 +175,14 @@ class AcquisitionData:
         self.frame_sequences.append(packet.exposure.sequence)
         self.frame_ticks_us.append(packet.exposure.controller_tick_us)
         self.frame_wavelengths_nm.append(int(packet.exposure.wavelength_nm))
-        self.frame_commanded_voltages_v.append(packet.exposure.commanded_voltage_v)
+        exposure = packet.exposure
+        self.frame_commanded_voltages_v.append(_or_nan(exposure.commanded_voltage_v))
+        self.frame_commanded_power_percent.append(_or_nan(exposure.commanded_power_percent))
+        self.frame_camera_indices.append(exposure.camera_index)
+        self.frame_wavelength_sources.append(exposure.wavelength_source)
+        self.frame_camera_timestamps_ns.append(
+            -1 if packet.camera_timestamp_ns is None else packet.camera_timestamp_ns
+        )
         self.frame_host_received_s.append(packet.host_received_s)
         self.frame_saturation_fractions.append(sample.saturation_fractions.copy())
         self.frame_saved_indices.append(saved_index)

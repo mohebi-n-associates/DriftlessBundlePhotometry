@@ -30,6 +30,29 @@ class ROIExtraction:
     pixel_counts: NDArray[np.int32]
 
 
+def rois_for_camera(rois: tuple[ROIConfig, ...], camera_index: int) -> tuple[ROIConfig, ...]:
+    """Return the circles as placed on ``camera_index``; camera 2 uses its own geometry."""
+
+    if camera_index == 1:
+        return rois
+    if camera_index != 2:
+        raise ValueError(f"no ROI geometry for camera {camera_index}")
+    placed = []
+    for roi in rois:
+        if not roi.has_camera2_geometry:
+            raise ValueError(f"ROI {roi.fiber_id} has no camera-2 geometry")
+        placed.append(
+            roi.model_copy(
+                update={
+                    "center_x_px": roi.camera2_center_x_px,
+                    "center_y_px": roi.camera2_center_y_px,
+                    "radius_px": roi.camera2_radius_px,
+                }
+            )
+        )
+    return tuple(placed)
+
+
 def circular_mask(shape: tuple[int, int], roi: ROIConfig) -> NDArray[np.bool_]:
     """Return a boolean `[y, x]` mask including pixels on the circle boundary."""
 
