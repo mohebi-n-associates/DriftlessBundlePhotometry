@@ -198,7 +198,7 @@ def test_tracker_fails_when_the_board_period_differs_from_the_command(tmp_path: 
 
     fatal = [result for result in results if isinstance(result, RWDContinuityBreak)]
     assert fatal and fatal[0].fatal
-    assert "not the commanded 33.3333 ms" in fatal[0].reason
+    assert "not the commanded 33.3300 ms" in fatal[0].reason
 
 
 def _edge(tick_ms: int, line: int = 1, edge: str = "rising") -> RWDInputEdge:
@@ -283,3 +283,27 @@ def test_brightness_check_stays_quiet_when_it_cannot_tell(tmp_path: Path) -> Non
     check.start_segment(1)
     check.observe(W410, 725.0)
     assert check.observe(W470, 700.0) is None
+
+
+@pytest.mark.parametrize(
+    ("fps", "period_ms"), [(10, 100.0), (15, 66.66), (20, 50.0), (30, 33.33), (250, 4.0)]
+)
+def test_plan_uses_the_boards_measured_trigger_period(tmp_path: Path, fps, period_ms) -> None:
+    plan = RWDExcitationPlan.from_config(
+        _config(tmp_path, (W470,), requested_fps=float(fps), exposure_us=1000)
+    )
+
+    assert plan.period_s == pytest.approx(period_ms / 1000, abs=1e-12)
+
+
+def test_tracker_accepts_crystal_offsets_but_not_a_wrong_period_model(tmp_path: Path) -> None:
+    plan = RWDExcitationPlan.from_config(_config(tmp_path, (W410, W470), requested_fps=30.0))
+    crystal = RWDSegmentTracker(plan, enabled_host_s=0.0)
+    frames = _frames(plan, range(60), camera_ns_per_s=1e9 * (1 - 24e-6))
+    assert all(isinstance(crystal.observe(frame), RWDSlotAssignment) for frame in frames)
+
+    wrong = RWDSegmentTracker(plan, enabled_host_s=0.0)
+    # Timing at exactly 1/30 s would be 1000 ppm off the board's 33.330 ms.
+    frames = _frames(plan, range(60), camera_ns_per_s=1e9 * (1 + 1e-3))
+    results = [wrong.observe(frame) for frame in frames]
+    assert any(isinstance(result, RWDContinuityBreak) and result.fatal for result in results)

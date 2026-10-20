@@ -238,6 +238,8 @@ class _RWDSession:
         self._host_origin_s = clock()
         self._ttl_sequence = 0
         self._ignored_edges = 0
+        self._early_edges = 0
+        self._retransmissions = 0
         self._edges: list[TTLEdge] = []
         self._events: list[SystemEvent] = []
         self._invalid: list[InvalidTimeInterval] = []
@@ -257,6 +259,7 @@ class _RWDSession:
         self._held: dict[int, _Held] = {}
         self._run_emitted = 0
         self._run_last_host_s: float | None = None
+        self._run_latest_received_s: float | None = None
         self._open_invalid: tuple[float, str] | None = None
 
     # Main loop -------------------------------------------------------------------------
@@ -282,7 +285,7 @@ class _RWDSession:
                 self._poll_controller()
                 if frame is not None:
                     self._accept(frame)
-                self._check_stall()
+                self._check_stall(frame_received=frame is not None)
                 for packet in self._emit_ready(duration_s):
                     if packet is None:
                         finished = True
@@ -303,6 +306,17 @@ class _RWDSession:
                 self._event(
                     "rwd_ttl_edges_not_configured",
                     f"{self._ignored_edges} edge(s) on TTL lines without a configured input",
+                )
+            if self._early_edges:
+                self._event(
+                    "rwd_ttl_edges_before_recording",
+                    f"{self._early_edges} edge(s) before the first exposure were not recorded",
+                )
+            if self._retransmissions:
+                self._event(
+                    "rwd_controller_retransmissions",
+                    f"{self._retransmissions} repeated controller message(s) were acknowledged "
+                    "and ignored",
                 )
             if self._edges or self._events or self._invalid:
                 yield self._packet(None)
@@ -335,6 +349,7 @@ class _RWDSession:
         self._next_slot = 0
         self._run_emitted = 0
         self._run_last_host_s = None
+        self._run_latest_received_s = None
         self._run_start_s = None
         self._run_sequence_base = self._last_sequence + 1
         self._brightness.start_segment(self._run_index)
@@ -370,7 +385,7 @@ class _RWDSession:
         self._event(
             "rwd_sequencer_restart",
             f"{reason}; {discarded} frame(s) could not be attributed and were not recorded; "
-            "TTL inputs are not reported while the sequencer is stopped",
+            "TTL edges may not be reported while the sequencer is stopped",
             at_s=start_s,
         )
         self._start_run()
@@ -386,6 +401,9 @@ class _RWDSession:
     def _accept(self, frame: AlviumFrame) -> None:
         tracker = self._tracker
         assert tracker is not None
+        self._run_latest_received_s = max(
+            frame.host_received_s, self._run_latest_received_s or frame.host_received_s
+        )
         try:
             camera = int(frame.camera_user_id)
         except ValueError:
@@ -520,14 +538,24 @@ class _RWDSession:
                 self._event("rwd_brightness_qc_mismatch", message, at_s=session_s)
         return self._packet(packet)
 
-    def _check_stall(self) -> None:
+    def _check_stall(self, *, frame_received: bool) -> None:
+        """Restart when the next slot's frame is missing, judged by frame arrival times.
+
+        A busy host only delays reading the camera queue. So a slot counts as missing
+        only once a frame that arrived well after it has been read, or when the queue is
+        empty and nothing has arrived for the stall timeout.
+        """
+
         tracker = self._tracker
         if tracker is None:
             return
         now = self._clock()
         delay = tracker.start_delay_s
         if delay is None:
-            if now - self._enabled_host_s > self._timing.first_frame_timeout_s:
+            if (
+                not frame_received
+                and now - self._enabled_host_s > self._timing.first_frame_timeout_s
+            ):
                 self._restart(
                     f"no camera frame within {self._timing.first_frame_timeout_s:g} s of the "
                     "sequencer start"
@@ -539,7 +567,15 @@ class _RWDSession:
         else:
             # Track the last arrival so host/board clock drift never accumulates.
             expected_s = self._run_last_host_s + self._period_s
-        if now > expected_s + self._timing.stall_timeout_s:
+        limit_s = expected_s + self._timing.stall_timeout_s
+        latest = self._run_latest_received_s
+        later_frame_read = latest is not None and latest > limit_s
+        silent = (
+            not frame_received
+            and now > limit_s
+            and (latest is None or now - latest > self._timing.stall_timeout_s)
+        )
+        if later_frame_read or silent:
             camera = self._plan.camera_for_slot(self._next_slot)
             self._restart(
                 f"camera {camera} delivered no frame for trigger slot {self._next_slot} "
@@ -549,6 +585,7 @@ class _RWDSession:
     # Controller input ---------------------------------------------------------------------
     def _poll_controller(self) -> None:
         result = self._transport.poll()
+        self._retransmissions += result.retransmissions
         for malformed in result.malformed:
             at_s = self._session_now_s()
             self._invalid.append(
@@ -587,6 +624,9 @@ class _RWDSession:
             ttl = self._ttl_lines.get(aligned.edge.line)
             if ttl is None:
                 self._ignored_edges += 1
+                continue
+            if aligned.session_s < 0:
+                self._early_edges += 1
                 continue
             if ttl.edges.value not in {"both", aligned.edge.edge}:
                 continue

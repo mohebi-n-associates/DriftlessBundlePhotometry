@@ -114,6 +114,7 @@ def _module(system: FakeSystem) -> SimpleNamespace:
 
 
 def _cameras(system: FakeSystem, **kwargs: object) -> AlviumTriggeredCameras:
+    kwargs.setdefault("discovery_timeout_s", 0.0)
     return AlviumTriggeredCameras(
         AlviumSettings(exposure_us=10_000.0), vmbpy_loader=lambda: _module(system), **kwargs
     )
@@ -210,3 +211,33 @@ def test_skips_cameras_on_other_transport_layers() -> None:
         assert green.open and red.open
         assert not simulator.open
         assert simulator.history == []
+
+
+def test_rescans_for_a_camera_that_vimba_has_not_listed_yet() -> None:
+    green, red = FakeCamera("1"), FakeCamera("2")
+    system = FakeSystem([red])
+    now = {"s": 0.0}
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now["s"] += seconds
+        system.cameras = [red, green]
+
+    with _cameras(system, discovery_timeout_s=5.0, clock=lambda: now["s"], sleep=sleep):
+        assert green.open and red.open
+    assert sleeps == [0.5]
+
+
+def test_gives_up_after_the_discovery_timeout() -> None:
+    red = FakeCamera("2")
+    system = FakeSystem([red])
+    now = {"s": 0.0}
+
+    def sleep(seconds: float) -> None:
+        now["s"] += seconds
+
+    with pytest.raises(AlviumSDKUnavailable, match="DeviceUserID 1"):
+        _cameras(system, discovery_timeout_s=2.0, clock=lambda: now["s"], sleep=sleep).__enter__()
+    assert now["s"] == pytest.approx(2.0)
+    assert not red.open

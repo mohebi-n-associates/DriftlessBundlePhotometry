@@ -9,6 +9,7 @@ close, including after errors.
 from __future__ import annotations
 
 import time
+from collections import deque
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -121,6 +122,8 @@ class RWDReceivedEdge:
 class RWDPollResult:
     edges: tuple[RWDReceivedEdge, ...] = ()
     malformed: tuple[RWDMalformedFrame, ...] = ()
+    retransmissions: int = 0
+    """Board messages received again with a sequence already seen (acked, not reused)."""
 
 
 class RWDControllerTransport:
@@ -161,6 +164,10 @@ class RWDControllerTransport:
         self._replies: list[RWDMessage] = []
         self._edges: list[RWDReceivedEdge] = []
         self._malformed: list[RWDMalformedFrame] = []
+        # The board resends a reply until it is acked, keeping its sequence number
+        # (bench, 2026-10-20), so recent board sequences identify retransmissions.
+        self._recent_board_messages: deque[tuple[int, int, bytes]] = deque(maxlen=64)
+        self._retransmissions = 0
         self._last_controller_frame_s = 0.0
         self._last_host_heartbeat_s = 0.0
         self.identity: RWDControllerIdentity | None = None
@@ -216,9 +223,12 @@ class RWDControllerTransport:
         )
 
     def poll(self) -> RWDPollResult:
-        """Read pending input, keep the link alive, and return edges and malformed frames."""
+        """Read pending input, keep the link alive, and return edges and malformed frames.
 
-        self._read_once()
+        Never waits for input: the acquisition loop calls this between camera frames.
+        """
+
+        self._read_once(block=False)
         now = self._clock()
         if now - self._last_host_heartbeat_s >= self._heartbeat_interval_s:
             self._sequence = (self._sequence + 1) & 0xFFFF
@@ -229,7 +239,8 @@ class RWDControllerTransport:
                 AcquisitionFaultCode.CONTROLLER_DISCONNECT,
                 f"RWD controller sent nothing for more than {self._silence_limit_s:g} s",
             )
-        result = RWDPollResult(tuple(self._edges), tuple(self._malformed))
+        result = RWDPollResult(tuple(self._edges), tuple(self._malformed), self._retransmissions)
+        self._retransmissions = 0
         self._edges.clear()
         self._malformed.clear()
         self._replies.clear()
@@ -337,10 +348,15 @@ class RWDControllerTransport:
                 f"RWD controller link failed while writing: {error}",
             ) from error
 
-    def _read_once(self) -> None:
+    def _read_once(self, *, block: bool = True) -> None:
+        """Read what is waiting; when ``block``, wait up to the port timeout for one byte."""
+
         link = self._require_open()
         try:
-            chunk = link.read(max(1, link.in_waiting))
+            waiting = link.in_waiting
+            if not waiting and not block:
+                return
+            chunk = link.read(max(1, waiting))
         except OSError as error:
             raise AcquisitionFault(
                 AcquisitionFaultCode.CONTROLLER_DISCONNECT,
@@ -362,6 +378,11 @@ class RWDControllerTransport:
             return
         if message.message_type in {RWDMessageType.COMMAND, RWDMessageType.REPLY}:
             self._write(ack_for(message))
+            identity = (message.sequence, message.function_id, message.data)
+            if identity in self._recent_board_messages:
+                self._retransmissions += 1
+                return
+            self._recent_board_messages.append(identity)
         if message.function is RWDFunction.INPUT_EDGE:
             try:
                 self._edges.append(RWDReceivedEdge(now, parse_input_edge(message.data)))

@@ -101,12 +101,18 @@ class AlviumTriggeredCameras:
         queue_size: int = 512,
         clock: Callable[[], float] = time.monotonic,
         vmbpy_loader: Callable[[], ModuleType] = load_vmbpy,
+        discovery_timeout_s: float = 5.0,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if queue_size <= 0:
             raise ValueError("queue size must be positive")
+        if discovery_timeout_s < 0:
+            raise ValueError("discovery timeout must be non-negative")
         self._settings = settings
         self._user_ids = tuple(user_ids)
         self._clock = clock
+        self._discovery_timeout_s = discovery_timeout_s
+        self._sleep = sleep
         self._loader = vmbpy_loader
         self._frames: queue.Queue[AlviumFrame] = queue.Queue(maxsize=queue_size)
         self._vmbpy: ModuleType | None = None
@@ -174,13 +180,32 @@ class AlviumTriggeredCameras:
             return None
 
     def _open_cameras(self) -> None:
+        # Right after another session closes them, Vimba X may not list both cameras yet
+        # (bench, 2026-10-20), so keep scanning briefly for the missing ones.
         found: dict[str, Any] = {}
+        self._cameras = found
+        deadline = self._clock() + self._discovery_timeout_s
+        while True:
+            self._scan(found)
+            missing = [user_id for user_id in self._user_ids if user_id not in found]
+            if not missing or self._clock() >= deadline:
+                break
+            self._sleep(0.5)
+        if missing:
+            raise AlviumSDKUnavailable(
+                f"RWD photometry camera(s) with DeviceUserID {', '.join(missing)} not found"
+            )
+
+    def _scan(self, found: dict[str, Any]) -> None:
         for camera in self._system.get_all_cameras():
-            if not _is_usb3_vision(camera):
+            if not _is_usb3_vision(camera) or any(camera is held for held in found.values()):
                 # Vimba X's camera simulators and other transports are never RWD cameras;
                 # opening each costs about half a second (bench, 2026-10-20).
                 continue
-            camera.__enter__()
+            try:
+                camera.__enter__()
+            except Exception:
+                continue
             try:
                 user_id = str(camera.get_feature_by_name("DeviceUserID").get())
             except Exception:
@@ -189,12 +214,6 @@ class AlviumTriggeredCameras:
                 found[user_id] = camera
             else:
                 camera.__exit__(None, None, None)
-        self._cameras = found
-        missing = [user_id for user_id in self._user_ids if user_id not in found]
-        if missing:
-            raise AlviumSDKUnavailable(
-                f"RWD photometry camera(s) with DeviceUserID {', '.join(missing)} not found"
-            )
 
     def _configure(self, user_id: str) -> None:
         camera = self._cameras[user_id]

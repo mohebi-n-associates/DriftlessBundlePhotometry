@@ -67,6 +67,19 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- RWD timing and robustness fixes from DBF's own runs on an R821:
+  - Exposures at frame rates that do not divide 100 000 µs (for example 15 or 30 Hz)
+    are now timed on the board's real trigger period, 1/fps truncated to 10 µs.
+    Timing them at exactly 1/fps would have drifted against TTL edges by up to
+    0.25 %.
+  - Repeated controller messages that the board resends when an acknowledgement is
+    late are ignored, so they no longer stop a recording.
+  - TTL edges from before the first exposure are counted instead of recorded.
+  - The acquisition loop no longer waits on an idle serial port, and ROI masks are
+    cached, so 50 Hz recordings keep up.
+  - The stall check judges missing frames by arrival time, not by how far the loop
+    has got.
+  - Camera discovery re-scans briefly when a camera is not listed yet.
 - RWD sessions now time each sequencer start from before the enable command is sent,
   and the Alvium adapter skips non-USB3 cameras such as Vimba X's simulators, which
   shortens RWD startup. Both changes came from the first DBF-driven runs on an R821.

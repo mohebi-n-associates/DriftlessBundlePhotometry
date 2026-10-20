@@ -284,3 +284,50 @@ def test_transport_validates_its_settings() -> None:
         RWDControllerTransport("COM3", controller_silence_limit_s=0.5)
     with pytest.raises(ValueError, match="resends"):
         RWDControllerTransport("COM3", resends=-1)
+
+
+def test_poll_acks_board_retransmissions_but_reports_each_edge_once() -> None:
+    clock = SteppingClock()
+    board = SimulatedRWDBoard(clock=clock)
+    transport = RWDControllerTransport("COM9", serial_factory=lambda _: board, clock=clock)
+    transport.open()
+    transport.command(device_enable(True))
+    board.edge_retransmissions = 2
+    board.inject_input_edge(1, True, 1_000)
+    frame = bytes(board._outbox)
+    board.inject_raw(frame + frame)
+
+    result = transport.poll()
+
+    assert [received.edge.tick_ms for received in result.edges] == [1_000]
+    assert result.retransmissions == 2
+    acks = [
+        message
+        for message in board.received
+        if message.message_type is RWDMessageType.ACK and message.function is RWDFunction.INPUT_EDGE
+    ]
+    assert len(acks) == 3
+
+
+def test_poll_never_waits_on_an_idle_link() -> None:
+    class CountingLink:
+        is_open = True
+        in_waiting = 0
+
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def read(self, size: int = 1) -> bytes:
+            self.reads += 1
+            return b""
+
+    clock = SteppingClock()
+    board = SimulatedRWDBoard(clock=clock)
+    transport = RWDControllerTransport("COM9", serial_factory=lambda _: board, clock=clock)
+    transport.open()
+    link = CountingLink()
+    transport._serial = link  # type: ignore[assignment]
+
+    transport._read_once(block=False)
+
+    assert link.reads == 0
