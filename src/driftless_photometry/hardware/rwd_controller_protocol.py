@@ -415,8 +415,8 @@ def parse_version_detail(data: bytes) -> tuple[int, bool]:
 class RWDInputEdge:
     line: int
     edge: Literal["rising", "falling"]
-    unconfirmed_tick: int
-    """Bytes 1-4 of the payload; OFRS ignores them and their meaning is unconfirmed."""
+    tick_ms: int
+    """Board millisecond counter at the edge: 32-bit, free-running from power-on (bench)."""
 
 
 def parse_input_edge(data: bytes) -> RWDInputEdge:
@@ -429,6 +429,10 @@ def parse_input_edge(data: bytes) -> RWDInputEdge:
         raise RWDFrameError(f"input edge reports unknown edge code {data[5]}")
     return RWDInputEdge(data[0] + 1, edges[data[5]], int.from_bytes(data[1:5], "big"))
 
+
+# MODEL_REPLY codes in the order OFRS lists them. Code 0 = R821 is bench-confirmed;
+# the others come from OFRS's code only.
+RWD_MODEL_CODES = {0: "R821", 1: "R820", 2: "R811", 3: "R810"}
 
 _MODE_TEXT = {
     RWDExcitationMode.CONTINUOUS: "single LED, continuous",
@@ -466,7 +470,7 @@ def describe_rwd_message(message: RWDMessage) -> str:
             return f"unknown excitation mode {data[0]}"
     if function in {RWDFunction.DEVICE_ENABLE, RWDFunction.STATE_REPLY} and data:
         return "sequencer enabled" if data[0] else "sequencer disabled"
-    if function is RWDFunction.OUTPUT_ENABLE and len(data) >= 2:
+    if function in {RWDFunction.OUTPUT_ENABLE, RWDFunction.BNC_PORT_REPLY} and len(data) >= 2:
         return f"Output{data[0]} {'on' if data[1] else 'off'}"
     if function is RWDFunction.OUTPUT_CONFIG and len(data) >= 5:
         frequency = int.from_bytes(data[1:3], "big") / 100
@@ -479,11 +483,12 @@ def describe_rwd_message(message: RWDMessage) -> str:
             return f"build {build}, OFRS magic {'present' if magic_ok else 'missing'}"
         if function is RWDFunction.INPUT_EDGE:
             edge = parse_input_edge(data)
-            return f"Input{edge.line} {edge.edge} edge, bytes 1-4 = {edge.unconfirmed_tick}"
+            return f"Input{edge.line} {edge.edge} edge at board tick {edge.tick_ms} ms"
     except RWDFrameError as error:
         return f"malformed payload: {error}"
     if function in {RWDFunction.HOST_HEARTBEAT, RWDFunction.CONTROLLER_HEARTBEAT}:
         return "heartbeat"
     if function is RWDFunction.MODEL_REPLY and data:
-        return f"model code {data[0]}"
+        model = RWD_MODEL_CODES.get(data[0], "unknown")
+        return f"model code {data[0]} ({model})"
     return ""

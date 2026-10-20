@@ -75,8 +75,11 @@ behavior on disconnect or watchdog timeout.
 
 The RWD controller is its own timing master with a fixed vendor protocol that DBF
 cannot version. DBF maps its handshake, acknowledgements, sequencer enable, and
-heartbeat onto this lifecycle. Its LED state after host loss is uncharacterized and
-must be treated as unsafe until bench-measured. Never send its LED-calibration,
+heartbeat onto this lifecycle. Measured 2026-10-20: the board has no watchdog or
+link-loss fail-safe. Its LEDs stay on through host silence, an unclosed port, and USB
+unplug. The RWD transport must therefore send the full off sequence on connect and on
+every exit path, including errors and window close, and operator documentation must
+name the unit's power switch as the only fail-safe. Never send its LED-calibration,
 model, restore-defaults, or firmware-upgrade commands; the codec refuses them. Never
 interact with, emulate, or circumvent the RWD software's licence dongle; DBF does not
 need it.

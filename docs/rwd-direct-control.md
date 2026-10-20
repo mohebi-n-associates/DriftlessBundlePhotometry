@@ -31,7 +31,9 @@ Planned gated steps:
    [the bench-capture procedure](rwd-direct-bench-capture.md), then promote captured
    frames to golden fixtures and resolve the open questions below.
 3. **Serial transport — planned.** Single-owner port: handshake, automatic ACKs,
-   resend, heartbeat, malformed-frame faults, and a best-effort sequencer disable on close.
+   resend, heartbeat, and malformed-frame faults. It sends the full off sequence on
+   connect and on every exit path, because the board has no fail-safe (see
+   [Bench evidence](#bench-evidence)).
 4. **Alvium camera adapter — planned.** Lazy vendor SDK import, hardware trigger,
    `uint16` frames with hardware frame IDs and timestamps.
 5. **RWD rig source — planned.** Pairs the transport and cameras, assigns wavelength
@@ -51,14 +53,15 @@ The approved method for the RWD direct track, recorded 2026-10-20:
 1. **Camera identity.** The board triggers camera 2 only for 560 nm exposures and
    camera 1 only for 410 and 470 nm exposures (bench).
 2. **Phase anchor.** Sequence position is counted per camera from the first exposure
-   after the sequencer is re-enabled, mirroring OFRS's resync. In one three-LED
-   interleaved run the first exposure after enable was 410 nm, followed by 470 and
-   560 nm, repeating (bench). Determinism across runs and modes 1 and 2 is not yet
-   shown.
+   after the sequencer is re-enabled, mirroring OFRS's resync. In 50 sequencer
+   restarts across all three interleaved modes, the first exposure was always the
+   cycle's first LED (410 nm in modes 1 and 3, 470 nm in mode 2), and the cycle never
+   skipped within a run (bench).
 3. **Gap detection.** Every frame's hardware frame ID and hardware timestamp are checked
    against the commanded period. Any missing, duplicated, or late exposure ends the
    valid span, is recorded in `invalid_times`, and requires a resync before samples are
-   attributed again.
+   attributed again. The exposure in flight when the sequencer is disabled can be cut
+   short, so it is always marked invalid (bench).
 4. **Independent check.** A per-wavelength brightness-pattern check runs as QC only. It
    never assigns wavelength.
 5. **Provenance.** Every exposure from this backend records that its wavelength is
@@ -132,25 +135,26 @@ it. Rows marked "bench" were confirmed by the 2026-10-20 bench tests.
 | --- | --- | --- | --- | --- |
 | 0x41 | `LED_VALUE` | host → board | `[led, 0, value_hi, value_lo]`, value = percent × 100 | bench |
 | 0x42 | `LED_ENABLE` | host → board | `[led, on, 0, 0]` | bench |
-| 0x43 | `CAMERA_TIMING` | host → board | `[fps_hi, fps_lo, exp_hi, exp_lo]`: total trigger rate across all LEDs (bench), exposure in 10 µs units (code) | bench (rate) |
+| 0x43 | `CAMERA_TIMING` | host → board | `[fps_hi, fps_lo, exp_hi, exp_lo]`: total trigger rate across all LEDs, and the LED pulse length per trigger in interleaved modes, in 10 µs units, read as sent | bench |
 | 0x44 | `EXCITATION_MODE` | host → board | `[mode, 0, 0, 0]`: 0 continuous, 1 410+470, 2 470+560, 3 all | bench (0, 3) |
 | 0x45 | `DEVICE_ENABLE` | host → board | `[on, 0, 0, 0]`: sequencer enable; light starts and stops with it | bench |
-| 0x46 | `OUTPUT_ENABLE` | host → board | `[port 1–4, on]` | code |
-| 0x48 | `OUTPUT_CONFIG` | host → board | `[port, freq_hi, freq_lo, width_hi, width_lo]`, frequency × 100 Hz, width in ms | code |
+| 0x46 | `OUTPUT_ENABLE` | host → board | `[port 1–4, on]`; confirmed by `0x29` only when the state changes | bench |
+| 0x48 | `OUTPUT_CONFIG` | host → board | `[port, freq_hi, freq_lo, width_hi, width_lo]`, frequency × 100 Hz, width in ms; ack only, no confirmation reply | bench |
 | 0x49 | `VERSION_QUERY` | host → board | `[0, 0, 0, 0]` | bench |
 | 0x4C | `TIME_CHECK` | host → board | `[0, 0]`; OFRS also queries LED limits with this ID as `[led, 0]` | code |
 | 0x4E | `QUERY_MODEL` | host → board | `[0, 0, 0, 0]` | bench |
 | 0x71 | `HOST_HEARTBEAT` | host → board | type info, `[0, 0, 0, 0]`; no ack or reply | accepted (bench) |
 | 0x21 | `LED_VALUE_REPLY` | board → host | echo of the 4-byte `LED_VALUE` data | bench |
 | 0x22 | `LED_ENABLE_REPLY` | board → host | `[led, on]`, 2 bytes | bench |
-| 0x23 | `CAMERA_TIMING_REPLY` | board → host | frame rate in sent order, then the exposure bytes swapped | bench |
+| 0x23 | `CAMERA_TIMING_REPLY` | board → host | frame rate in sent order, then the exposure bytes swapped (a reporting quirk only) | bench |
 | 0x24 | `EXCITATION_MODE_REPLY` | board → host | echo of the 4-byte mode data | bench |
 | 0x25 | `STATE_REPLY` | board → host | `[on, 0, 0, 0]`, the sequencer state | bench |
 | 0x26 | `VERSION_REPLY` | board → host | firmware `data[0].data[1].data[2]`, 4 bytes | bench |
 | 0x27 | `VERSION_DETAIL_REPLY` | board → host | 32-bit build, then `OFRS` | bench |
-| 0x28 | `INPUT_EDGE` | board → host | `data[0]` line index 0–3, `data[5]` 0 rising / 1 falling; bytes 1–4 unknown | partial |
-| 0x2B | `MODEL_REPLY` | board → host | one byte, the model code; its mapping to R810–R821 is unconfirmed | bench (layout) |
-| 0x29, 0x2A, 0x2D | BNC, LED limits, time-check replies | board → host | layouts unknown | name only |
+| 0x28 | `INPUT_EDGE` | board → host | `[line index 0–3, tick_ms (u32, high byte first), edge 0 rising / 1 falling]`; sent only while the sequencer runs | bench |
+| 0x2B | `MODEL_REPLY` | board → host | one byte: 0 = R821 (bench); OFRS maps 1 = R820, 2 = R811, 3 = R810 (code) | bench (0) |
+| 0x29 | `BNC_PORT_REPLY` | board → host | `[port, on]`: output state changed | bench |
+| 0x2A, 0x2D | LED limits, time-check replies | board → host | layouts unknown | name only |
 | 0x31 | `CONTROLLER_HEARTBEAT` | board → host | type info, `[0, 0, 0, 0]`, about 1 Hz | bench |
 
 LED index: `0` = 410 nm, `1` = 470 nm, `2` = 560 nm. OFRS limits exposure to
@@ -162,18 +166,7 @@ caller passes `allow_unsafe=True`, which no DBF code does.
 
 ## Open questions for the bench capture
 
-- What the `CAMERA_TIMING` exposure field controls (probably the LED on-time per
-  trigger), and why its confirmation returns the exposure bytes swapped (`0F A0` comes
-  back as `A0 0F`). Either the board only reports them swapped, or it reads the
-  exposure byte-swapped.
-- Whether the interleave always starts at 410 nm after enable, and the order in modes
-  1 and 2.
-- Whether the board needs host heartbeats at all.
-- The meaning of `INPUT_EDGE` bytes 1–4 (a controller tick would allow one TTL clock).
-- What the board does with its LEDs when heartbeats stop or the USB link drops.
-- Reply layouts for `0x29`, `0x2A`, and `0x2D`, the time-check exchange, and which
-  model each `MODEL_REPLY` code means.
-- Whether the board resets its sequence phase on every `DEVICE_ENABLE` off→on.
+- Reply layouts for `0x2A` and `0x2D`, and the time-check exchange.
 
 ## Bench evidence
 
@@ -189,7 +182,8 @@ caller passes `allow_unsafe=True`, which no DBF code does.
 - **Results:**
   - Every board frame passed the CRC check, and none were malformed.
   - The board acknowledged both queries.
-  - It reported firmware 2.0.0, build 37619 with the `OFRS` magic, and model code 0.
+  - It reported firmware 2.0.0, build 37619 with the `OFRS` magic, and model code 0. The
+    unit's label reads R821.
   - It sent heartbeats about once per second throughout.
   - A repeat probe with a 20 s window produced no visible light from the fiber
     (operator observation), so the handshake alone does not start excitation.
@@ -235,3 +229,66 @@ setting, followed by all three interleaved with a 10 Hz setting.
 - **Line state:** `ChunkLineStatusAll` was `14` on every frame.
 - **Not yet confirmed:** that the exposure field is read correctly. The camera's own
   10 ms exposure was set separately, so this test did not exercise the board's field.
+
+**2026-10-20 phase and exposure tests**, with the same target, LEDs at 5 %, a 20 Hz
+setting, and camera exposure 10 ms (phase) or 45 ms (exposure).
+
+- **Phase:** 50 sequencer restarts in total, 10 or 20 per interleaved mode, each
+  running about 1 s.
+  - Every restart began on the cycle's first LED, with no frame-ID gaps and exact 50 or
+    100 ms camera intervals.
+  - The 410 and 470 brightness ranges never overlapped (about 7.1 versus 3.75 counts).
+  - In two restarts the final frame arrived 13 ms after the disable command with
+    reduced brightness: the stop truncated the exposure in flight.
+- **Exposure field:** the camera exposed for 45 ms, longer than any LED pulse, while only
+  the board's field changed. In 410+470 interleaved mode, brightness rose linearly
+  with the field: 410 frames went 13.4, 22.1, 33.8 and 470 frames 11.8, 14.8, 19.0
+  counts for 5, 20, and 40 ms. Both lines extrapolate to the same dark level, about
+  10.6 counts.
+  - So the field is the LED pulse length per trigger, read in the byte order sent; the
+    swapped echo is cosmetic.
+  - In continuous mode the 470 LED stayed on throughout, at 19.9–20.0 counts for every
+    field value. That matches the interleaved 470 line extended to 45 ms.
+
+**2026-10-20 host-loss tests**, with 470 nm at 5 % continuous and the operator watching the
+fiber:
+
+| Host failure | Light |
+| --- | --- |
+| Port open, no host traffic for 15 s | Stayed on |
+| Port closed without any off command, 10 s | Stayed on |
+| USB cable unplugged for 18 s | Stayed on |
+
+The board has no host watchdog and no fail-safe on link loss; only an off command or
+the unit's power switch stops excitation. After each test, reconnecting and sending the
+off sequence turned the light off. The board kept sending heartbeats whether or not a
+host was talking to it.
+
+**2026-10-20 TTL input tests.** An external source drove Input 1 with a burst of pulses
+every 31 s.
+
+- **Idle board:** with the sequencer disabled, 75 s produced no input reports.
+- **Sequencer on, all LEDs disabled at 0 %:** two 70 s runs reported 28 and 52 edges.
+  - Every burst began rising and ended falling, and rises and falls strictly
+    alternated.
+  - Pulse widths measured 10–210 ms at 1 ms resolution.
+- **Tick clock:** data bytes 1–4 are a 32-bit millisecond counter.
+  - It ran at 1000.0–1000.1 ticks per host second, with 3–5 ms host-side scatter.
+  - Bursts were exactly 30 991 ticks apart.
+  - The counter continued across sequencer restarts and sessions, consistent with
+    counting from power-on.
+- **Implications for DBF:** TTL edges carry a board-clock timestamp. They are only
+  reported while the sequencer runs, so DBF must keep it enabled for the whole
+  recording.
+
+**2026-10-20 TTL output loopback.** A BNC cable joined Output 1 to Input 2. The sequencer
+ran with all LEDs disabled at 0 %.
+
+| Output 1 configuration | Input 2 result |
+| --- | --- |
+| 10 Hz, 20 ms, enabled about 5 s | 51 pulses, period 100.0 ms, every width 20 ms |
+| 5 Hz, 50 ms, enabled about 4 s | 21 pulses, period 200.0 ms, every width 50 ms |
+
+All 144 Input 2 edges fell inside the enabled windows, and the output stopped on
+disable. This also shows that input timestamps resolve the board's own output timing
+to the millisecond.
