@@ -53,10 +53,10 @@ Planned gated steps:
    1. **System profile and settings — implemented.** See
       [System profiles](#system-profiles).
    2. **Rig source — implemented; simulator-tested.** `hardware/rwd_rig.py` and
-      `hardware/rwd_timing.py`; see [RWD rig source](#rwd-rig-source). The engine
-      refuses RWD settings until part 3.
-   3. **Camera-aware ROI extraction and NWB** — planned. Camera identity, phase-derived
-      provenance, commanded power in percent, and the step-0 refusals lifted.
+      `hardware/rwd_timing.py`; see [RWD rig source](#rwd-rig-source).
+   3. **Camera-aware ROI extraction and NWB — implemented; simulator-tested.** The
+      preview, acquisition, spool, recovery, and NWB services accept RWD sessions; see
+      [RWD recordings](#rwd-recordings). Only the GUI still refuses until part 4.
    4. **GUI controls** — planned. COM port, camera-2 ROI placement, live preview, TTL
       outputs, and the no-fail-safe warning.
    5. **Bench validation and operator guide** — hardware required.
@@ -242,6 +242,37 @@ records an invalid span, because it may have been a lost edge.
 **QC.** `RWDBrightnessCheck` flags a run whose first 410 and 470 nm frames look
 swapped against earlier means (`rwd_brightness_qc_mismatch`). It never assigns or
 changes a wavelength.
+
+## RWD recordings
+
+The shared engine records `RWDRig` packets like any other source:
+
+- **ROIs.** `roi.rois_for_camera` gives the extraction each frame's own camera
+  geometry, so 560 nm traces come from each fiber's camera-2 circle.
+- **Preview.** It checks frame IDs per camera and compares commanded power, rather
+  than voltage, against the settings.
+- **Spool.** Spool schema v3 stores camera index, commanded power, wavelength source,
+  and camera timestamps for every frame.
+
+Each per-ROI NWB file then contains:
+
+- `events/camera_frames` with `camera_index`, `camera_timestamp_ns`,
+  `wavelength_source` (`phase_derived`), and `commanded_power_percent`;
+  `excitation_events` carries the wavelength source and power too;
+- `stimulus/led_<nm>_commanded_power`, a core `TimeSeries` in percent, one value per
+  observed exposure. OFRS's power ratio is not a voltage, so RWD files have no
+  commanded-voltage series;
+- photodetectors `rwd_camera_1` and `rwd_camera_2` (Allied Vision Alvium 1800 U-040m),
+  each linked from the FiberPhotometryTable rows it images;
+- `processing/photometry/camera_rois` with the camera-2 circle columns, and each
+  wavelength's reference overlay drawn on its own camera's circle;
+- when raw frames are kept, one `camera_frames` series interleaving both cameras in
+  exposure order. Its control codes are 0 = 410, 1 = 470, 2 = 560 nm;
+- the rig's system events and invalid spans: restarts, the start delay, TTL alignment,
+  and controller identity.
+
+`SimulatedRig` refuses RWD settings, so an RWD recording can never be simulated by the
+Custom simulator.
 
 **Bench items for part 5:**
 

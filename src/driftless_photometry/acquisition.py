@@ -9,13 +9,18 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from driftless_photometry.config import CustomSourceConfig, SessionConfig, Wavelength
+from driftless_photometry.config import ChannelConfig, SessionConfig, Wavelength
 from driftless_photometry.diagnostics import AcquisitionDiagnostics, FinalizationProgress
-from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TraceSample
+from driftless_photometry.domain import (
+    ExposureRecord,
+    InvalidTimeInterval,
+    SystemEvent,
+    TraceSample,
+)
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from driftless_photometry.hardware import RigSource
 from driftless_photometry.provenance import capture_runtime_provenance
-from driftless_photometry.roi import extract_circular_rois
+from driftless_photometry.roi import extract_circular_rois, rois_for_camera
 from driftless_photometry.state import AcquisitionState, AcquisitionStateMachine
 from driftless_photometry.storage import (
     NWBWriteReport,
@@ -78,17 +83,12 @@ def run_preview(
     """Exercise and validate acquisition inputs without creating scientific output."""
 
     planned_duration_s = preview_duration_s(config) if duration_s is None else duration_s
-    if not isinstance(config.source, CustomSourceConfig):
-        raise ValueError(
-            "preview requires the custom acquisition system; RWD direct "
-            "control has no recording backend yet"
-        )
     if planned_duration_s <= 0:
         raise ValueError("preview duration must be positive")
     expected_channels = {channel.wavelength_nm: channel for channel in config.enabled_channels}
     wavelength_counts = {wavelength: 0 for wavelength in expected_channels}
     frame_count = 0
-    last_frame_id = -1
+    last_frame_ids: dict[int, int] = {}
     last_sequence = -1
     last_controller_tick = -1
     last_timestamp = -np.inf
@@ -99,8 +99,10 @@ def run_preview(
             if packet is None:
                 continue
             exposure = packet.exposure
-            if packet.frame_id <= last_frame_id:
-                raise RuntimeError("preview camera frame IDs are not strictly increasing")
+            if packet.frame_id <= last_frame_ids.get(exposure.camera_index, -1):
+                raise RuntimeError(
+                    f"preview camera {exposure.camera_index} frame IDs are not strictly increasing"
+                )
             if exposure.sequence <= last_sequence:
                 raise RuntimeError("preview exposure sequence is not strictly increasing")
             if exposure.timestamp_s <= last_timestamp:
@@ -120,14 +122,14 @@ def run_preview(
                     f"preview received disabled or unknown wavelength "
                     f"{int(exposure.wavelength_nm)} nm"
                 )
-            if not np.isclose(exposure.commanded_voltage_v, channel.voltage_v):
+            if not _commanded_intensity_matches(exposure, channel):
                 raise RuntimeError(
-                    f"preview {int(exposure.wavelength_nm)} nm commanded voltage does not "
+                    f"preview {int(exposure.wavelength_nm)} nm commanded intensity does not "
                     "match configuration"
                 )
             extracted = extract_circular_rois(
                 packet.image,
-                config.enabled_rois,
+                rois_for_camera(config.enabled_rois, exposure.camera_index),
                 bit_depth=config.camera.bit_depth,
             )
             if not np.all(np.isfinite(extracted.values)):
@@ -148,7 +150,7 @@ def run_preview(
             )
             frame_count += 1
             wavelength_counts[exposure.wavelength_nm] += 1
-            last_frame_id = packet.frame_id
+            last_frame_ids[exposure.camera_index] = packet.frame_id
             last_sequence = exposure.sequence
             last_controller_tick = exposure.controller_tick_us
             last_timestamp = exposure.timestamp_s
@@ -174,6 +176,18 @@ def run_preview(
         duration_s=planned_duration_s,
         wavelength_frame_counts=tuple(wavelength_counts.items()),
         maximum_saturation_fraction=maximum_saturation,
+    )
+
+
+def _commanded_intensity_matches(exposure: ExposureRecord, channel: ChannelConfig) -> bool:
+    if channel.voltage_v is not None:
+        return exposure.commanded_voltage_v is not None and bool(
+            np.isclose(exposure.commanded_voltage_v, channel.voltage_v)
+        )
+    return (
+        exposure.commanded_power_percent is not None
+        and channel.power_percent is not None
+        and bool(np.isclose(exposure.commanded_power_percent, channel.power_percent))
     )
 
 
@@ -212,11 +226,6 @@ class AcquisitionEngine:
         on_state: StateCallback | None = None,
         on_finalization: FinalizationCallback | None = None,
     ) -> AcquisitionRunResult:
-        if not isinstance(config.source, CustomSourceConfig):
-            raise ValueError(
-                "acquisition requires the custom acquisition system; RWD direct "
-                "control has no recording backend yet"
-            )
         if duration_s <= 0:
             raise ValueError("duration_s must be positive")
         if not self._run_lock.acquire(blocking=False):
@@ -291,7 +300,7 @@ class AcquisitionEngine:
                     raise RuntimeError("camera frame shape changed during acquisition")
                 extracted = extract_circular_rois(
                     packet.image,
-                    config.enabled_rois,
+                    rois_for_camera(config.enabled_rois, packet.exposure.camera_index),
                     bit_depth=config.camera.bit_depth,
                 )
                 sample = TraceSample(

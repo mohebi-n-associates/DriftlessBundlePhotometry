@@ -8,7 +8,12 @@ from collections.abc import Iterator
 
 import numpy as np
 
-from driftless_photometry.config import SessionConfig, Wavelength
+from driftless_photometry.config import (
+    CUSTOM_PROFILE,
+    SessionConfig,
+    Wavelength,
+    profile_for,
+)
 from driftless_photometry.domain import ExposureRecord, FramePacket, TTLEdge
 from driftless_photometry.hardware.base import RigPacket
 from driftless_photometry.roi import circular_mask
@@ -35,6 +40,10 @@ class SimulatedRig:
         seed: int = 12345,
         realtime: bool = False,
     ) -> None:
+        if profile_for(config.source) is not CUSTOM_PROFILE:
+            raise ValueError(
+                "the simulator stands in for the Custom system; RWD sessions run on RWDRig"
+            )
         self._config = config
         self._rng = np.random.default_rng(seed)
         self._schedule = WavelengthSchedule(config.channels)

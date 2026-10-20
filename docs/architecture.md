@@ -41,16 +41,19 @@ camera/controller contracts in this document and their simulator. `rwd` selects 
 photometry hardware driven directly by DBF, as described in
 [the RWD direct-control design record](rwd-direct-control.md). Both systems produce
 camera frames, so both are validated against camera ROI bounds and enabled excitation
-channels, and both will feed the same frame, ROI, spool, and NWB path. Until the RWD
-backend exists, preview, acquisition, spool, and NWB services accept only `custom` and
-reject `rwd` before creating output, and the GUI explains why rather than simulating.
+channels, and both feed the same frame, ROI, spool, and NWB path. The preview,
+acquisition, spool, and NWB services accept both. The GUI keeps RWD preview and
+recording disabled until its RWD controls land (RWD step 5, part 4). The simulator
+stands in for the Custom system only.
 
-The RWD backend will work under a scoped, documented exception to the wavelength
-rule above: the RWD controller reports no per-exposure records, so identity will be
-phase-derived from the sequencer restart and checked by hardware frame-ID/timestamp
-gap detection. Only the RWD controller codec and the offline USB-capture decoder exist
-so far. Controller frames are flag-delimited and CRC-checked, so the codec reports each
-malformed frame and resumes at the next flag.
+The RWD backend (`hardware.rwd_rig`) works under a scoped, documented exception to
+the wavelength rule above. The RWD controller reports no per-exposure records, so
+identity is phase-derived from each sequencer restart, combined with camera identity,
+and checked by hardware frame-ID and timestamp gap detection. Every RWD exposure
+records `wavelength_source = "phase_derived"`. RWD frames carry a camera index:
+camera-2 frames (560 nm) are measured with each fiber's camera-2 circle. Controller
+frames are flag-delimited and CRC-checked, so the codec reports each malformed frame
+and resumes at the next flag.
 
 Camera ROI samples are projected into immutable live points with four fields:
 session-relative display time, stable `fiber_id`, exact source wavelength, and raw
@@ -60,8 +63,8 @@ canonical spool without passing through the display projection.
 
 The desktop system selector is part of the persisted settings workflow. Both systems
 show camera ROI, excitation-voltage, raw-frame, and wavelength-image controls. Custom
-mode retains its mandatory preview. RWD mode adds a direct-control status panel and
-keeps preview and recording disabled. Live smoothing is an elapsed-time trailing mean
+mode retains its mandatory preview. RWD mode adds a direct-control status panel and,
+until RWD step 5 part 4, keeps preview and recording disabled. Live smoothing is an elapsed-time trailing mean
 applied after horizon selection and before optional dF/F display conversion; it
 operates only on bounded GUI buffers.
 
@@ -168,6 +171,19 @@ times, and the represented ROI's saturation fraction are retained as separate ev
 columns. Commanded-voltage stimulus series contain one value for every observed
 exposure. Derived signals never replace raw response series.
 
+Every frame event also records its camera index, the camera's own hardware timestamp
+(or -1), and its wavelength source. RWD files differ where the hardware differs:
+
+- two Alvium photodetectors, `rwd_camera_1` and `rwd_camera_2`, each linked from the
+  FiberPhotometryTable rows it images;
+- `led_<nm>_commanded_power` stimulus series in percent instead of commanded-voltage
+  series, and a `commanded_power_percent` event column instead of
+  `commanded_voltage_v`;
+- camera-2 circle columns in `camera_rois`, with each wavelength's ROI overlay drawn
+  on its own camera's geometry;
+- a raw `camera_frames` series that interleaves both cameras in exposure order, with
+  no single device; its control codes follow the system's wavelength order.
+
 Every per-ROI NWB also carries a
 `scratch/driftless_bundle_photometry_settings_json` value. This is a versioned JSON
 provenance snapshot, not a competing scientific data representation. It includes all
@@ -179,8 +195,10 @@ provenance.
 
 The separate `scratch/driftless_runtime_provenance_json` snapshot records the exact
 application, Python, operating-system, dependency, adapter, and protocol versions.
-Recovery spool schema v2 persists the per-exposure provenance needed to reconstruct
-these fields. Schema-v1 spools remain readable, but recovery adds an explicit invalid
+Recovery spool schema v3 persists the per-exposure provenance needed to reconstruct
+these fields, including camera index, commanded power, wavelength source, and camera
+timestamps. Schema-v2 spools load with camera 1, controller-reported wavelengths, and
+no camera timestamps. Schema-v1 spools remain readable, but recovery adds an explicit invalid
 interval over the affected recording because actual host receipt times and dynamic
 voltage commands were not historically available.
 

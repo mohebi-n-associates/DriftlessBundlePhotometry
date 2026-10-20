@@ -55,9 +55,22 @@ version, move its completed entries into a dated version section.
 - Acquisition now records invalid spans and system events reported by the
   acquisition source. After a stop request it reads until the source ends, so the
   source can hand over its final events.
+- RWD sessions can now be previewed, recorded, spooled, recovered, and written to NWB
+  by the shared engine; the GUI still keeps RWD disabled until its controls land.
+  - The 560 nm traces use each fiber's camera-2 circle.
+  - Each exposure's camera, commanded power in percent, camera timestamp, and
+    phase-derived wavelength source are kept through the spool (schema v3) into
+    every NWB file.
+  - RWD files name both Alvium cameras as photodetectors, store a commanded-power
+    series in percent per LED, and draw each wavelength's ROI overlay on its own
+    camera.
 
 ### Changed
 
+- NWB frame events now record each exposure's camera index, camera hardware
+  timestamp, and wavelength source for both systems, and the recovery spool moved to
+  schema v3. Earlier spools still load and recover. The Custom simulator now refuses
+  RWD settings.
 - Setup now offers exactly two acquisition systems: **Custom** (DBF's own camera and
   timing controller, simulator-backed today) and **RWD** (direct control of RWD
   hardware). RWD mode can be configured and saved, shows its development status, and

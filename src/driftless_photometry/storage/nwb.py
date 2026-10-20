@@ -31,21 +31,28 @@ from ndx_ophys_devices import (
     PhotodetectorModel,
 )
 from nwbinspector import Importance, inspect_nwbfile
-from pynwb import NWBHDF5IO, NWBFile, validate
+from pynwb import NWBHDF5IO, NWBFile, TimeSeries, validate
 from pynwb.base import Images
 from pynwb.epoch import TimeIntervals
 from pynwb.file import EventsTable, Subject
 from pynwb.image import GrayscaleImage, ImageSeries, RGBImage
 
 from driftless_photometry import __version__
-from driftless_photometry.config import CustomSourceConfig, ROIConfig, SessionConfig, Wavelength
+from driftless_photometry.config import (
+    RWD_PROFILE,
+    ROIConfig,
+    SessionConfig,
+    SystemProfile,
+    Wavelength,
+    profile_for,
+)
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
 from driftless_photometry.domain import AcquisitionData
 from driftless_photometry.provenance import (
     NWB_RUNTIME_PROVENANCE_SCRATCH_NAME,
     capture_runtime_provenance,
 )
-from driftless_photometry.roi import render_annotated_rois
+from driftless_photometry.roi import render_annotated_rois, rois_for_camera
 from driftless_photometry.settings import NWB_SETTINGS_SCRATCH_NAME, settings_json
 
 from .frames import FrameStream
@@ -54,12 +61,70 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 
-_CONTROL_CODES = {
-    Wavelength.CONTROL_405: 0,
-    Wavelength.GREEN_470: 1,
-    Wavelength.RED_565: 2,
-}
-_CONTROL_DESCRIPTIONS = ["405 nm", "470 nm", "565 nm"]
+_WAVELENGTH_SOURCE_DESCRIPTION = (
+    "How the wavelength is known: controller (reported by the timing controller for this "
+    "exposure) or phase_derived (derived from camera identity and the trigger slot after "
+    "a sequencer restart; RWD hardware only)."
+)
+
+
+def _control_codes(profile: SystemProfile) -> dict[Wavelength, int]:
+    """ImageSeries control values: each wavelength's index in the system's wavelength list."""
+
+    return {wavelength: index for index, wavelength in enumerate(profile.wavelengths)}
+
+
+def _control_descriptions(profile: SystemProfile) -> list[str]:
+    return [f"{int(wavelength)} nm" for wavelength in profile.wavelengths]
+
+
+@dataclass(frozen=True, slots=True)
+class _Intensity:
+    """The commanded-intensity column for a system: volts (Custom) or percent (RWD)."""
+
+    column: str
+    unit: str
+    description: str
+
+    def values(self, data: AcquisitionData) -> list[float]:
+        if self.unit == "percent":
+            return data.frame_commanded_power_percent
+        return data.frame_commanded_voltages_v
+
+
+def _intensity(config: SessionConfig) -> _Intensity:
+    if profile_for(config.source).intensity_unit == "%":
+        return _Intensity(
+            "commanded_power_percent",
+            "percent",
+            "Commanded RWD LED power ratio (0-100 %) for this exposure; not an optical "
+            "power measurement.",
+        )
+    return _Intensity(
+        "commanded_voltage_v", "volts", "Actual commanded LED intensity for this exposure."
+    )
+
+
+def _camera_device_names(config: SessionConfig) -> dict[int, str]:
+    profile = profile_for(config.source)
+    if profile is RWD_PROFILE:
+        return {camera: f"rwd_camera_{camera}" for camera in range(1, profile.camera_count + 1)}
+    return {1: "cs505mu_camera"}
+
+
+def _tick_description(config: SessionConfig) -> str:
+    if profile_for(config.source) is RWD_PROFILE:
+        return (
+            "Exposure time on the RWD board's trigger grid in microseconds since session "
+            "zero; derived, because the RWD controller reports no per-exposure ticks."
+        )
+    return "Unwrapped raw controller tick in microseconds."
+
+
+def _sequence_description(config: SessionConfig) -> str:
+    if profile_for(config.source) is RWD_PROFILE:
+        return "Monotonic exposure sequence counted from the RWD board's trigger slots."
+    return "Monotonic exposure sequence reported by the controller."
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,11 +170,7 @@ def _validate_inputs(
     calibration_image: NDArray[np.uint16] | None,
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
 ) -> None:
-    if not isinstance(config.source, CustomSourceConfig):
-        raise ValueError(
-            "NWB finalization requires the custom acquisition system; RWD direct "
-            "control has no recording backend yet"
-        )
+    profile = profile_for(config.source)
     frame_count = len(data.frame_ids)
     parallel_lengths = {
         len(data.frame_timestamps_s),
@@ -117,6 +178,10 @@ def _validate_inputs(
         len(data.frame_ticks_us),
         len(data.frame_wavelengths_nm),
         len(data.frame_commanded_voltages_v),
+        len(data.frame_commanded_power_percent),
+        len(data.frame_camera_indices),
+        len(data.frame_wavelength_sources),
+        len(data.frame_camera_timestamps_ns),
         len(data.frame_host_received_s),
         len(data.frame_saturation_fractions),
         len(data.frame_saved_indices),
@@ -127,11 +192,29 @@ def _validate_inputs(
 
     expected_roi_count = len(config.enabled_rois)
     for index in range(frame_count):
-        voltage = data.frame_commanded_voltages_v[index]
         host_received_s = data.frame_host_received_s[index]
         saturation = data.frame_saturation_fractions[index]
-        if not np.isfinite(voltage) or not 0 <= voltage <= 5:
-            raise ValueError("per-frame commanded voltage must be finite and between 0 and 5 V")
+        if profile.intensity_unit == "%":
+            power = data.frame_commanded_power_percent[index]
+            if not np.isfinite(power) or not 0 <= power <= 100:
+                raise ValueError("per-frame commanded power must be between 0 and 100 %")
+            if np.isfinite(data.frame_commanded_voltages_v[index]):
+                raise ValueError(f"{profile.display_name} frames do not command a voltage")
+        else:
+            voltage = data.frame_commanded_voltages_v[index]
+            if not np.isfinite(voltage) or not 0 <= voltage <= 5:
+                raise ValueError("per-frame commanded voltage must be finite and between 0 and 5 V")
+        camera_index = data.frame_camera_indices[index]
+        if not 1 <= camera_index <= profile.camera_count:
+            raise ValueError(f"{profile.display_name} has no camera {camera_index}")
+        wavelength = Wavelength(data.frame_wavelengths_nm[index])
+        if profile.camera_for(wavelength) != camera_index:
+            raise ValueError(f"{int(wavelength)} nm frames must come from camera {camera_index}")
+        source = data.frame_wavelength_sources[index]
+        if source not in {"controller", "phase_derived"}:
+            raise ValueError(f"unknown wavelength source {source!r}")
+        if source == "phase_derived" and profile is not RWD_PROFILE:
+            raise ValueError("only RWD hardware may record phase-derived wavelengths")
         if not np.isfinite(host_received_s):
             raise ValueError("per-frame host receipt time must be finite")
         if saturation.shape != (expected_roi_count,):
@@ -201,6 +284,13 @@ def _create_nwbfile(config: SessionConfig, roi: ROIConfig, data: AcquisitionData
         data_collection=(
             "Interleaved excitation with one explicit wavelength per camera exposure; "
             "camera imagery represents the proximal fiber-bundle face."
+            + (
+                " Recorded on RWD hardware driven directly by DBF: wavelength identity is "
+                "phase-derived from camera identity and the trigger slot after each "
+                "sequencer restart (events/camera_frames.wavelength_source)."
+                if profile_for(config.source) is RWD_PROFILE
+                else ""
+            )
         ),
         subject=Subject(
             subject_id=roi.animal_id,
@@ -245,24 +335,8 @@ def _add_photometry_metadata_and_traces(
     roi_index: int,
 ) -> None:
     roi = config.enabled_rois[roi_index]
-    camera_model = PhotodetectorModel(
-        name="cs505mu_photodetector_model",
-        manufacturer="Thorlabs",
-        model_number="CS505MU",
-        description="Monochrome CMOS camera used to measure proximal fiber-face emission.",
-        detector_type="CMOS",
-        wavelength_range_in_nm=[350.0, 1000.0],
-        gain=config.camera.gain,
-        gain_unit="camera gain setting",
-    )
-    nwbfile.add_device_model(camera_model)
-    camera = Photodetector(
-        name="cs505mu_camera",
-        description="Camera detector shared by every fiber and excitation path.",
-        serial_number=config.camera.serial_number or "not supplied",
-        model=camera_model,
-    )
-    nwbfile.add_device(camera)
+    profile = profile_for(config.source)
+    cameras = _add_photodetectors(nwbfile, config)
 
     fiber_model = OpticalFiberModel(
         name="optical_fiber_model_not_supplied",
@@ -289,13 +363,16 @@ def _add_photometry_metadata_and_traces(
 
     excitation_sources: dict[Wavelength, ExcitationSource] = {}
     voltage_series: dict[Wavelength, CommandedVoltageSeries] = {}
+    rwd = profile is RWD_PROFILE
     for channel in config.enabled_channels:
         wavelength = channel.wavelength_nm
         source_model = ExcitationSourceModel(
             name=f"led_{int(wavelength)}_model",
-            manufacturer="not supplied",
+            manufacturer="RWD Life Science" if rwd else "not supplied",
             description=(
-                f"Excitation LED model for {int(wavelength)} nm; populate before hardware use."
+                f"RWD {profile.display_name} {int(wavelength)} nm excitation LED."
+                if rwd
+                else f"Excitation LED model for {int(wavelength)} nm; populate before hardware use."
             ),
             source_type="LED",
             excitation_mode="one-photon",
@@ -315,6 +392,27 @@ def _add_photometry_metadata_and_traces(
             for index, observed in enumerate(data.frame_wavelengths_nm)
             if observed == int(wavelength)
         ]
+        timestamps = np.asarray(
+            [data.frame_timestamps_s[index] for index in frame_indices], dtype=np.float64
+        )
+        if rwd:
+            nwbfile.add_stimulus(
+                TimeSeries(
+                    name=f"led_{int(wavelength)}_commanded_power",
+                    description=(
+                        "Commanded RWD LED power ratio (0-100 %, OFRS's power setting) for "
+                        "every observed exposure; not an optical-power measurement. An empty "
+                        "series means the wavelength was configured but not observed."
+                    ),
+                    data=np.asarray(
+                        [data.frame_commanded_power_percent[index] for index in frame_indices],
+                        dtype=np.float32,
+                    ),
+                    unit="percent",
+                    timestamps=timestamps,
+                )
+            )
+            continue
         command = CommandedVoltageSeries(
             name=f"led_{int(wavelength)}_commanded_voltage",
             description=(
@@ -327,10 +425,7 @@ def _add_photometry_metadata_and_traces(
                 dtype=np.float32,
             ),
             unit="volts",
-            timestamps=np.asarray(
-                [data.frame_timestamps_s[index] for index in frame_indices],
-                dtype=np.float64,
-            ),
+            timestamps=timestamps,
         )
         nwbfile.add_stimulus(command)
         voltage_series[wavelength] = command
@@ -355,14 +450,15 @@ def _add_photometry_metadata_and_traces(
             "indicator": indicator,
             "optical_fiber": optical_fiber,
             "excitation_source": excitation_sources[channel.wavelength_nm],
-            "photodetector": camera,
+            "photodetector": cameras[profile.camera_for(channel.wavelength_nm)],
             "camera_roi_id": roi.fiber_id,
             "signal_role": str(channel.role),
             "notes": (
                 f"Animal {roi.animal_id}; camera-space geometry is stored in the camera_rois table."
             ),
         }
-        row["commanded_voltage_series"] = voltage_series[channel.wavelength_nm]
+        if not rwd:
+            row["commanded_voltage_series"] = voltage_series[channel.wavelength_nm]
         table.add_row(**row)
         row_indices[channel.wavelength_nm] = [row_index]
 
@@ -404,13 +500,70 @@ def _add_photometry_metadata_and_traces(
         nwbfile.add_acquisition(response)
 
 
+def _add_photodetectors(nwbfile: NWBFile, config: SessionConfig) -> dict[int, Photodetector]:
+    profile = profile_for(config.source)
+    if profile is RWD_PROFILE:
+        model = PhotodetectorModel(
+            name="alvium_1800_u_040m_photodetector_model",
+            manufacturer="Allied Vision",
+            model_number="Alvium 1800 U-040m",
+            description=(
+                "Monochrome CMOS camera (Sony IMX287) of an RWD photometry system, triggered "
+                "by the RWD controller and imaging the proximal fiber-bundle face."
+            ),
+            detector_type="CMOS",
+            wavelength_range_in_nm=[300.0, 1100.0],
+            gain=config.camera.gain,
+            gain_unit="dB",
+        )
+        nwbfile.add_device_model(model)
+        cameras = {}
+        for camera, name in _camera_device_names(config).items():
+            wavelengths = ", ".join(
+                f"{int(w)} nm" for w in profile.wavelengths if profile.camera_for(w) == camera
+            )
+            cameras[camera] = Photodetector(
+                name=name,
+                description=(
+                    f"RWD camera {camera} (DeviceUserID {camera}); the controller triggers it "
+                    f"only for {wavelengths} exposures."
+                ),
+                serial_number="not supplied",
+                model=model,
+            )
+            nwbfile.add_device(cameras[camera])
+        return cameras
+    camera_model = PhotodetectorModel(
+        name="cs505mu_photodetector_model",
+        manufacturer="Thorlabs",
+        model_number="CS505MU",
+        description="Monochrome CMOS camera used to measure proximal fiber-face emission.",
+        detector_type="CMOS",
+        wavelength_range_in_nm=[350.0, 1000.0],
+        gain=config.camera.gain,
+        gain_unit="camera gain setting",
+    )
+    nwbfile.add_device_model(camera_model)
+    camera = Photodetector(
+        name="cs505mu_camera",
+        description="Camera detector shared by every fiber and excitation path.",
+        serial_number=config.camera.serial_number or "not supplied",
+        model=camera_model,
+    )
+    nwbfile.add_device(camera)
+    return {1: camera}
+
+
 def _add_rois_and_calibration(
     nwbfile: NWBFile,
     config: SessionConfig,
     calibration_image: NDArray[np.uint16] | None,
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
     roi_index: int,
+    calibration_camera: int = 1,
 ) -> None:
+    profile = profile_for(config.source)
+    two_cameras = profile.camera_count > 1
     module = nwbfile.create_processing_module(
         name="photometry",
         description=(
@@ -428,15 +581,29 @@ def _add_rois_and_calibration(
         ("center_y_px", "Circle center row in full-frame pixels."),
         ("radius_px", "Circle radius in pixels."),
     ):
-        roi_table.add_column(name=name, description=description)
+        roi_table.add_column(
+            name=name, description=description + (" On camera 1." if two_cameras else "")
+        )
+    if two_cameras:
+        for name, description in (
+            ("camera2_center_x_px", "Circle center column on camera 2 (560 nm), or NaN."),
+            ("camera2_center_y_px", "Circle center row on camera 2 (560 nm), or NaN."),
+            ("camera2_radius_px", "Circle radius on camera 2 (560 nm), or NaN."),
+        ):
+            roi_table.add_column(name=name, description=description)
     roi = config.enabled_rois[roi_index]
-    roi_table.add_row(
-        fiber_id=roi.fiber_id,
-        label=roi.label,
-        center_x_px=roi.center_x_px,
-        center_y_px=roi.center_y_px,
-        radius_px=roi.radius_px,
-    )
+    row: dict[str, object] = {
+        "fiber_id": roi.fiber_id,
+        "label": roi.label,
+        "center_x_px": roi.center_x_px,
+        "center_y_px": roi.center_y_px,
+        "radius_px": roi.radius_px,
+    }
+    if two_cameras:
+        row["camera2_center_x_px"] = _or_nan(roi.camera2_center_x_px)
+        row["camera2_center_y_px"] = _or_nan(roi.camera2_center_y_px)
+        row["camera2_radius_px"] = _or_nan(roi.camera2_radius_px)
+    roi_table.add_row(**row)
     module.add(roi_table)
 
     if calibration_image is not None:
@@ -447,7 +614,10 @@ def _add_rois_and_calibration(
                 GrayscaleImage(
                     name="reference_frame",
                     data=calibration_image,
-                    description="Unnormalized uint16 reference frame in [y, x] orientation.",
+                    description=(
+                        "Unnormalized uint16 reference frame in [y, x] orientation"
+                        + (f", from camera {calibration_camera}." if two_cameras else ".")
+                    ),
                 )
             ],
         )
@@ -457,6 +627,8 @@ def _add_rois_and_calibration(
         diagnostic_images: list[GrayscaleImage | RGBImage] = []
         for wavelength in sorted(wavelength_images, key=int):
             image = wavelength_images[wavelength]
+            camera = profile.camera_for(wavelength)
+            placed = rois_for_camera((roi,), camera)
             diagnostic_images.extend(
                 (
                     GrayscaleImage(
@@ -471,7 +643,7 @@ def _add_rois_and_calibration(
                         name=f"roi_overlay_{int(wavelength)}nm",
                         data=render_annotated_rois(
                             image,
-                            (roi,),
+                            placed,
                             bit_depth=config.camera.bit_depth,
                         ),
                         description=(
@@ -495,20 +667,29 @@ def _add_rois_and_calibration(
 
 def _add_events(
     nwbfile: NWBFile,
+    config: SessionConfig,
     data: AcquisitionData,
     roi_index: int,
     additional_system_events: tuple[str, ...],
 ) -> None:
+    intensity = _intensity(config)
+    intensities = intensity.values(data)
     frames = _make_events_table(
         name="camera_frames",
         description="One event for every camera exposure received by the acquisition pipeline.",
         source_description="Camera and hardware-controller matcher.",
         columns=(
-            ("camera_frame_id", "Raw camera frame identifier."),
-            ("controller_sequence", "Monotonic exposure sequence reported by the controller."),
+            ("camera_frame_id", "Raw camera frame identifier, counted per camera."),
+            ("camera_index", "Camera that recorded the exposure (1, or 2 for RWD 560 nm)."),
+            (
+                "camera_timestamp_ns",
+                "The camera's own hardware timestamp in nanoseconds, or -1 if none.",
+            ),
+            ("controller_sequence", _sequence_description(config)),
             ("wavelength_nm", "Explicit excitation wavelength active for this exposure."),
-            ("controller_tick_us", "Unwrapped raw controller tick in microseconds."),
-            ("commanded_voltage_v", "Actual commanded LED intensity for this exposure."),
+            ("wavelength_source", _WAVELENGTH_SOURCE_DESCRIPTION),
+            ("controller_tick_us", _tick_description(config)),
+            (intensity.column, intensity.description),
             ("host_received_s", "Host receipt time on the session-relative monotonic clock."),
             (
                 "roi_saturation_fraction",
@@ -523,10 +704,13 @@ def _add_events(
         frames.add_row(
             timestamp=data.frame_timestamps_s[index],
             camera_frame_id=data.frame_ids[index],
+            camera_index=data.frame_camera_indices[index],
+            camera_timestamp_ns=data.frame_camera_timestamps_ns[index],
             controller_sequence=data.frame_sequences[index],
             wavelength_nm=data.frame_wavelengths_nm[index],
+            wavelength_source=data.frame_wavelength_sources[index],
             controller_tick_us=data.frame_ticks_us[index],
-            commanded_voltage_v=data.frame_commanded_voltages_v[index],
+            **{intensity.column: intensities[index]},
             host_received_s=data.frame_host_received_s[index],
             roi_saturation_fraction=float(data.frame_saturation_fractions[index][roi_index]),
             raw_saved=saved_index >= 0,
@@ -539,10 +723,11 @@ def _add_events(
         description="One explicit excitation command record for every observed exposure.",
         source_description="Deterministic hardware controller exposure records.",
         columns=(
-            ("controller_sequence", "Monotonic exposure sequence reported by the controller."),
+            ("controller_sequence", _sequence_description(config)),
             ("wavelength_nm", "Explicit excitation wavelength commanded for the exposure."),
-            ("controller_tick_us", "Unwrapped raw controller tick in microseconds."),
-            ("commanded_voltage_v", "Actual commanded LED intensity for the exposure."),
+            ("wavelength_source", _WAVELENGTH_SOURCE_DESCRIPTION),
+            ("controller_tick_us", _tick_description(config)),
+            (intensity.column, intensity.description),
         ),
     )
     for index in range(len(data.frame_ids)):
@@ -550,8 +735,9 @@ def _add_events(
             timestamp=data.frame_timestamps_s[index],
             controller_sequence=data.frame_sequences[index],
             wavelength_nm=data.frame_wavelengths_nm[index],
+            wavelength_source=data.frame_wavelength_sources[index],
             controller_tick_us=data.frame_ticks_us[index],
-            commanded_voltage_v=data.frame_commanded_voltages_v[index],
+            **{intensity.column: intensities[index]},
         )
     nwbfile.add_events_table(excitation)
 
@@ -665,10 +851,15 @@ def _add_raw_frames(
 ) -> None:
     if frames is None:
         return
+    profile = profile_for(config.source)
+    codes = _control_codes(profile)
     controls = np.asarray(
-        [_CONTROL_CODES[Wavelength(value)] for value in data.frame_wavelengths_nm],
+        [codes[Wavelength(value)] for value in data.frame_wavelengths_nm],
         dtype=np.uint8,
     )
+    devices = _camera_device_names(config)
+    used_cameras = set(data.frame_camera_indices)
+    device = nwbfile.devices[devices[next(iter(used_cameras))]] if len(used_cameras) == 1 else None
     if isinstance(frames, FrameStream):
         frame_count = frames.count
         height, width = frames.frame_shape
@@ -687,6 +878,12 @@ def _add_raw_frames(
         description=(
             "Original unnormalized monochrome camera frames in [time, y, x] orientation. "
             "Control values encode excitation wavelength."
+            + (
+                " Frames from both cameras are interleaved in exposure order; "
+                "events/camera_frames.camera_index names each frame's camera."
+                if device is None
+                else ""
+            )
         ),
         data=H5DataIO(
             frame_payload,
@@ -699,9 +896,9 @@ def _add_raw_frames(
         format="raw",
         timestamps=np.asarray(data.frame_timestamps_s, dtype=np.float64),
         control=controls,
-        control_description=_CONTROL_DESCRIPTIONS,
+        control_description=_control_descriptions(profile),
         num_samples=np.uint64(frame_count),
-        device=nwbfile.devices["cs505mu_camera"],
+        device=device,
     )
     nwbfile.add_acquisition(series)
 
@@ -750,8 +947,11 @@ def _round_trip_verify(
         frame_table = frame_events.to_dataframe()
         exact_columns = {
             "camera_frame_id": data.frame_ids,
+            "camera_index": data.frame_camera_indices,
+            "camera_timestamp_ns": data.frame_camera_timestamps_ns,
             "controller_sequence": data.frame_sequences,
             "wavelength_nm": data.frame_wavelengths_nm,
+            "wavelength_source": data.frame_wavelength_sources,
             "controller_tick_us": data.frame_ticks_us,
         }
         for column, expected in exact_columns.items():
@@ -762,11 +962,13 @@ def _round_trip_verify(
             np.asarray(data.frame_timestamps_s),
         ):
             raise RuntimeError("NWB round-trip frame timestamp mismatch")
+        intensity = _intensity(config)
         if not np.array_equal(
-            frame_table["commanded_voltage_v"].to_numpy(),
-            np.asarray(data.frame_commanded_voltages_v),
+            frame_table[intensity.column].to_numpy(dtype=np.float64),
+            np.asarray(intensity.values(data), dtype=np.float64),
+            equal_nan=True,
         ):
-            raise RuntimeError("NWB round-trip commanded-voltage provenance mismatch")
+            raise RuntimeError("NWB round-trip commanded-intensity provenance mismatch")
         if not np.array_equal(
             frame_table["host_received_s"].to_numpy(),
             np.asarray(data.frame_host_received_s),
@@ -840,20 +1042,25 @@ def _round_trip_verify(
                     expected_values,
                 ):
                     raise RuntimeError(f"NWB round-trip trace values mismatch for {name}")
-            voltage_name = f"led_{int(channel.wavelength_nm)}_commanded_voltage"
+            suffix = "commanded_power" if intensity.unit == "percent" else "commanded_voltage"
+            command_name = f"led_{int(channel.wavelength_nm)}_{suffix}"
             frame_indices = [
                 index
                 for index, wavelength in enumerate(data.frame_wavelengths_nm)
                 if wavelength == int(channel.wavelength_nm)
             ]
             if frame_indices:
-                stored_voltages = nwbfile.stimulus[voltage_name]
-                expected_voltages = np.asarray(
-                    [data.frame_commanded_voltages_v[index] for index in frame_indices],
-                    dtype=np.float32,
+                stored_commands = nwbfile.stimulus[command_name]
+                values = intensity.values(data)
+                expected_commands = np.asarray(
+                    [values[index] for index in frame_indices], dtype=np.float32
                 )
-                if not np.array_equal(stored_voltages.data[:], expected_voltages):
-                    raise RuntimeError(f"NWB round-trip voltage mismatch for {voltage_name}")
+                if not np.array_equal(stored_commands.data[:], expected_commands):
+                    raise RuntimeError(f"NWB round-trip intensity mismatch for {command_name}")
+
+
+def _or_nan(value: float | None) -> float:
+    return float("nan") if value is None else float(value)
 
 
 def _roi_output_paths(config: SessionConfig, roi: ROIConfig) -> tuple[Path, Path]:
@@ -907,8 +1114,9 @@ def _write_roi_partial_nwb(
         calibration_image,
         wavelength_images,
         roi_index,
+        calibration_camera=data.frame_camera_indices[0] if data.frame_camera_indices else 1,
     )
-    _add_events(nwbfile, data, roi_index, additional_system_events)
+    _add_events(nwbfile, config, data, roi_index, additional_system_events)
     _add_raw_frames(nwbfile, config, data, frames)
 
     with NWBHDF5IO(partial_path, mode="w") as io:

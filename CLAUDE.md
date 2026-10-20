@@ -114,6 +114,11 @@ Use a hybrid of core NWB and `ndx-fiber-photometry`:
   in every per-ROI file so any one current-format NWB can restore the whole setup;
   legacy imports must identify fields that were not historically persisted.
 
+RWD hardware commands LED power as a 0–100 % ratio rather than a voltage. Its files
+store a core `TimeSeries` per LED (`led_<nm>_commanded_power`, unit percent) instead
+of commanded-voltage series. Every exposure in every file records its camera index
+and whether its wavelength was controller-reported or phase-derived.
+
 Use NWB seconds on a shared session time base and preserve raw camera frame IDs and
 controller ticks for forensic reconstruction. Use stable `fiber_id` values to map
 camera ROIs to fiber-photometry table rows.

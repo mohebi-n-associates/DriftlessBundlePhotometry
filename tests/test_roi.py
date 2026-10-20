@@ -7,6 +7,7 @@ from driftless_photometry.roi import (
     extract_circular_rois,
     render_annotated_rois,
     roi_bounding_box,
+    rois_for_camera,
 )
 
 
@@ -95,3 +96,31 @@ def test_roi_annotation_is_fixed_scale_and_does_not_mutate_source() -> None:
     np.testing.assert_array_equal(frame, original)
     np.testing.assert_array_equal(annotated[5, 5], [127, 127, 127])
     np.testing.assert_array_equal(annotated[5, 8], [67, 214, 223])
+
+
+def _roi(**geometry) -> ROIConfig:
+    return ROIConfig(
+        fiber_id="f1",
+        label="Fiber 1",
+        animal_id="animal-01",
+        brain_region="NAc",
+        sensor_type="dLight1.3b",
+        center_x_px=5,
+        center_y_px=5,
+        radius_px=2,
+        **geometry,
+    )
+
+
+def test_rois_for_camera_uses_each_cameras_own_circle() -> None:
+    roi = _roi(camera2_center_x_px=7.0, camera2_center_y_px=3.0, camera2_radius_px=1.5)
+
+    assert rois_for_camera((roi,), 1) == (roi,)
+    (placed,) = rois_for_camera((roi,), 2)
+    assert (placed.center_x_px, placed.center_y_px, placed.radius_px) == (7.0, 3.0, 1.5)
+    assert placed.fiber_id == roi.fiber_id
+
+    with pytest.raises(ValueError, match="has no camera-2 geometry"):
+        rois_for_camera((_roi(),), 2)
+    with pytest.raises(ValueError, match="no ROI geometry for camera 3"):
+        rois_for_camera((roi,), 3)

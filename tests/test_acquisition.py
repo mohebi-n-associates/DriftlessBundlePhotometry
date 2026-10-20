@@ -7,7 +7,7 @@ import pytest
 from pynwb import NWBHDF5IO
 
 from driftless_photometry.acquisition import AcquisitionEngine, preview_duration_s, run_preview
-from driftless_photometry.config import RWDSourceConfig, demo_config
+from driftless_photometry.config import demo_config
 from driftless_photometry.diagnostics import FinalizationStage
 from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TTLEdge
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
@@ -15,7 +15,7 @@ from driftless_photometry.hardware import RigPacket, SimulatedRig
 from driftless_photometry.provenance import NWB_RUNTIME_PROVENANCE_SCRATCH_NAME
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
-from driftless_photometry.storage import InsufficientStorageError, SessionSpool, load_session_spool
+from driftless_photometry.storage import InsufficientStorageError, load_session_spool
 
 
 def test_preview_validates_all_channels_without_creating_output(tmp_path: Path) -> None:
@@ -32,22 +32,11 @@ def test_preview_validates_all_channels_without_creating_output(tmp_path: Path) 
     assert not list(tmp_path.iterdir())
 
 
-def test_camera_services_reject_rwd_source_before_creating_output(tmp_path: Path) -> None:
-    base = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
-    rwd_config = base.model_copy(update={"source": RWDSourceConfig()})
+def test_simulator_refuses_rwd_settings(tmp_path: Path) -> None:
+    rwd_config = demo_config(tmp_path, fiber_count=1, system="rwd")
 
-    with pytest.raises(ValueError, match="preview requires the custom acquisition system"):
-        run_preview(rwd_config, SimulatedRig(rwd_config))
-    with pytest.raises(ValueError, match="acquisition requires the custom acquisition system"):
-        AcquisitionEngine().run(
-            rwd_config,
-            SimulatedRig(rwd_config),
-            duration_s=0.1,
-        )
-    with pytest.raises(ValueError, match="session spool requires the custom acquisition"):
-        SessionSpool(rwd_config)
-
-    assert not list(tmp_path.iterdir())
+    with pytest.raises(ValueError, match="RWD sessions run on RWDRig"):
+        SimulatedRig(rwd_config)
 
 
 class _IncompletePreviewRig:

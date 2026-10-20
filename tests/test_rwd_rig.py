@@ -3,16 +3,16 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from rwd_bench import START_DELAY_S, W410, W470, W560, Bench, events_of, frames_of, invalid_of
+from rwd_bench import rwd_config as _config
 
 from driftless_photometry.config import (
     RWDSourceConfig,
     SessionConfig,
     TTLInputConfig,
-    Wavelength,
     demo_config,
 )
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
-from driftless_photometry.hardware.rwd_board_simulator import SimulatedRWDBoard
 from driftless_photometry.hardware.rwd_controller_protocol import (
     RWDFunction,
     RWDLed,
@@ -21,97 +21,6 @@ from driftless_photometry.hardware.rwd_controller_protocol import (
     encode_rwd_message,
 )
 from driftless_photometry.hardware.rwd_rig import RWDRig, RWDRigTiming
-from driftless_photometry.hardware.rwd_rig_simulator import SimulatedRWDCameras, VirtualClock
-from driftless_photometry.hardware.rwd_transport import RWDControllerTransport
-
-W410, W470, W560 = Wavelength.CONTROL_410, Wavelength.GREEN_470, Wavelength.RED_560
-START_DELAY_S = 0.0005
-
-
-def _config(tmp_path: Path, enabled=(W410, W470, W560), **camera) -> SessionConfig:
-    payload = demo_config(tmp_path, fiber_count=2, system="rwd").model_dump()
-    for channel in payload["channels"]:
-        channel["enabled"] = channel["wavelength_nm"] in enabled
-    payload["channels"][1]["power_percent"] = 12.5
-    payload["camera"].update(camera)
-    return SessionConfig.model_validate(payload)
-
-
-class Bench:
-    """A simulated R821 with its two cameras on one virtual clock."""
-
-    def __init__(
-        self,
-        config: SessionConfig,
-        *,
-        model_code: int = 0,
-        ports: tuple[str, ...] = ("COM9",),
-        timing: RWDRigTiming | None = None,
-        **camera_options,
-    ) -> None:
-        self.clock = VirtualClock()
-        self.board = SimulatedRWDBoard(clock=self.clock, model_code=model_code)
-        self.cameras: SimulatedRWDCameras | None = None
-        self.opened_ports: list[str] = []
-        self.camera_ids: tuple[str, ...] = ()
-
-        def transport(port: str) -> RWDControllerTransport:
-            self.opened_ports.append(port)
-            return RWDControllerTransport(
-                port, serial_factory=lambda _: self.board, clock=self.clock
-            )
-
-        def cameras(settings, user_ids):
-            self.camera_ids = user_ids
-            self.cameras = SimulatedRWDCameras(
-                self.board,
-                self.clock,
-                config,
-                user_ids=user_ids,
-                settings=settings,
-                start_delay_s=START_DELAY_S,
-                **camera_options,
-            )
-            self.pending_setup(self.cameras)
-            return self.cameras
-
-        self.pending_setup = lambda cams: None
-        self.rig = RWDRig(
-            config,
-            transport_factory=transport,
-            camera_factory=cameras,
-            port_finder=lambda: ports,
-            clock=self.clock,
-            timing=timing,
-        )
-
-    def run(self, duration_s: float):
-        return list(self.rig.packets(duration_s))
-
-    def assert_all_off(self) -> None:
-        state = self.board.state
-        assert not state.sequencer_enabled
-        assert not any(state.led_enabled.values())
-        assert not any(state.led_value.values())
-        assert not any(state.output_enabled.values())
-        assert not state.light_on
-
-    def session_s(self, clock_s: float, run: int = 0) -> float:
-        """Session time of a clock instant, given session zero at run 0's first trigger."""
-
-        return clock_s - (self.board.runs[0].start_s + START_DELAY_S)
-
-
-def _frames(packets):
-    return [packet.frame for packet in packets if packet.frame is not None]
-
-
-def _events(packets):
-    return [event for packet in packets for event in packet.system_events]
-
-
-def _invalid(packets):
-    return [interval for packet in packets for interval in packet.invalid_times]
 
 
 def test_rwd_rig_records_an_interleaved_three_led_session(tmp_path: Path) -> None:
@@ -119,7 +28,7 @@ def test_rwd_rig_records_an_interleaved_three_led_session(tmp_path: Path) -> Non
 
     packets = bench.run(2.0)
 
-    frames = _frames(packets)
+    frames = frames_of(packets)
     assert len(frames) == 40
     exposures = [frame.exposure for frame in frames]
     assert [e.sequence for e in exposures] == list(range(40))
@@ -135,14 +44,14 @@ def test_rwd_rig_records_an_interleaved_three_led_session(tmp_path: Path) -> Non
     assert all(frame.image.shape == (544, 728) for frame in frames)
     assert all(frame.camera_timestamp_ns is not None for frame in frames)
     assert np.all(np.diff([frame.host_received_s for frame in frames]) > 0)
-    events = [event.event for event in _events(packets)]
+    events = [event.event for event in events_of(packets)]
     assert events[:3] == [
         "rwd_controller_connected",
         "rwd_start_delay_measured",
         "rwd_sequencer_started",
     ]
     assert "rwd_sequencer_stopped" in events
-    assert not _invalid(packets)
+    assert not invalid_of(packets)
     assert bench.camera_ids == ("1", "2")
     bench.assert_all_off()
 
@@ -189,7 +98,7 @@ def test_rwd_rig_sends_board_settings_before_starting_the_sequencer(tmp_path: Pa
 def test_rwd_rig_runs_every_board_mode(tmp_path: Path, enabled, wavelengths, cameras, user_ids):
     bench = Bench(_config(tmp_path, enabled))
 
-    frames = _frames(bench.run(1.0))
+    frames = frames_of(bench.run(1.0))
 
     assert len(frames) == 20
     cycle = len(wavelengths)
@@ -237,7 +146,7 @@ def test_rwd_rig_places_ttl_edges_on_the_trigger_grid(tmp_path: Path) -> None:
     ticks = [edge.controller_tick_us for edge in edges if edge.line == 1]
     np.testing.assert_allclose(np.diff(lick), np.diff(ticks) / 1e6, atol=1e-9)
     assert ticks[0] == bench.board.tick_ms(start + 0.3101) * 1000
-    events = {event.event: event.detail for event in _events(packets)}
+    events = {event.event: event.detail for event in events_of(packets)}
     assert "rwd_ttl_clock_aligned" in events
     assert events["rwd_ttl_edges_not_configured"].startswith("1 edge")
 
@@ -248,7 +157,7 @@ def test_rwd_rig_restarts_after_a_missed_exposure_and_marks_the_span(tmp_path: P
 
     packets = bench.run(2.0)
 
-    frames = _frames(packets)
+    frames = frames_of(packets)
     exposures = [frame.exposure for frame in frames]
     assert [e.sequence for e in exposures] == list(range(len(exposures)))
     run0 = exposures[:8]
@@ -260,12 +169,12 @@ def test_rwd_rig_restarts_after_a_missed_exposure_and_marks_the_span(tmp_path: P
     assert run1[0].timestamp_s == pytest.approx(expected_start, abs=1e-4)
     np.testing.assert_allclose(np.diff([e.timestamp_s for e in run1]), 0.05, atol=1e-9)
     assert exposures[-1].timestamp_s < 2.0
-    (interval,) = _invalid(packets)
+    (interval,) = invalid_of(packets)
     assert interval.start_time_s == pytest.approx(0.40)
     assert interval.stop_time_s == pytest.approx(run1[0].timestamp_s)
     assert interval.source_event == "rwd_sequencer_restart"
     assert "missed exposure" in interval.reason
-    restart = next(e for e in _events(packets) if e.event == "rwd_sequencer_restart")
+    restart = next(e for e in events_of(packets) if e.event == "rwd_sequencer_restart")
     assert "could not be attributed" in restart.detail
     assert restart.timestamp_s == pytest.approx(0.40)
     bench.assert_all_off()
@@ -277,10 +186,10 @@ def test_rwd_rig_restarts_after_a_frame_lost_in_transfer(tmp_path: Path) -> None
 
     packets = bench.run(1.5)
 
-    (interval,) = _invalid(packets)
+    (interval,) = invalid_of(packets)
     assert interval.start_time_s == pytest.approx(0.25)
     assert "frame ID jumped" in interval.reason
-    frames = _frames(packets)
+    frames = frames_of(packets)
     assert frames[5].exposure.wavelength_nm is W410
     assert frames[5].exposure.timestamp_s > 0.25 + 0.15
 
@@ -297,11 +206,11 @@ def test_rwd_rig_retries_a_restart_whose_first_trigger_was_missed(tmp_path: Path
     packets = bench.run(2.0)
 
     assert len(bench.board.runs) == 3
-    events = _events(packets)
+    events = events_of(packets)
     reasons = [event.detail for event in events if event.event == "rwd_sequencer_restart"]
     assert len(reasons) == 2
     assert "first trigger may have been missed" in reasons[1]
-    frames = _frames(packets)
+    frames = frames_of(packets)
     third = bench.session_s(bench.board.runs[2].start_s + START_DELAY_S)
     after = [f.exposure for f in frames if f.exposure.timestamp_s >= third - 1e-6]
     assert after[0].wavelength_nm is W410
@@ -310,7 +219,7 @@ def test_rwd_rig_retries_a_restart_whose_first_trigger_was_missed(tmp_path: Path
     assert all(
         f.exposure.timestamp_s < 0.30 or f.exposure.timestamp_s >= third - 1e-6 for f in frames
     )
-    (interval,) = _invalid(packets)
+    (interval,) = invalid_of(packets)
     assert interval.stop_time_s == pytest.approx(after[0].timestamp_s)
 
 
@@ -328,7 +237,7 @@ def test_rwd_rig_fails_when_the_board_period_is_not_the_commanded_rate(tmp_path:
     assert bench.cameras is not None and not bench.cameras.open
 
 
-def test_rwd_rig_fails_after_repeated_restarts_without_frames(tmp_path: Path) -> None:
+def test_rwd_rig_fails_after_repeated_restarts_withoutframes_of(tmp_path: Path) -> None:
     bench = Bench(_config(tmp_path))
     bench.pending_setup = lambda cams: setattr(cams, "disconnect_at_s", bench.clock.now_s + 0.5)
 
@@ -359,13 +268,13 @@ def test_rwd_rig_stop_request_ends_with_the_board_off(tmp_path: Path) -> None:
     received = []
     for packet in bench.rig.packets(30.0):
         received.append(packet)
-        if len(_frames(received)) == 7:
+        if len(frames_of(received)) == 7:
             bench.rig.stop()
 
-    frames = _frames(received)
+    frames = frames_of(received)
     assert len(frames) == 7
     assert received[-1].frame is None
-    events = [event.event for event in _events(received)]
+    events = [event.event for event in events_of(received)]
     assert "rwd_stop_requested" in events
     assert "rwd_sequencer_stopped" in events
     # Frames that may have been cut short by the stop are never recorded.
@@ -389,7 +298,7 @@ def test_rwd_rig_turns_the_board_off_when_the_consumer_abandons_it(tmp_path: Pat
     assert bench.cameras is not None and not bench.cameras.open
 
 
-def test_rwd_rig_records_malformed_controller_frames(tmp_path: Path) -> None:
+def test_rwd_rig_records_malformed_controllerframes_of(tmp_path: Path) -> None:
     bench = Bench(_config(tmp_path))
     packets = bench.rig.packets(1.0)
     received = [next(packets) for _index in range(4)]
@@ -400,10 +309,10 @@ def test_rwd_rig_records_malformed_controller_frames(tmp_path: Path) -> None:
     bench.board.inject_raw(bytes(frame))
     received.extend(packets)
 
-    (interval,) = _invalid(received)
+    (interval,) = invalid_of(received)
     assert "a TTL edge may have been lost" in interval.reason
-    assert "rwd_malformed_controller_frame" in [event.event for event in _events(received)]
-    assert len(_frames(received)) == 20
+    assert "rwd_malformed_controller_frame" in [event.event for event in events_of(received)]
+    assert len(frames_of(received)) == 20
 
 
 def test_rwd_rig_refuses_models_other_than_the_r821(tmp_path: Path) -> None:
