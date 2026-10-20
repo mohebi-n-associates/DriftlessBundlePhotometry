@@ -1,8 +1,12 @@
 # RWD direct-control design record and controller protocol
 
 **Status:** protocol codec and offline USB-capture decoder implemented and tested
-against OFRS's own encoder. Nothing here has been exercised against a physical RWD
-controller. No DBF code sends commands to RWD hardware yet.
+against OFRS's own encoder. Bench tests on 2026-10-20 confirmed the framing, CRC,
+escaping, acknowledgements, version handshake, model query, controller heartbeat, LED
+power and enable, continuous and three-LED interleaved modes, and the sequencer
+enable that starts and stops excitation (see [Bench evidence](#bench-evidence)). No DBF
+product code sends commands to RWD hardware yet. Timing units and everything not
+marked "bench" below remain unconfirmed.
 
 ## Decision
 
@@ -105,33 +109,43 @@ FTDI virtual COM port, 115200 baud, 8 data bits, no parity, 1 stop bit.
 - **Handshake:** OFRS sends `VERSION_QUERY` and `QUERY_MODEL`. The board's
   `VERSION_DETAIL_REPLY` must carry ASCII `OFRS` in data bytes 4–7. OFRS then enables
   the sequencer.
-- **Keepalive:** OFRS disconnects after 5 s without a controller heartbeat.
+- **Keepalive:** the board sends a heartbeat about once per second, unprompted and
+  even before any handshake (bench). OFRS disconnects after 5 s without one.
+- **Board acknowledgements:** the board acks each host command with type `2`, echoing
+  its sequence and function but carrying four zero data bytes (bench). It then confirms
+  the new setting with a reply whose function ID is the command's minus `0x20`: `0x41`
+  → `0x21` through `0x45` → `0x25` (bench). It does not ack host heartbeats. It numbers
+  all of its own frames from one shared sequence counter (bench).
 
 ## Functions
 
 "Code" means the meaning comes from OFRS source. "Bench" means a capture has confirmed
-it. No row is bench-confirmed yet.
+it. Rows marked "bench" were confirmed by the 2026-10-20 bench tests.
 
 | ID | Name | Direction | Data | Confidence |
 | --- | --- | --- | --- | --- |
-| 0x41 | `LED_VALUE` | host → board | `[led, 0, value_hi, value_lo]`, value = percent × 100 | code |
-| 0x42 | `LED_ENABLE` | host → board | `[led, on, 0, 0]` | code |
-| 0x43 | `CAMERA_TIMING` | host → board | `[fps_hi, fps_lo, exp_hi, exp_lo]`, exposure in 10 µs units | code |
-| 0x44 | `EXCITATION_MODE` | host → board | `[mode, 0, 0, 0]`: 0 continuous, 1 410+470, 2 470+560, 3 all | code |
-| 0x45 | `DEVICE_ENABLE` | host → board | `[on, 0, 0, 0]`: sequencer enable | code |
+| 0x41 | `LED_VALUE` | host → board | `[led, 0, value_hi, value_lo]`, value = percent × 100 | bench |
+| 0x42 | `LED_ENABLE` | host → board | `[led, on, 0, 0]` | bench |
+| 0x43 | `CAMERA_TIMING` | host → board | `[fps_hi, fps_lo, exp_hi, exp_lo]`, exposure in 10 µs units | accepted (bench); units code |
+| 0x44 | `EXCITATION_MODE` | host → board | `[mode, 0, 0, 0]`: 0 continuous, 1 410+470, 2 470+560, 3 all | bench (0, 3) |
+| 0x45 | `DEVICE_ENABLE` | host → board | `[on, 0, 0, 0]`: sequencer enable; light starts and stops with it | bench |
 | 0x46 | `OUTPUT_ENABLE` | host → board | `[port 1–4, on]` | code |
 | 0x48 | `OUTPUT_CONFIG` | host → board | `[port, freq_hi, freq_lo, width_hi, width_lo]`, frequency × 100 Hz, width in ms | code |
-| 0x49 | `VERSION_QUERY` | host → board | `[0, 0, 0, 0]` | code |
+| 0x49 | `VERSION_QUERY` | host → board | `[0, 0, 0, 0]` | bench |
 | 0x4C | `TIME_CHECK` | host → board | `[0, 0]`; OFRS also queries LED limits with this ID as `[led, 0]` | code |
-| 0x4E | `QUERY_MODEL` | host → board | `[0, 0, 0, 0]` | code |
-| 0x71 | `HOST_HEARTBEAT` | host → board | type info, `[0, 0, 0, 0]` | code |
-| 0x21 / 0x22 | LED value / enable replies | board → host | `data[0]` = LED | code |
-| 0x25 | `STATE_REPLY` | board → host | sequencer state acknowledged | code |
-| 0x26 | `VERSION_REPLY` | board → host | firmware `data[0].data[1].data[2]` | code |
-| 0x27 | `VERSION_DETAIL_REPLY` | board → host | 32-bit build, then `OFRS` | code |
+| 0x4E | `QUERY_MODEL` | host → board | `[0, 0, 0, 0]` | bench |
+| 0x71 | `HOST_HEARTBEAT` | host → board | type info, `[0, 0, 0, 0]`; no ack or reply | accepted (bench) |
+| 0x21 | `LED_VALUE_REPLY` | board → host | echo of the 4-byte `LED_VALUE` data | bench |
+| 0x22 | `LED_ENABLE_REPLY` | board → host | `[led, on]`, 2 bytes | bench |
+| 0x23 | `CAMERA_TIMING_REPLY` | board → host | frame rate in sent order, then the exposure bytes swapped | bench |
+| 0x24 | `EXCITATION_MODE_REPLY` | board → host | echo of the 4-byte mode data | bench |
+| 0x25 | `STATE_REPLY` | board → host | `[on, 0, 0, 0]`, the sequencer state | bench |
+| 0x26 | `VERSION_REPLY` | board → host | firmware `data[0].data[1].data[2]`, 4 bytes | bench |
+| 0x27 | `VERSION_DETAIL_REPLY` | board → host | 32-bit build, then `OFRS` | bench |
 | 0x28 | `INPUT_EDGE` | board → host | `data[0]` line index 0–3, `data[5]` 0 rising / 1 falling; bytes 1–4 unknown | partial |
-| 0x29, 0x2A, 0x2B, 0x2D | BNC, LED limits, model, time-check replies | board → host | layouts unknown | name only |
-| 0x31 | `CONTROLLER_HEARTBEAT` | board → host | type info | code |
+| 0x2B | `MODEL_REPLY` | board → host | one byte, the model code; its mapping to R810–R821 is unconfirmed | bench (layout) |
+| 0x29, 0x2A, 0x2D | BNC, LED limits, time-check replies | board → host | layouts unknown | name only |
+| 0x31 | `CONTROLLER_HEARTBEAT` | board → host | type info, `[0, 0, 0, 0]`, about 1 Hz | bench |
 
 LED index: `0` = 410 nm, `1` = 470 nm, `2` = 560 nm. OFRS limits exposure to
 `(1000 // fps) − 2.63` ms and to at least 0.5 ms.
@@ -143,9 +157,55 @@ caller passes `allow_unsafe=True`, which no DBF code does.
 ## Open questions for the bench capture
 
 - Exact `CAMERA_TIMING` semantics: whether the frame rate is per exposure or per LED
-  cycle, and how the board splits triggers between the two cameras.
+  cycle, how the board splits triggers between the two cameras, and why its
+  confirmation returns the exposure bytes swapped (`0F A0` comes back as `A0 0F`).
+  Either the board only reports them swapped, or it reads the exposure byte-swapped.
+  Camera frames or an OFRS capture will tell.
+- Whether the board needs host heartbeats at all.
 - Whether camera 2 receives triggers only for 560 nm exposures.
 - The meaning of `INPUT_EDGE` bytes 1–4 (a controller tick would allow one TTL clock).
 - What the board does with its LEDs when heartbeats stop or the USB link drops.
-- Reply layouts for `0x29`, `0x2A`, `0x2B`, and `0x2D`, and the time-check exchange.
+- Reply layouts for `0x29`, `0x2A`, and `0x2D`, the time-check exchange, and which
+  model each `MODEL_REPLY` code means.
 - Whether the board resets its sequence phase on every `DEVICE_ENABLE` off→on.
+
+## Bench evidence
+
+**2026-10-20 probe.**
+
+- **Unit:** an RWD unit whose controller enumerates as FTDI VID `0403`, PID `6001`, an
+  FT232R full-speed bridge with 64-byte USB packets. Two Allied Vision USB3 Vision
+  cameras (VID `1AB2`) were attached but had no driver installed.
+- **Probe:** the host opened the port at 115200 8N1 with DTR and RTS low and listened
+  for 3 s. It then sent only `VERSION_QUERY` and `QUERY_MODEL`, acknowledged each board
+  reply, and closed after 9 s. It never sent the sequencer enable or any LED, timing,
+  mode, or output command.
+- **Results:**
+  - Every board frame passed the CRC check, and none were malformed.
+  - The board acknowledged both queries.
+  - It reported firmware 2.0.0, build 37619 with the `OFRS` magic, and model code 0.
+  - It sent heartbeats about once per second throughout.
+  - A repeat probe with a 20 s window produced no visible light from the fiber
+    (operator observation), so the handshake alone does not start excitation.
+  - The board's sequence counter advanced by about 180 between the two runs, three
+    minutes apart. The board sends heartbeats continuously, whether or not a host is
+    connected.
+- **Regression test:** the exact board bytes are a golden fixture in
+  `tests/test_rwd_controller_protocol.py`.
+
+**2026-10-20 LED tests**, on the same unit with the fiber aimed at a card:
+
+- **470 nm at 5 %, continuous mode, 20 Hz / 40 ms trigger:**
+  - Sequencer enable started the light, and sequencer disable stopped it (operator
+    observation).
+  - Every command was acknowledged on the first attempt.
+  - Several board CRCs contained `7E` and arrived correctly escaped as `7D 5E`.
+- **Sequence test:** 410, 470, and 560 nm were each run alone at 5 % for 3 s, then all
+  three interleaved (mode 3) at 10 Hz / 50 ms.
+  - The operator reported that it worked as expected.
+  - The board confirmed every LED, mode, timing, and sequencer change.
+  - There were 94 acknowledgements, no retries, and no malformed frames.
+- **Regression tests:** the board's exact confirmation frames are golden fixtures in
+  `tests/test_rwd_controller_protocol.py`.
+- **Still unmeasured:** the LED state after host loss. The tests stopped the light by
+  command only.

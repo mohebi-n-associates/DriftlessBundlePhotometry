@@ -13,8 +13,11 @@ version, move its completed entries into a dated version section.
   protocol whose frames match those produced by RWD's own encoder, and
   `--decode-rwd-usb-capture` (with optional `--rwd-usb-csv`) to decode USBPcap
   captures of RWD software sessions. The track also adds a design record and a
-  bench-capture procedure. Nothing in this release sends commands to RWD hardware, and
-  the protocol is not yet validated against a physical controller.
+  bench-capture procedure. Bench tests on a physical RWD controller confirmed the
+  framing, CRC, escaping, acknowledgements, version handshake, heartbeat, LED power and
+  enable, continuous and interleaved modes, and starting and stopping excitation.
+  Nothing in the application itself sends commands to RWD hardware yet. Timing units,
+  TTL functions, and behavior after host loss remain unconfirmed.
 
 ### Changed
 
