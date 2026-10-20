@@ -47,10 +47,8 @@ from driftless_photometry.acquisition import (
 from driftless_photometry.config import (
     CameraConfig,
     ChannelConfig,
-    NativeSourceConfig,
+    CustomSourceConfig,
     ROIConfig,
-    RWDChannelMapping,
-    RWDPreambleMode,
     RWDSourceConfig,
     SessionConfig,
     TraceDisplayConfig,
@@ -58,16 +56,7 @@ from driftless_photometry.config import (
     demo_config,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
-from driftless_photometry.live_trace import (
-    LiveTracePoint,
-    RWDLiveTraceProjector,
-    native_live_trace_points,
-)
-from driftless_photometry.rwd.acquisition import (
-    RWDAcquisitionProgress,
-    RWDAcquisitionRunResult,
-)
-from driftless_photometry.rwd.domain import RWDEventRecord
+from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
 from driftless_photometry.settings import (
     SETTINGS_SUFFIX,
     configuration_from_nwb,
@@ -88,7 +77,7 @@ from .trace_display import (
     downsample_min_max,
     trailing_mean,
 )
-from .worker import AcquisitionWorker, PreviewWorker
+from .worker import RWD_BACKEND_UNAVAILABLE, AcquisitionWorker, PreviewWorker
 
 _TRACE_REFRESH_INTERVAL_S = 0.1
 
@@ -118,9 +107,17 @@ _WAVELENGTH_TITLES = {
     Wavelength.RED_565: "565 nm — red signal",
 }
 
-_NATIVE_TRACE_WAVELENGTHS = (405, 470, 565)
-_RWD_TRACE_WAVELENGTHS = (410, 470, 560)
+_CUSTOM_TRACE_WAVELENGTHS = (405, 470, 565)
 _ALL_TRACE_WAVELENGTHS = (405, 410, 470, 560, 565)
+
+_CUSTOM_MODE_HINT = (
+    "Custom mode drives DBF's own camera and timing controller. This build uses the "
+    "simulator until those adapters are validated."
+)
+_RWD_MODE_HINT = (
+    "RWD mode will drive the RWD controller board and its photometry cameras directly, "
+    "without RWD's software. " + RWD_BACKEND_UNAVAILABLE + "."
+)
 
 
 class SummaryCard(QWidget):
@@ -157,10 +154,6 @@ class ROIMetadataEditor(QWidget):
         self.age_edit.setPlaceholderText("ISO 8601, e.g. P90D")
         self.sex_combo = QComboBox()
         self.sex_combo.addItems(["U", "F", "M", "O"])
-        self.rwd_channel_spin = QSpinBox()
-        self.rwd_channel_spin.setRange(0, 255)
-        self.rwd_channel_spin.setValue(index)
-        self.rwd_label_edit = QLineEdit(f"RWD channel {index}")
         form.addRow("Enabled", self.enabled_check)
         form.addRow("ROI label", self.label_edit)
         form.addRow("Animal ID", self.animal_id_edit)
@@ -168,17 +161,8 @@ class ROIMetadataEditor(QWidget):
         form.addRow("Sensor type", self.sensor_type_edit)
         form.addRow("Animal age", self.age_edit)
         form.addRow("Animal sex", self.sex_combo)
-        form.addRow("RWD device channel", self.rwd_channel_spin)
-        form.addRow("RWD channel label", self.rwd_label_edit)
-        self._rwd_fields = (
-            form.labelForField(self.rwd_channel_spin),
-            self.rwd_channel_spin,
-            form.labelForField(self.rwd_label_edit),
-            self.rwd_label_edit,
-        )
-        self.set_rwd_fields_visible(False)
 
-    def values(self) -> dict[str, str | bool | int]:
+    def values(self) -> dict[str, str | bool]:
         return {
             "enabled": self.enabled_check.isChecked(),
             "label": self.label_edit.text(),
@@ -187,11 +171,9 @@ class ROIMetadataEditor(QWidget):
             "sensor_type": self.sensor_type_edit.text(),
             "subject_age": self.age_edit.text(),
             "subject_sex": self.sex_combo.currentText(),
-            "rwd_device_channel": self.rwd_channel_spin.value(),
-            "rwd_channel_label": self.rwd_label_edit.text(),
         }
 
-    def restore(self, values: Mapping[str, str | bool | int]) -> None:
+    def restore(self, values: Mapping[str, str | bool]) -> None:
         self.enabled_check.setChecked(bool(values["enabled"]))
         self.label_edit.setText(str(values["label"]))
         self.animal_id_edit.setText(str(values["animal_id"]))
@@ -199,14 +181,6 @@ class ROIMetadataEditor(QWidget):
         self.sensor_type_edit.setText(str(values["sensor_type"]))
         self.age_edit.setText(str(values["subject_age"]))
         self.sex_combo.setCurrentText(str(values["subject_sex"]))
-        if "rwd_device_channel" in values:
-            self.rwd_channel_spin.setValue(int(values["rwd_device_channel"]))
-        if "rwd_channel_label" in values:
-            self.rwd_label_edit.setText(str(values["rwd_channel_label"]))
-
-    def set_rwd_fields_visible(self, visible: bool) -> None:
-        for widget in self._rwd_fields:
-            widget.setVisible(visible)
 
 
 class MainWindow(QMainWindow):
@@ -245,9 +219,7 @@ class MainWindow(QMainWindow):
         self._trace_times: dict[tuple[int, int], array] = {}
         self._trace_values: dict[tuple[int, int], array] = {}
         self._trace_roi_indices: dict[str, int] = {}
-        self._active_trace_wavelengths: tuple[int, ...] = _NATIVE_TRACE_WAVELENGTHS
-        self._rwd_trace_projector: RWDLiveTraceProjector | None = None
-        self._rwd_active_events: set[str] = set()
+        self._active_trace_wavelengths: tuple[int, ...] = _CUSTOM_TRACE_WAVELENGTHS
         self._active_config: SessionConfig | None = None
         self._trace_roi_count = 0
         self._trace_horizon_s: float | None = HORIZONS[0][1]
@@ -257,7 +229,7 @@ class MainWindow(QMainWindow):
         self._last_trace_render_s: dict[int, float] = {}
         self._image_item = pg.ImageItem()
         self._image_display_maximum = (1 << 12) - 1
-        self.last_result: AcquisitionRunResult | RWDAcquisitionRunResult | None = None
+        self.last_result: AcquisitionRunResult | None = None
         self.last_preview: PreviewResult | None = None
         self.last_error: str | None = None
         self._session_template = demo_config(
@@ -393,13 +365,10 @@ class MainWindow(QMainWindow):
         source_form = QFormLayout(source_group)
         self.source_combo = QComboBox()
         self.source_combo.setObjectName("sourceSelector")
-        self.source_combo.addItem("Driftless native / simulator", "native")
-        self.source_combo.addItem("RWD read-only stream", "rwd")
+        self.source_combo.addItem("Custom", "custom")
+        self.source_combo.addItem("RWD", "rwd")
         self.source_combo.currentIndexChanged.connect(self._apply_source_mode)
-        self.source_mode_hint = QLabel(
-            "Native mode uses the simulator now and the validated camera/controller "
-            "adapters when available."
-        )
+        self.source_mode_hint = QLabel(_CUSTOM_MODE_HINT)
         self.source_mode_hint.setObjectName("hint")
         self.source_mode_hint.setWordWrap(True)
         source_form.addRow("System", self.source_combo)
@@ -465,7 +434,6 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(session_group)
 
         channels_group = QGroupBox("Excitation schedule")
-        self.native_channels_group = channels_group
         channels_layout = QVBoxLayout(channels_group)
         channels_layout.setSpacing(8)
         self.channel_checks: dict[Wavelength, QCheckBox] = {}
@@ -503,7 +471,6 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(channels_group)
 
         retention_group = QGroupBox("Data retention")
-        self.native_retention_group = retention_group
         retention_layout = QVBoxLayout(retention_group)
         self.raw_checkbox = QCheckBox("Embed lossless raw camera frames")
         self.raw_checkbox.setChecked(raw_capture)
@@ -519,60 +486,18 @@ class MainWindow(QMainWindow):
         retention_layout.addWidget(raw_hint)
         controls_layout.addWidget(retention_group)
 
-        self.rwd_connection_group = QGroupBox("RWD read-only connection")
-        rwd_form = QFormLayout(self.rwd_connection_group)
-        self.rwd_host_edit = QLineEdit("127.0.0.1")
-        self.rwd_port_spin = QSpinBox()
-        self.rwd_port_spin.setRange(1, 65535)
-        self.rwd_port_spin.setValue(8080)
-        self.rwd_connect_timeout_spin = QDoubleSpinBox()
-        self.rwd_connect_timeout_spin.setRange(0.1, 60.0)
-        self.rwd_connect_timeout_spin.setValue(3.0)
-        self.rwd_connect_timeout_spin.setSuffix(" s")
-        self.rwd_read_timeout_spin = QDoubleSpinBox()
-        self.rwd_read_timeout_spin.setRange(0.1, 60.0)
-        self.rwd_read_timeout_spin.setValue(1.0)
-        self.rwd_read_timeout_spin.setSuffix(" s")
-        self.rwd_preamble_combo = QComboBox()
-        self.rwd_preamble_combo.addItem("Auto detect", RWDPreambleMode.AUTO.value)
-        self.rwd_preamble_combo.addItem("No preamble", RWDPreambleMode.NONE.value)
-        self.rwd_preamble_combo.addItem(
-            "Four-byte machine banner",
-            RWDPreambleMode.MACHINE_NAME_4.value,
+        self.rwd_group = QGroupBox("RWD direct control")
+        rwd_layout = QVBoxLayout(self.rwd_group)
+        self.rwd_status_label = QLabel(
+            "The RWD controller protocol is decoded, and captures of RWD's own software "
+            "can be inspected with dbf --decode-rwd-usb-capture. Controller and camera "
+            "control will be added after bench validation; see docs/rwd-direct-control.md."
         )
-        self.rwd_machine_edit = QLineEdit()
-        self.rwd_machine_edit.setMaxLength(4)
-        self.rwd_machine_edit.setPlaceholderText("optional 4 ASCII bytes")
-        self.rwd_record_rate_spin = QDoubleSpinBox()
-        self.rwd_record_rate_spin.setRange(1.0, 100_000.0)
-        self.rwd_record_rate_spin.setDecimals(0)
-        self.rwd_record_rate_spin.setValue(1000.0)
-        self.rwd_record_rate_spin.setSuffix(" records/s max")
-        rwd_form.addRow("RWD host", self.rwd_host_edit)
-        rwd_form.addRow("RWD port", self.rwd_port_spin)
-        rwd_form.addRow("Connect timeout", self.rwd_connect_timeout_spin)
-        rwd_form.addRow("Idle timeout", self.rwd_read_timeout_spin)
-        rwd_form.addRow("Preamble", self.rwd_preamble_combo)
-        rwd_form.addRow("Expected machine", self.rwd_machine_edit)
-        rwd_form.addRow("Capacity bound", self.rwd_record_rate_spin)
-        rwd_wavelength_row = QWidget()
-        rwd_wavelength_layout = QHBoxLayout(rwd_wavelength_row)
-        rwd_wavelength_layout.setContentsMargins(0, 0, 0, 0)
-        self.rwd_wavelength_checks: dict[int, QCheckBox] = {}
-        for wavelength_nm in _RWD_TRACE_WAVELENGTHS:
-            check = QCheckBox(f"{wavelength_nm} nm")
-            check.setChecked(True)
-            self.rwd_wavelength_checks[wavelength_nm] = check
-            rwd_wavelength_layout.addWidget(check)
-        rwd_form.addRow("Stream wavelengths", rwd_wavelength_row)
-        rwd_hint = QLabel(
-            "DBF only reads RWD fluorescence/events. Assign each enabled fiber an "
-            "explicit device channel and separate channel label under Fibers & subjects."
-        )
-        rwd_hint.setObjectName("hint")
-        rwd_hint.setWordWrap(True)
-        rwd_form.addRow(rwd_hint)
-        controls_layout.addWidget(self.rwd_connection_group)
+        self.rwd_status_label.setObjectName("hint")
+        self.rwd_status_label.setWordWrap(True)
+        rwd_layout.addWidget(self.rwd_status_label)
+        self.rwd_group.setVisible(False)
+        controls_layout.addWidget(self.rwd_group)
         controls_layout.addStretch(1)
         layout.addWidget(controls)
 
@@ -676,10 +601,7 @@ class MainWindow(QMainWindow):
         live_layout.addLayout(status_row)
         self.connection_diagnostics_label = QLabel("Queue and connection diagnostics appear here")
         self.connection_diagnostics_label.setObjectName("hint")
-        self.rwd_event_status = QLabel("Active RWD events: none")
-        self.rwd_event_status.setObjectName("hint")
         live_layout.addWidget(self.connection_diagnostics_label)
-        live_layout.addWidget(self.rwd_event_status)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1000)
         self.progress_bar.setValue(0)
@@ -722,7 +644,7 @@ class MainWindow(QMainWindow):
             session_group,
             channels_group,
             retention_group,
-            self.rwd_connection_group,
+            self.rwd_group,
             browse,
         ]
         for check in self.channel_checks.values():
@@ -740,29 +662,10 @@ class MainWindow(QMainWindow):
             edit.textChanged.connect(self._invalidate_preview)
         self.duration_spin.valueChanged.connect(self._invalidate_preview)
         self.raw_checkbox.toggled.connect(self._invalidate_preview)
-        for widget in (
-            self.rwd_host_edit,
-            self.rwd_machine_edit,
-        ):
-            widget.textChanged.connect(self._invalidate_preview)
-        for widget in (
-            self.rwd_port_spin,
-            self.rwd_connect_timeout_spin,
-            self.rwd_read_timeout_spin,
-            self.rwd_record_rate_spin,
-        ):
-            widget.valueChanged.connect(self._invalidate_preview)
-        self.rwd_preamble_combo.currentIndexChanged.connect(self._invalidate_preview)
-        for check in self.rwd_wavelength_checks.values():
-            check.toggled.connect(self._invalidate_preview)
-            check.toggled.connect(self._update_overview)
         return page
 
     def _update_overview(self) -> None:
-        if self._is_rwd_mode():
-            enabled = sum(check.isChecked() for check in self.rwd_wavelength_checks.values())
-        else:
-            enabled = sum(check.isChecked() for check in self.channel_checks.values())
+        enabled = sum(check.isChecked() for check in self.channel_checks.values())
         self.channels_summary.value_label.setText(str(enabled))
         if hasattr(self, "fiber_count_spin"):
             fiber_count = self.fiber_count_spin.value()
@@ -777,64 +680,24 @@ class MainWindow(QMainWindow):
         return hasattr(self, "source_combo") and self.source_combo.currentData() == "rwd"
 
     def _apply_source_mode(self, *_args: object) -> None:
-        if not hasattr(self, "rwd_connection_group"):
+        if not hasattr(self, "rwd_group"):
             return
         is_rwd = self._is_rwd_mode()
-        self.native_channels_group.setVisible(not is_rwd)
-        self.native_retention_group.setVisible(not is_rwd)
-        self.rwd_connection_group.setVisible(is_rwd)
-        self._active_trace_wavelengths = (
-            _RWD_TRACE_WAVELENGTHS if is_rwd else _NATIVE_TRACE_WAVELENGTHS
-        )
+        self.rwd_group.setVisible(is_rwd)
+        self._active_trace_wavelengths = _CUSTOM_TRACE_WAVELENGTHS
         for wavelength_nm, check in self.trace_wavelength_checks.items():
             check.setVisible(wavelength_nm in self._active_trace_wavelengths)
-        if hasattr(self, "tabs"):
-            self.tabs.setTabVisible(1, True)
-            self.tabs.setTabText(1, "Fibers & subjects" if is_rwd else "Camera & fiber ROIs")
-            self.tabs.setTabVisible(2, not is_rwd)
-        if hasattr(self, "camera_calibration_group"):
-            self.camera_calibration_group.setVisible(not is_rwd)
-            self.roi_summary.setVisible(not is_rwd)
-            self.fiber_instructions.setText(
-                "Define each RWD fiber's animal and scientific metadata. Device-channel "
-                "mapping is configured separately from camera ROI geometry."
-                if is_rwd
-                else "Drag a circle to move its fiber ROI. Drag its handle to resize it. "
-                "Each ROI has its own live trace row; wavelength colors remain consistent "
-                "across every row."
-            )
-        for editor in getattr(self, "_roi_metadata_editors", ()):
-            editor.set_rwd_fields_visible(is_rwd)
-        if hasattr(self, "rwd_event_status"):
-            self.rwd_event_status.setVisible(is_rwd)
         if is_rwd:
-            self.source_mode_hint.setText(
-                "RWD controls the hardware. DBF only reads, displays, journals, and "
-                "writes the exported fluorescence/event stream."
-            )
-            self.backend_badge.setText("RWD read-only")
-            self.preview_button.setVisible(False)
-            self._set_preview_status(
-                "RWD is read-only; Start opens one bounded recording connection",
-                "passed",
-            )
-            self.statusBar().showMessage(
-                "Ready — RWD read-only mode; DBF will not send hardware commands"
-            )
+            self.source_mode_hint.setText(_RWD_MODE_HINT)
+            self.backend_badge.setText("RWD - not available")
+            self.statusBar().showMessage(f"RWD mode selected - {RWD_BACKEND_UNAVAILABLE}")
         else:
-            self.source_mode_hint.setText(
-                "Native mode uses the simulator now and the validated camera/controller "
-                "adapters when available."
-            )
+            self.source_mode_hint.setText(_CUSTOM_MODE_HINT)
             self.backend_badge.setText("Simulator")
-            self.preview_button.setVisible(True)
-            self._set_preview_status(
-                "Preview required - validate the current acquisition settings before recording",
-                "required",
-            )
             self.statusBar().showMessage(
-                "Ready — simulator mode; no physical camera or controller connected"
+                "Ready - simulator mode; no physical camera or controller connected"
             )
+        self.preview_button.setEnabled(self._thread is None and not is_rwd)
         self.backend_badge.setProperty("hardware", False)
         self.backend_badge.style().unpolish(self.backend_badge)
         self.backend_badge.style().polish(self.backend_badge)
@@ -856,16 +719,6 @@ class MainWindow(QMainWindow):
         self._trace_roi_count = len(rois)
         self._curves.clear()
         display_mode = self.trace_mode_combo.currentData()
-        source = (
-            self._active_config.source
-            if self._active_config is not None
-            else self._session_template.source
-        )
-        rwd_mapping_by_fiber = (
-            {mapping.fiber_id: mapping for mapping in source.channel_mappings}
-            if isinstance(source, RWDSourceConfig)
-            else {}
-        )
         for row, roi in enumerate(rois):
             view_box = TraceViewBox()
             view_box.range_selected.connect(self._on_trace_range_selected)
@@ -874,23 +727,13 @@ class MainWindow(QMainWindow):
                 lambda mask, index=row: self._on_trace_range_changed_manually(index, mask)
             )
             plot = self.trace_workspace.addPlot(row=row, col=0, viewBox=view_box)
-            mapping = rwd_mapping_by_fiber.get(roi.fiber_id)
             title = f"ROI {row + 1} - {roi.label} / {roi.animal_id}"
-            if mapping is not None:
-                title = (
-                    f"Fiber {row + 1} - {roi.label} / {roi.animal_id} · "
-                    f"RWD ch {mapping.device_channel}: {mapping.label}"
-                )
             plot.setTitle(title, color="#e8f7fa", size="10pt")
             plot.showGrid(x=True, y=True, alpha=0.22)
             if display_mode == "dff":
                 plot.setLabel("left", "dF/F", units="%")
             else:
-                plot.setLabel(
-                    "left",
-                    "Fluorescence",
-                    units="a.u." if self._is_rwd_mode() else "counts",
-                )
+                plot.setLabel("left", "Fluorescence", units="counts")
             if row == len(rois) - 1:
                 plot.setLabel("bottom", "Session time", units="s")
             if row == 0:
@@ -1157,13 +1000,10 @@ class MainWindow(QMainWindow):
         self._preview_signature = None
         self._pending_preview_signature = None
         if hasattr(self, "start_button"):
-            self.start_button.setEnabled(self._is_rwd_mode() and self._thread is None)
+            self.start_button.setEnabled(False)
         if hasattr(self, "preview_status") and self._thread is None:
             if self._is_rwd_mode():
-                self._set_preview_status(
-                    "RWD is read-only; Start opens one bounded recording connection",
-                    "passed",
-                )
+                self._set_preview_status(RWD_BACKEND_UNAVAILABLE, "required")
             else:
                 self._set_preview_status(
                     "Preview required - settings changed; run preview before recording",
@@ -1285,23 +1125,9 @@ class MainWindow(QMainWindow):
         self._session_template = config
         self._active_config = config
         source_blocker = QSignalBlocker(self.source_combo)
-        source_kind = "rwd" if isinstance(config.source, RWDSourceConfig) else "native"
+        source_kind = "rwd" if isinstance(config.source, RWDSourceConfig) else "custom"
         self.source_combo.setCurrentIndex(self.source_combo.findData(source_kind))
         del source_blocker
-        if isinstance(config.source, RWDSourceConfig):
-            source = config.source
-            self.rwd_host_edit.setText(source.host)
-            self.rwd_port_spin.setValue(source.port)
-            self.rwd_connect_timeout_spin.setValue(source.connect_timeout_s)
-            self.rwd_read_timeout_spin.setValue(source.read_timeout_s)
-            self.rwd_preamble_combo.setCurrentIndex(
-                self.rwd_preamble_combo.findData(source.preamble_mode.value)
-            )
-            self.rwd_machine_edit.setText(source.expected_machine_name or "")
-            self.rwd_record_rate_spin.setValue(source.maximum_expected_record_rate_hz)
-            enabled_rwd = set(source.enabled_wavelengths_nm)
-            for wavelength_nm, check in self.rwd_wavelength_checks.items():
-                check.setChecked(wavelength_nm in enabled_rwd)
         self.duration_spin.setValue(config.recording_duration_s)
         self.experimenter_edit.setText(config.experimenter)
         self.session_description_edit.setText(config.session_description)
@@ -1334,13 +1160,6 @@ class MainWindow(QMainWindow):
                     "subject_sex": roi.subject_sex,
                 }
             )
-        if isinstance(config.source, RWDSourceConfig):
-            mappings = {mapping.fiber_id: mapping for mapping in config.source.channel_mappings}
-            for editor, roi in zip(self._roi_metadata_editors, config.rois, strict=True):
-                mapping = mappings.get(roi.fiber_id)
-                if mapping is not None:
-                    editor.rwd_channel_spin.setValue(mapping.device_channel)
-                    editor.rwd_label_edit.setText(mapping.label)
         self._set_roi_items(config.rois, config.camera)
 
         display = config.display
@@ -1381,12 +1200,9 @@ class MainWindow(QMainWindow):
                 editor.brain_region_edit,
                 editor.sensor_type_edit,
                 editor.age_edit,
-                editor.rwd_label_edit,
             ):
                 edit.textChanged.connect(self._invalidate_preview)
             editor.sex_combo.currentIndexChanged.connect(self._invalidate_preview)
-            editor.rwd_channel_spin.valueChanged.connect(self._invalidate_preview)
-            editor.set_rwd_fields_visible(self._is_rwd_mode())
             suffix = "" if editor.enabled_check.isChecked() else " (off)"
             self.roi_metadata_tabs.addTab(editor, f"ROI {index + 1}{suffix}")
         self.roi_metadata_tabs.setCurrentIndex(max(0, selected))
@@ -1551,50 +1367,12 @@ class MainWindow(QMainWindow):
             dff_baseline_s=self.trace_baseline_spin.value(),
             smoothing_window_s=self.trace_smoothing_spin.value(),
         )
+        source: CustomSourceConfig | RWDSourceConfig
         if self._is_rwd_mode():
-            mappings = []
-            editor_by_fiber = {
-                roi.fiber_id: editor
-                for roi, editor in zip(rois, self._roi_metadata_editors, strict=True)
-            }
-            for roi in (roi for roi in rois if roi.enabled):
-                editor = editor_by_fiber[roi.fiber_id]
-                mappings.append(
-                    RWDChannelMapping(
-                        device_channel=editor.rwd_channel_spin.value(),
-                        fiber_id=roi.fiber_id,
-                        label=editor.rwd_label_edit.text().strip(),
-                    )
-                )
-            enabled_rwd_wavelengths = tuple(
-                wavelength_nm
-                for wavelength_nm, check in self.rwd_wavelength_checks.items()
-                if check.isChecked()
-            )
-            source = RWDSourceConfig(
-                host=self.rwd_host_edit.text().strip(),
-                port=self.rwd_port_spin.value(),
-                connect_timeout_s=self.rwd_connect_timeout_spin.value(),
-                read_timeout_s=self.rwd_read_timeout_spin.value(),
-                preamble_mode=RWDPreambleMode(self.rwd_preamble_combo.currentData()),
-                timestamp_scale_s=(
-                    self._session_template.source.timestamp_scale_s
-                    if isinstance(self._session_template.source, RWDSourceConfig)
-                    else 0.001
-                ),
-                value_scale=(
-                    self._session_template.source.value_scale
-                    if isinstance(self._session_template.source, RWDSourceConfig)
-                    else 0.001
-                ),
-                maximum_expected_record_rate_hz=self.rwd_record_rate_spin.value(),
-                enabled_wavelengths_nm=enabled_rwd_wavelengths,
-                channel_mappings=tuple(mappings),
-                expected_machine_name=self.rwd_machine_edit.text().strip() or None,
-            )
+            source = RWDSourceConfig()
             session_prefix = "rwd"
         else:
-            source = NativeSourceConfig()
+            source = CustomSourceConfig()
             session_prefix = "demo"
         started = datetime.now(UTC)
         payload = self._session_template.model_dump()
@@ -1626,16 +1404,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Invalid configuration", str(error))
             return
         if isinstance(config.source, RWDSourceConfig):
-            QMessageBox.information(
-                self,
-                "RWD is read-only",
-                "RWD mode records the exported stream directly and has no camera preview.",
-            )
+            QMessageBox.information(self, "RWD not available", RWD_BACKEND_UNAVAILABLE)
             return
         self.last_preview = None
         self.last_error = None
-        self._rwd_active_events.clear()
-        self.rwd_event_status.setText("Active RWD events: none")
         self._operation_kind = "preview"
         self._pending_preview_signature = self._configuration_signature(config)
         self._prepare_trace_curves(config)
@@ -1677,9 +1449,10 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(self, "Invalid configuration", str(error))
             return
-        if isinstance(config.source, NativeSourceConfig) and (
-            self._preview_signature != self._configuration_signature(config)
-        ):
+        if isinstance(config.source, RWDSourceConfig):
+            QMessageBox.information(self, "RWD not available", RWD_BACKEND_UNAVAILABLE)
+            return
+        if self._preview_signature != self._configuration_signature(config):
             self._invalidate_preview()
             QMessageBox.warning(
                 self,
@@ -1692,33 +1465,21 @@ class MainWindow(QMainWindow):
         self._operation_kind = "recording"
         self.last_result = None
         self.last_error = None
-        self._rwd_active_events.clear()
-        self.rwd_event_status.setText("Active RWD events: none")
         self.connection_diagnostics_label.setText(
             "Waiting for the first connection/source diagnostic"
         )
         self._prepare_trace_curves(config)
-        if isinstance(config.source, NativeSourceConfig):
-            self._prepare_wavelength_images(config)
+        self._prepare_wavelength_images(config)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("0%")
-        self.frame_counter.setText(
-            "0 RWD records" if isinstance(config.source, RWDSourceConfig) else "0 frames"
-        )
-        source_label = (
-            "RWD read-only stream" if isinstance(config.source, RWDSourceConfig) else "simulator"
-        )
-        self.live_status.setText(f"Arming {source_label}…")
+        self.frame_counter.setText("0 frames")
+        self.live_status.setText("Arming simulator...")
         self._set_preview_status(
-            (
-                "RWD read-only recording in progress"
-                if isinstance(config.source, RWDSourceConfig)
-                else "Preview passed for these settings - recording in progress"
-            ),
+            "Preview passed for these settings - recording in progress",
             "passed",
         )
-        self._set_system_status("STARTING…", "recording")
-        self.statusBar().showMessage(f"Arming {source_label}…")
+        self._set_system_status("STARTING...", "recording")
+        self.statusBar().showMessage("Arming simulator...")
 
         thread = QThread(self)
         worker = AcquisitionWorker(config, config.recording_duration_s)
@@ -1743,22 +1504,16 @@ class MainWindow(QMainWindow):
     def stop_recording(self) -> None:
         if self._worker is not None:
             operation = "preview" if self._operation_kind == "preview" else "recording"
-            unit = "record" if self._is_rwd_mode() else "frame"
-            self.live_status.setText(f"Stopping {operation} after the current {unit}...")
-            self.statusBar().showMessage(f"Stopping {operation} after the current {unit}...")
+            self.live_status.setText(f"Stopping {operation} after the current frame...")
+            self.statusBar().showMessage(f"Stopping {operation} after the current frame...")
             self.stop_button.setEnabled(False)
             self._worker.request_stop()
 
     def _prepare_trace_curves(self, config: SessionConfig) -> None:
         self._active_config = config
         self._configure_trace_plots(config.enabled_rois)
-        self._active_trace_wavelengths = (
-            tuple(config.source.enabled_wavelengths_nm)
-            if isinstance(config.source, RWDSourceConfig)
-            else tuple(int(channel.wavelength_nm) for channel in config.enabled_channels)
-        )
-        self._rwd_trace_projector = (
-            RWDLiveTraceProjector(config) if isinstance(config.source, RWDSourceConfig) else None
+        self._active_trace_wavelengths = tuple(
+            int(channel.wavelength_nm) for channel in config.enabled_channels
         )
         self._trace_roi_indices = {
             roi.fiber_id: index for index, roi in enumerate(config.enabled_rois)
@@ -1842,11 +1597,7 @@ class MainWindow(QMainWindow):
             if is_dff:
                 plot.setLabel("left", "dF/F", units="%")
             else:
-                plot.setLabel(
-                    "left",
-                    "Fluorescence",
-                    units="a.u." if self._is_rwd_mode() else "counts",
-                )
+                plot.setLabel("left", "Fluorescence", units="counts")
             plot.enableAutoRange(axis="y", enable=True)
         self._refresh_all_trace_curves()
 
@@ -2008,77 +1759,38 @@ class MainWindow(QMainWindow):
                 self._refresh_trace_wavelength(wavelength_nm)
                 self._last_trace_render_s[wavelength_nm] = latest
 
-    def _on_progress(self, progress: AcquisitionProgress | RWDAcquisitionProgress) -> None:
-        if isinstance(progress, RWDAcquisitionProgress):
-            if self._rwd_trace_projector is None:
-                raise RuntimeError("RWD progress arrived without a live trace projector")
-            points = self._rwd_trace_projector.project(progress.received)
-            self._append_live_trace_points(points)
-            elapsed_s = progress.received.host_received_s
-            fraction = min(1.0, elapsed_s / self._progress_duration_s)
-            self.frame_counter.setText(f"{progress.record_count:,} RWD records")
-            record_type = (
-                type(progress.received.record).__name__.removeprefix("RWD").removesuffix("Record")
-            )
-            self.live_status.setText(f"Recording RWD {record_type.lower()} data")
-            self.statusBar().showMessage(
-                f"RWD read-only recording - record {progress.record_count:,}"
-            )
-            client = progress.diagnostics.client
-            decoder = client.decoder
-            spool = progress.diagnostics.spool
-            connection = "connected" if client.connected else "disconnected"
-            self.connection_diagnostics_label.setText(
-                f"RWD {connection} · {decoder.bytes_received:,} bytes · "
-                f"{decoder.records_decoded:,} decoded · spool queue "
-                f"{spool.queue_depth}/{spool.queue_capacity} · "
-                f"{spool.committed_frames:,} committed"
-            )
-            record = progress.received.record
-            if isinstance(record, RWDEventRecord):
-                if record.active:
-                    self._rwd_active_events.add(record.event_name)
-                else:
-                    self._rwd_active_events.discard(record.event_name)
-                active_events = ", ".join(sorted(self._rwd_active_events)) or "none"
-                edge = "ON" if record.active else "OFF"
-                self.rwd_event_status.setText(
-                    f"Last RWD event: {record.event_name} {edge} · active: {active_events}"
-                )
-        else:
-            sample = progress.sample
-            wavelength = int(sample.wavelength_nm)
-            self.wavelength_image_items[sample.wavelength_nm].setImage(
+    def _on_progress(self, progress: AcquisitionProgress) -> None:
+        sample = progress.sample
+        wavelength = int(sample.wavelength_nm)
+        self.wavelength_image_items[sample.wavelength_nm].setImage(
+            progress.image,
+            autoLevels=False,
+            levels=(0, self._image_display_maximum),
+        )
+        self.wavelength_frame_labels[sample.wavelength_nm].setText(
+            f"Frame {progress.frame_count:,} · {sample.timestamp_s:.3f} s"
+        )
+        if self._active_config is None:
+            raise RuntimeError("camera progress arrived without an active configuration")
+        self._append_live_trace_points(camera_live_trace_points(self._active_config, progress))
+        if progress.frame_count == 1 or progress.frame_count % 5 == 0:
+            self._image_item.setImage(
                 progress.image,
                 autoLevels=False,
                 levels=(0, self._image_display_maximum),
             )
-            self.wavelength_frame_labels[sample.wavelength_nm].setText(
-                f"Frame {progress.frame_count:,} · {sample.timestamp_s:.3f} s"
+        fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
+        operation = "Preview" if self._operation_kind == "preview" else "Recording"
+        self.frame_counter.setText(f"{progress.frame_count:,} {operation.lower()} frames")
+        self.live_status.setText(f"{operation} - {wavelength} nm exposure")
+        self.statusBar().showMessage(f"{operation} - frame {progress.frame_count}, {wavelength} nm")
+        if progress.diagnostics is not None:
+            spool = progress.diagnostics.spool
+            self.connection_diagnostics_label.setText(
+                f"Spool queue {spool.queue_depth}/{spool.queue_capacity} · "
+                f"{spool.committed_frames:,} committed · "
+                f"{progress.diagnostics.dropped_frames:,} dropped"
             )
-            if self._active_config is None:
-                raise RuntimeError("native progress arrived without an active configuration")
-            self._append_live_trace_points(native_live_trace_points(self._active_config, progress))
-            if progress.frame_count == 1 or progress.frame_count % 5 == 0:
-                self._image_item.setImage(
-                    progress.image,
-                    autoLevels=False,
-                    levels=(0, self._image_display_maximum),
-                )
-            fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
-            operation = "Preview" if self._operation_kind == "preview" else "Recording"
-            self.frame_counter.setText(f"{progress.frame_count:,} {operation.lower()} frames")
-            self.live_status.setText(f"{operation} - {wavelength} nm exposure")
-            self.statusBar().showMessage(
-                f"{operation} - frame {progress.frame_count}, {wavelength} nm"
-            )
-            if progress.diagnostics is not None:
-                spool = progress.diagnostics.spool
-                self.connection_diagnostics_label.setText(
-                    f"Native spool queue {spool.queue_depth}/{spool.queue_capacity} · "
-                    f"{spool.committed_frames:,} committed · "
-                    f"{progress.diagnostics.dropped_frames:,} dropped"
-                )
         progress_value = round(fraction * 1000)
         self.progress_bar.setValue(progress_value)
         self.progress_bar.setFormat(f"{fraction:.0%}")
@@ -2144,30 +1856,17 @@ class MainWindow(QMainWindow):
         self.live_status.setText(message)
         self.statusBar().showMessage(message)
 
-    def _on_completed(
-        self,
-        result: AcquisitionRunResult | RWDAcquisitionRunResult,
-    ) -> None:
+    def _on_completed(self, result: AcquisitionRunResult) -> None:
         self.last_result = result
         self._refresh_all_trace_curves()
         self.progress_bar.setValue(1000)
         self.progress_bar.setFormat("100%")
         file_count = len(result.reports)
-        output_kind = "fiber" if isinstance(result, RWDAcquisitionRunResult) else "ROI"
-        self.live_status.setText(f"Saved and validated {file_count} {output_kind} NWB files")
-        if isinstance(result, RWDAcquisitionRunResult):
-            self._set_preview_status(
-                "RWD is read-only; Start opens a new bounded recording connection",
-                "passed",
-            )
-        else:
-            self._set_preview_status(
-                "Preview required before the next recording",
-                "required",
-            )
+        self.live_status.setText(f"Saved and validated {file_count} ROI NWB files")
+        self._set_preview_status("Preview required before the next recording", "required")
         self._set_system_status("COMPLETE", "complete")
         self.statusBar().showMessage(
-            f"Saved {file_count} validated {output_kind} NWB files in {result.report.path.parent}"
+            f"Saved {file_count} validated ROI NWB files in {result.report.path.parent}"
         )
 
     def _on_failed(self, traceback_text: str) -> None:
@@ -2193,7 +1892,7 @@ class MainWindow(QMainWindow):
     def _set_busy_controls(self, busy: bool) -> None:
         self.preview_button.setEnabled(not busy and not self._is_rwd_mode())
         self.start_button.setEnabled(
-            not busy and (self._is_rwd_mode() or self._preview_signature is not None)
+            not busy and not self._is_rwd_mode() and self._preview_signature is not None
         )
         self.stop_button.setEnabled(busy)
         for widget in self._settings_widgets:

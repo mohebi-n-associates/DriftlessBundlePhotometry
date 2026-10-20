@@ -6,11 +6,34 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-### Fixed
+### Added
 
-- Stopping an RWD TCP acquisition while the client is still connecting now exits
-  cleanly instead of surfacing a connect-failure fault, removing a Windows CI race
-  in the idle-stop path.
+- Started the RWD direct-control track, which will let DBF drive the RWD controller
+  and cameras without RWD's software. Added a codec for the recovered controller serial
+  protocol whose frames match those produced by RWD's own encoder, and
+  `--decode-rwd-usb-capture` (with optional `--rwd-usb-csv`) to decode USBPcap
+  captures of RWD software sessions. The track also adds a design record and a
+  bench-capture procedure. Nothing in this release sends commands to RWD hardware, and
+  the protocol is not yet validated against a physical controller.
+
+### Changed
+
+- Setup now offers exactly two acquisition systems: **Custom** (DBF's own camera and
+  timing controller, simulator-backed today) and **RWD** (direct control of RWD
+  hardware). RWD mode can be configured and saved, shows its development status, and
+  keeps preview and recording disabled until its controller and camera backend exists.
+- Settings files are now format v3 with source kinds `custom` and `rwd`. Settings v1
+  files and v2 `native` sources migrate to Custom. v2 RWD TCP-bridge sources migrate to
+  RWD mode with a warning naming every dropped connection field. The same migration
+  applies to settings embedded in earlier NWB recordings.
+
+### Removed
+
+- Removed the read-only bridge to RWD's exported TCP stream, including `--rwd-settings`,
+  `--rwd-wire-capture`, `--rwd-replay`, `--inspect-rwd-capture`, the trace-only RWD
+  spool and NWB writer, and the RWD TCP GUI fields. It had only synthetic validation
+  and is superseded by RWD direct control. `--inspect-spools` lists any `*.rwd-spool`
+  as unsupported and `--recover-spool` refuses it; recover such spools with DBF 0.2.1.
 
 ## 0.2.1 - 2026-09-02
 

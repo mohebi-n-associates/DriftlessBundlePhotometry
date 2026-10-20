@@ -36,76 +36,37 @@ The controller provides sequence identity and deterministic timing. The acquisit
 coordinator verifies rather than invents wavelength assignments. The simulator uses
 the same contracts.
 
-Session settings use a discriminated acquisition source. `native` selects the
-camera/controller/simulator contracts in this document. `rwd` is a read-only TCP
-trace source with separately validated connection assumptions and device-channel
-mappings. RWD never enters the native camera-exposure path and never fabricates
-camera frames, ROI geometry, LED commands, or numbered TTL lines. Its evidence and
-unknowns are specified in [the RWD streaming contract](rwd-streaming-protocol.md).
-The pure RWD decoder consumes a byte stream rather than socket-read packets, yields
-valid records in order before surfacing a later malformed record, and then remains in
-a failed state. It never scans ahead after an error because the vendor format has no
-documented synchronization marker.
+Session settings use a discriminated acquisition system. `custom` selects DBF's own
+camera/controller contracts in this document and their simulator. `rwd` selects RWD
+photometry hardware driven directly by DBF, as described in
+[the RWD direct-control design record](rwd-direct-control.md). Both systems produce
+camera frames, so both are validated against camera ROI bounds and enabled excitation
+channels, and both will feed the same frame, ROI, spool, and NWB path. Until the RWD
+backend exists, preview, acquisition, spool, and NWB services accept only `custom` and
+reject `rwd` before creating output, and the GUI explains why rather than simulating.
 
-The RWD persistence path is intentionally separate from native frame acquisition:
+The RWD backend will work under a scoped, documented exception to the wavelength
+rule above: the RWD controller reports no per-exposure records, so identity will be
+phase-derived from the sequencer restart and checked by hardware frame-ID/timestamp
+gap detection. Only the RWD controller codec and the offline USB-capture decoder exist
+so far. Controller frames are flag-delimited and CRC-checked, so the codec reports each
+malformed frame and resumes at the next flag.
 
-```text
-RWD TCP bytes -> incremental decoder -> typed mixed records -> bounded RWD spool
-                                                           -> tick normalization
-                                                           -> per-fiber trace-only NWBs
-                                                              -> validate/reopen/promote
-```
-
-The spool retains raw records and connection provenance before normalization. Its
-finalizer copies shared stream/event/fault context into every mapped animal file,
-while fluorescence tables and response series contain only that file's mapped device
-channel. It stores raw uint32 ticks/values beside scaled series and never creates
-camera, stimulus, exposure, or numbered-TTL data that the source did not provide.
-The headless RWD coordinator owns the socket and decoder on its run thread and feeds
-the bounded single-writer spool directly, so there is no unbounded intermediate
-queue. Another thread may request stop; short socket polls make an idle stop prompt,
-while a partially received record gets a bounded drain window and then becomes an
-explicit truncation fault. One connection always defines one session. Disconnects
-are terminal and never trigger an automatic reconnect or silent session join.
-
-Native and RWD progress are projected into immutable live points with four fields:
+Camera ROI samples are projected into immutable live points with four fields:
 session-relative display time, stable `fiber_id`, exact source wavelength, and raw
-source-level value (native camera ROI count or configured-scaled RWD value). The GUI
-keeps one timestamp/value buffer per fiber and wavelength; it therefore does not
-assume synchronous vectors or native 405/470/565 identities. This adapter is
-presentation-only. Native acquisition records and RWD wire records continue directly
-to their separate canonical spools without passing through the display projection.
+camera ROI value. The GUI keeps one timestamp/value buffer per fiber and wavelength.
+This adapter is presentation-only. Acquisition records continue directly to the
+canonical spool without passing through the display projection.
 
-The desktop source selector is part of the persisted settings workflow. Native mode
-shows camera ROI, excitation-voltage, raw-frame, and wavelength-image controls and
-retains its mandatory preview. RWD mode shows read-only connection fields and
-fiber/subject metadata, hides unsupported native hardware controls, and starts the
-RWD coordinator directly because it cannot perform a camera/LED preflight.
+The desktop system selector is part of the persisted settings workflow. Both systems
+show camera ROI, excitation-voltage, raw-frame, and wavelength-image controls. Custom
+mode retains its mandatory preview. RWD mode adds a direct-control status panel and
+keeps preview and recording disabled. Live smoothing is an elapsed-time trailing mean
+applied after horizon selection and before optional dF/F display conversion; it
+operates only on bounded GUI buffers.
 
-Each enabled RWD fiber exposes an explicit vendor device-channel byte and a separate
-operator-facing channel label. Device-channel uniqueness is a configuration
-invariant; stable `fiber_id` remains the scientific identity and the label is copied
-into that fiber's NWB photometry metadata. Imported mappings restore these fields
-exactly instead of being reassigned by row order.
-
-Connection/decoder counters, spool pressure, committed-record counts, and named RWD
-event state cross the worker boundary as presentation diagnostics. Live smoothing is
-an elapsed-time trailing mean applied after horizon selection and before optional
-dF/F display conversion. These transformations operate only on bounded GUI buffers;
-the raw source records continue unchanged to the recovery spool and NWB finalizer.
-
-Physical protocol characterization uses a separate exact-wire evidence path:
-
-```text
-TCP recv chunk -> production decoder -> RWD recovery/NWB path
-              \-> checksummed *.rwd-wire capture -> unpaced production-decoder replay
-```
-
-The capture retains each socket chunk and host receipt time, a parsing/remapping
-contract, runtime provenance, resolved stream identity, terminal outcome, per-chunk
-checksums, and a whole-stream digest. It is not a canonical scientific artifact and
-never replaces the trace spool or per-fiber NWBs. Completed captures are atomically
-promoted; incomplete `.partial` captures are retained but rejected for replay.
+The read-only bridge to RWD's exported TCP stream, with its trace-only spool and NWB
+writer, existed in 0.2.0–0.2.1 and was removed in favor of direct control.
 
 ## Initial delivery gates
 
