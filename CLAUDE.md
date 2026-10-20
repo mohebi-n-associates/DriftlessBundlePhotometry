@@ -10,6 +10,15 @@ The supported hardware target is Windows. macOS must support the simulator,
 replay, NWB writing/reading, analysis, and GUI demo; physical camera operation on
 macOS is best-effort only.
 
+DBF supports exactly two acquisition systems, selected first in setup and persisted
+as the settings `source.kind`:
+
+- **Custom** (`custom`): DBF's own camera and timing controller, plus the simulator
+  that stands in for them.
+- **RWD** (`rwd`): RWD Life Science multichannel photometry hardware, driven directly
+  by DBF through the RWD controller's serial protocol and the vendor cameras, with no
+  RWD software in the loop. Its design record is `docs/rwd-direct-control.md`.
+
 The MATLAB applications, Arduino firmware, Bonsai files, and manual are historical
 design evidence. They are not specifications to port verbatim.
 
@@ -19,7 +28,9 @@ design evidence. They are not specifications to port verbatim.
 - Camera imagery is used for calibration, focus, ROI placement, and diagnostics.
 - Support 1–9 circular fiber ROIs with stable IDs, labels, positions, and radii.
   Each ROI maps to one animal/subject and one independently valid NWB file.
-- Support up to three configured excitation wavelengths: 405, 470, and 565 nm.
+- Support up to three configured excitation wavelengths: 405, 470, and 565 nm on the
+  Custom system, and exactly 410, 470, and 560 nm on RWD hardware. Never relabel one
+  set as the other.
 - Normal acquisition interleaves exactly one excitation wavelength per exposure.
   Do not combine wavelengths in one monochrome exposure unless a future hardware
   design provides a validated unmixing mechanism.
@@ -32,6 +43,12 @@ design evidence. They are not specifications to port verbatim.
 - Support four behavior TTL inputs and retain both rising and falling edges.
 - Never infer wavelength solely from frame parity/modulo. Persist an explicit
   controller sequence and excitation identity for every camera exposure.
+  Scoped exception, approved 2026-10-20: the RWD controller reports no per-exposure
+  records, so the RWD system may derive identity from sequence phase after a
+  sequencer restart, but only together with camera identity, hardware frame-ID and
+  timestamp gap detection that invalidates the span and requires a resync, and
+  per-exposure provenance marking the identity as phase-derived. The exception
+  applies to no other system.
 - Preserve raw data. Corrections, fitted controls, dF/F, z-scores, and QC outputs
   are separate derived datasets.
 - Live Absolute/dF/F views and per-wavelength visibility are presentation state.
@@ -55,6 +72,14 @@ timing characterization. Prefer true DAC outputs (or a validated external DAC) f
 Every hardware command protocol must be versioned and include explicit HELLO/READY,
 configuration acknowledgement, ARM/START/STOP, error reporting, and safe LED-off
 behavior on disconnect or watchdog timeout.
+
+The RWD controller is its own timing master with a fixed vendor protocol that DBF
+cannot version. DBF maps its handshake, acknowledgements, sequencer enable, and
+heartbeat onto this lifecycle. Its LED state after host loss is uncharacterized and
+must be treated as unsafe until bench-measured. Never send its LED-calibration,
+model, restore-defaults, or firmware-upgrade commands; the codec refuses them. Never
+interact with, emulate, or circumvent the RWD software's licence dongle; DBF does not
+need it.
 
 ## Canonical data contract
 
@@ -102,6 +127,9 @@ file set passes validation. Never label an unvalidated partial file as complete.
 - `roi`: circular masks, hardware crop calculation, and signal extraction.
 - `hardware.camera`: camera interface; simulator and Thorlabs implementations.
 - `hardware.controller`: controller interface, protocol, and serial implementation.
+- `hardware.rwd_controller_protocol` and `hardware.rwd_usb_capture`: the RWD
+  controller codec and the offline decoder for USB captures of RWD software sessions.
+  Neither may touch hardware.
 - `acquisition`: explicit state machine and coordination; no GUI dependencies.
 - `storage`: append-safe spool/recovery and NWB finalization/validation.
 - `gui`: PySide6/pyqtgraph presentation; communicates with workers through signals.
@@ -153,6 +181,10 @@ or electrical validation without the physical hardware and measurements.
   `docs/thorlabs-camera-python-api.md`; it records the vendor API lifecycle, DBF
   integration decisions, and the boundary between documented behavior and required
   CS505MU bench validation.
+- Before RWD controller or camera work, read `docs/rwd-direct-control.md`. Keep its
+  confidence column honest: code-derived is not bench-confirmed.
+- Never commit RWD binaries, decompiled RWD code, licence keys, or USB captures.
+  Describe recovered behavior in prose and tables instead.
 - Do not edit generated/vendor/legacy files unless the task explicitly targets them.
 - Do not commit recordings, build outputs, virtual environments, or secrets.
 - Keep `WHATS_NEW.md` current for every user-visible change. Record work under
@@ -173,6 +205,7 @@ python -m venv .venv
 .venv/bin/python -m ruff check .
 .venv/bin/python -m ruff format --check .
 .venv/bin/python -m driftless_photometry --demo
+.venv/bin/python -m driftless_photometry --decode-rwd-usb-capture capture.pcapng
 ```
 
 On Windows, replace `.venv/bin/python` with `.venv\Scripts\python.exe`.

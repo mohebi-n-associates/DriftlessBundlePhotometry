@@ -49,8 +49,10 @@ target; the simulator and GUI demo are cross-platform.
 - Clean numeric entry fields without embedded increment/decrement stepper buttons.
 - Versioned, human-readable JSON settings with GUI actions to save, load, set startup
   defaults, and restore the complete setup from a previous DBF NWB recording.
-- Settings v2 discriminate the native camera/controller source from the planned RWD
-  read-only bridge and migrate v1 files explicitly to native with a visible warning.
+- Two acquisition systems, chosen first in setup and persisted in settings v3:
+  **Custom** (DBF's own camera and timing controller, simulator-backed today) and
+  **RWD** (direct control of RWD photometry hardware, not yet able to record). Settings
+  v1 and v2 files migrate explicitly with a visible warning.
 - A raw uint16 reference frame and fixed-scale ROI-annotated diagnostic view for
   every wavelength observed in a recording are saved inside each ROI NWB file.
 - Versioned/checksummed controller protocol, fail-safe lifecycle guard, and
@@ -62,26 +64,15 @@ LED intensity electronics are not yet physically validated. Those require the re
 Windows rig, vendor SDK, trigger cabling, DAC/driver hardware, and bench timing and
 safety measurements. Simulator success is not evidence of physical validation.
 
-The RWD bridge currently has a documented wire contract, validated source settings,
-typed raw domain records, a fixture-tested incremental fluorescence/event parser,
-and a synthetic-data trace-only recovery/NWB path. The RWD spool retains checksummed
-mixed records, exact raw ticks/values and scales, named ON/OFF events, connection
-identity, faults, and invalid spans. Recovery creates one independently validated NWB
-per mapped fiber without inventing camera frames, LED commands, native exposures, or
-numbered TTL inputs. A headless single-owner TCP client now provides bounded
-recording, timeout/disconnect/malformed-stream faults, prompt stop, storage preflight,
-and machine-readable CLI output. The GUI workflow is still being implemented, and
-the desktop setup now begins with a native/simulator or RWD read-only system choice,
-hides camera/LED controls in RWD mode, retains per-fiber animal metadata, and routes
-both sources through the same bounded live-trace presentation contract. Every RWD
-fiber has an explicit device-channel number and an independent operator label. Live
-status reports connection state, decoder counts, spool pressure, committed records,
-and named event activity; raw, elapsed-time-smoothed, and dF/F views remain
-presentation-only.
-The TCP path has only synthetic local-server validation; current builds must not be
-described as a physically validated RWD connection. See
-[the RWD streaming contract](docs/rwd-streaming-protocol.md) and
-[the RWD operator and bench-validation guide](docs/rwd-operator-guide.md).
+RWD mode will let DBF drive an RWD controller board and its photometry cameras
+directly, without RWD's software. Its first step is in place: a codec for the RWD
+controller's serial protocol, checked against frames produced by RWD's own encoder, and
+an offline decoder for USB captures of RWD software sessions
+(`dbf --decode-rwd-usb-capture`). RWD mode can be configured but cannot preview or
+record, and nothing sends commands to RWD hardware yet. See
+[the design record](docs/rwd-direct-control.md) and
+[the bench-capture procedure](docs/rwd-direct-bench-capture.md). The earlier read-only
+bridge to RWD's TCP data stream was removed after 0.2.1.
 
 The historical MATLAB, Arduino, and Bonsai sources remain under `old mescoscope/`
 for reference and are not runtime dependencies.
@@ -90,11 +81,12 @@ for reference and are not runtime dependencies.
 
 The Configuration panel provides **Save JSON**, **Load JSON**, **Load NWB**, and
 **Set as default**. A settings file includes all session metadata, recording duration,
-output location, native/RWD source selection, source-specific connection settings,
-camera and retention settings, excitation states and voltages, TTL configuration,
-live-display preferences, and every fiber's animal metadata. Settings v1 files are
-accepted only through an explicit migration to the native source because they
-predate system selection.
+output location, Custom/RWD system selection, camera and retention settings,
+excitation states and voltages, TTL configuration, live-display preferences, and every
+fiber's animal metadata. Settings v1 files migrate to the Custom system because they
+predate system selection. Settings v2 files migrate with a warning: their `native`
+source becomes Custom, and their RWD TCP-bridge source becomes RWD with every dropped
+connection field named.
 
 On Windows, DBF resolves the same Documents folder used by Explorer, including
 OneDrive or other redirected locations, and uses its `Driftless Bundle Photometry`
@@ -127,8 +119,8 @@ application dependencies; it does not require Conda or a separate Python install
 The installer is per-user, supports clean uninstall through Windows Settings, and
 does not require administrator access. Current installers are not code-signed, so
 Windows SmartScreen may show an unrecognized-publisher warning. The application can
-run the simulator and RWD read-only path, but the physical Thorlabs/controller path
-must not be treated as validated until the documented Windows bench gates pass.
+run the simulator, but the physical Thorlabs/controller path must not be treated as
+validated until the documented Windows bench gates pass.
 
 ### Conda environment for developers
 
@@ -173,32 +165,13 @@ Run a headless simulated acquisition:
 dbf --headless --duration 5 --raw
 ```
 
-Run the headless read-only RWD bridge from a validated settings-v2 file:
+Decode the RWD controller traffic in a USB capture of an RWD software session:
 
 ```bash
-dbf --rwd-settings path/to/rwd.settings.json --duration 60
+dbf --decode-rwd-usb-capture path/to/session.pcapng --rwd-usb-csv path/to/session.csv
 ```
 
-RWD must already be recording and listening on the host/port stored in that file.
-DBF does not send hardware commands. It makes one connection for one session and
-never reconnects automatically after a fault, because joining records across TCP
-connections could hide a gap or changed device state.
-
-Capture a checksummed exact-wire artifact during a physical bench run, inspect it,
-and replay it unpaced through the production parser/recovery/NWB path:
-
-```bash
-dbf --rwd-settings path/to/rwd.settings.json --duration 300 \
-    --rwd-wire-capture path/to/bench-001.rwd-wire
-dbf --inspect-rwd-capture path/to/bench-001.rwd-wire
-dbf --rwd-settings path/to/replay.settings.json \
-    --rwd-replay path/to/bench-001.rwd-wire
-```
-
-Replay settings must preserve the capture's parsing scales, wavelengths, expected
-machine, and channel/fiber mappings, but should use a new session ID and empty output
-directory. Exact-wire captures can contain experimental data and must not be
-committed to the repository.
+Captures can contain experimental data and must not be committed to the repository.
 
 Run the GUI demo:
 
@@ -210,7 +183,6 @@ Recover all committed data from a complete or interrupted spool:
 
 ```bash
 dbf --recover-spool path/to/session.photometry-spool
-dbf --recover-spool path/to/session.rwd-spool
 ```
 
 Inspect direct child spools without creating or removing files:
@@ -219,9 +191,10 @@ Inspect direct child spools without creating or removing files:
 dbf --inspect-spools path/to/output-directory
 ```
 
-Inspection recognizes native `*.photometry-spool` and RWD `*.rwd-spool` children,
-verifies checksums, and reports source-specific counts plus completeness, invalid
-times, system events, schema, and output-file count. It deliberately does not recurse
+Inspection recognizes `*.photometry-spool` children, verifies checksums, and reports
+counts plus completeness, invalid times, system events, schema, and output-file count.
+Spools from the removed RWD TCP bridge (`*.rwd-spool`) are listed as unsupported and
+must be recovered with DBF 0.2.1. It deliberately does not recurse
 into unrelated directories. Successful recovery validates the complete
 NWB set before removing the spool; add `--keep-spool` for forensic retention.
 Recovery is idempotent and can resume if a process stopped after validating partials

@@ -4,8 +4,7 @@ from pathlib import Path
 import pytest
 
 from driftless_photometry.config import (
-    NativeSourceConfig,
-    RWDChannelMapping,
+    CustomSourceConfig,
     RWDSourceConfig,
     SessionConfig,
     TraceDisplayConfig,
@@ -15,6 +14,7 @@ from driftless_photometry.config import (
 from driftless_photometry.settings import (
     SETTINGS_FORMAT,
     SETTINGS_FORMAT_V1,
+    SETTINGS_FORMAT_V2,
     default_settings_path,
     export_settings,
     import_settings,
@@ -55,7 +55,8 @@ def test_complete_json_settings_round_trip(tmp_path: Path) -> None:
     assert document["settings"]["rois"][1]["enabled"] is False
     assert document["settings"]["camera"]["raw_capture"] is True
     assert document["settings"]["display"]["mode"] == "dff"
-    assert document["settings"]["source"] == {"kind": "native"}
+    assert document["format"] == "driftless_bundle_photometry_settings_v3"
+    assert document["settings"]["source"] == {"kind": "custom"}
 
 
 def test_settings_import_rejects_unknown_format(tmp_path: Path) -> None:
@@ -77,7 +78,7 @@ def test_default_settings_live_in_operator_settings_root(tmp_path: Path) -> None
     assert load_default_settings() == config
 
 
-def test_v1_settings_migrate_explicitly_to_native_source(tmp_path: Path) -> None:
+def test_v1_settings_migrate_explicitly_to_custom_source(tmp_path: Path) -> None:
     original = demo_config(tmp_path / "recordings", fiber_count=1)
     legacy_settings = original.model_dump(mode="json")
     legacy_settings.pop("source")
@@ -90,28 +91,65 @@ def test_v1_settings_migrate_explicitly_to_native_source(tmp_path: Path) -> None
     restored, warnings = import_settings_with_warnings(path)
 
     assert restored == original
-    assert restored.source == NativeSourceConfig()
+    assert restored.source == CustomSourceConfig()
     assert len(warnings) == 1
     assert "migrated explicitly" in warnings[0]
     with pytest.warns(UserWarning, match="migrated explicitly"):
         assert import_settings(path) == original
 
 
-def test_settings_v2_round_trips_rwd_source_without_native_inference(tmp_path: Path) -> None:
-    base = demo_config(tmp_path / "recordings", fiber_count=1)
-    source = RWDSourceConfig(
-        host="192.168.65.9",
-        port=8080,
-        expected_machine_name="ABCD",
-        channel_mappings=(
-            RWDChannelMapping(device_channel=4, fiber_id="fiber_01", label="Cohort A"),
-        ),
+def _write_v2(path: Path, config: SessionConfig, source: dict[str, object]) -> Path:
+    settings = config.model_dump(mode="json")
+    settings["source"] = source
+    path.write_text(
+        json.dumps({"format": SETTINGS_FORMAT_V2, "settings": settings}), encoding="utf-8"
     )
-    original = base.model_copy(update={"source": source})
+    return path
+
+
+def test_v2_native_settings_migrate_to_custom_source(tmp_path: Path) -> None:
+    original = demo_config(tmp_path / "recordings", fiber_count=1)
+    path = _write_v2(tmp_path / "native-v2.json", original, {"kind": "native"})
+
+    restored, warnings = import_settings_with_warnings(path)
+
+    assert restored == original
+    assert len(warnings) == 1
+    assert "native source is now the custom" in warnings[0]
+
+
+def test_v2_rwd_tcp_settings_keep_session_and_name_dropped_fields(tmp_path: Path) -> None:
+    original = demo_config(tmp_path / "recordings", fiber_count=2)
+    tcp_source = {
+        "kind": "rwd",
+        "host": "192.168.65.9",
+        "port": 8080,
+        "channel_mappings": [{"device_channel": 4, "fiber_id": "fiber_01", "label": "A"}],
+    }
+    path = _write_v2(tmp_path / "rwd-v2.json", original, tcp_source)
+
+    restored, warnings = import_settings_with_warnings(path)
+
+    assert restored == original.model_copy(update={"source": RWDSourceConfig()})
+    assert len(warnings) == 1
+    assert "removed RWD read-only TCP bridge" in warnings[0]
+    assert "dropped: channel_mappings, host, port" in warnings[0]
+
+
+def test_v2_settings_require_a_known_source(tmp_path: Path) -> None:
+    original = demo_config(tmp_path / "recordings", fiber_count=1)
+    path = _write_v2(tmp_path / "unknown-v2.json", original, {"kind": "other"})
+
+    with pytest.raises(ValueError, match="without a native or rwd source"):
+        import_settings(path)
+
+
+def test_v3_rwd_settings_round_trip_without_warnings(tmp_path: Path) -> None:
+    base = demo_config(tmp_path / "recordings", fiber_count=1)
+    original = base.model_copy(update={"source": RWDSourceConfig()})
 
     written = export_settings(tmp_path / "rwd.settings.json", original)
     restored, warnings = import_settings_with_warnings(written)
 
     assert restored == original
     assert warnings == []
-    assert isinstance(restored.source, RWDSourceConfig)

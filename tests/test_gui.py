@@ -9,8 +9,6 @@ from PySide6.QtWidgets import QAbstractSpinBox
 
 from driftless_photometry import __version__
 from driftless_photometry.config import (
-    RWDChannelMapping,
-    RWDPreambleMode,
     RWDSourceConfig,
     SessionConfig,
     TraceDisplayConfig,
@@ -20,24 +18,9 @@ from driftless_photometry.config import (
 from driftless_photometry.diagnostics import (
     FinalizationProgress,
     FinalizationStage,
-    SpoolDiagnostics,
 )
 from driftless_photometry.gui.main_window import MainWindow
-from driftless_photometry.gui.worker import AcquisitionWorker
-from driftless_photometry.rwd import (
-    RWDDecoderDiagnostics,
-    RWDEventRecord,
-    RWDFluorescenceRecord,
-    RWDFluorescenceSample,
-    RWDReceivedRecord,
-    RWDWavelength,
-)
-from driftless_photometry.rwd.acquisition import (
-    RWDAcquisitionDiagnostics,
-    RWDAcquisitionEngine,
-    RWDAcquisitionProgress,
-)
-from driftless_photometry.rwd.client import RWDClientDiagnostics
+from driftless_photometry.gui.worker import AcquisitionWorker, PreviewWorker
 from driftless_photometry.settings import save_default_settings
 
 
@@ -182,168 +165,60 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert "QScrollBar::handle:vertical" in window.styleSheet()
 
 
-def test_gui_source_selector_hides_inapplicable_native_hardware_controls(
-    qtbot,
-    tmp_path: Path,
-) -> None:
+def test_gui_offers_only_custom_and_rwd_systems(qtbot, tmp_path: Path) -> None:
     window = MainWindow(output_directory=tmp_path, default_fibers=2)
     qtbot.addWidget(window)
     window.show()
 
-    assert window.source_combo.currentData() == "native"
-    assert window.native_channels_group.isVisible()
-    assert not window.rwd_connection_group.isVisible()
-    assert not window.camera_calibration_group.isHidden()
-    assert window.tabs.isTabVisible(2)
-    assert window.preview_button.isVisible()
+    systems = [window.source_combo.itemData(i) for i in range(window.source_combo.count())]
+    assert systems == ["custom", "rwd"]
+    assert window.source_combo.currentData() == "custom"
+    assert not window.rwd_group.isVisible()
+    assert window.preview_button.isEnabled()
     assert not window.start_button.isEnabled()
 
     window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
 
-    assert not window.native_channels_group.isVisible()
-    assert not window.native_retention_group.isVisible()
-    assert window.rwd_connection_group.isVisible()
-    assert window.camera_calibration_group.isHidden()
-    assert window.tabs.tabText(1) == "Fibers & subjects"
-    assert not window.tabs.isTabVisible(2)
-    assert not window.preview_button.isVisible()
-    assert window.start_button.isEnabled()
-    assert window.backend_badge.text() == "RWD read-only"
-    assert set(window._active_trace_wavelengths) == {410, 470, 560}
+    assert window.rwd_group.isVisible()
+    assert window.backend_badge.text() == "RWD - not available"
+    assert not window.preview_button.isEnabled()
+    assert not window.start_button.isEnabled()
+    assert "not implemented" in window.preview_status.text()
+    assert window.tabs.isTabVisible(2)
+    assert not window.camera_calibration_group.isHidden()
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+
+    assert not window.rwd_group.isVisible()
+    assert window.preview_button.isEnabled()
+    assert window.backend_badge.text() == "Simulator"
 
 
-def test_gui_builds_and_restores_complete_rwd_source_settings(qtbot, tmp_path: Path) -> None:
+def test_gui_round_trips_rwd_source_and_refuses_to_acquire(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
     window = MainWindow(output_directory=tmp_path, default_fibers=2)
     qtbot.addWidget(window)
-    base = demo_config(tmp_path, fiber_count=2)
-    source = RWDSourceConfig(
-        host="192.168.1.50",
-        port=4567,
-        connect_timeout_s=2.5,
-        read_timeout_s=4.5,
-        preamble_mode=RWDPreambleMode.MACHINE_NAME_4,
-        timestamp_scale_s=0.002,
-        value_scale=0.004,
-        maximum_expected_record_rate_hz=321,
-        enabled_wavelengths_nm=(410, 560),
-        channel_mappings=(
-            RWDChannelMapping(device_channel=7, fiber_id="fiber_01", label="A"),
-            RWDChannelMapping(device_channel=9, fiber_id="fiber_02", label="B"),
-        ),
-        expected_machine_name="RWD1",
-    )
-    expected = base.model_copy(
-        update={
-            "source": source,
-            "display": TraceDisplayConfig(
-                visible_wavelengths=(410, 560),
-                mode="absolute",
-                smoothing_window_s=0.5,
-            ),
-        }
+    expected = demo_config(tmp_path, fiber_count=2).model_copy(update={"source": RWDSourceConfig()})
+    notices: list[str] = []
+    monkeypatch.setattr(
+        "driftless_photometry.gui.main_window.QMessageBox.information",
+        lambda _parent, _title, text: notices.append(text),
     )
 
     window._apply_configuration(expected)
     restored = window._build_config()
 
-    assert isinstance(restored.source, RWDSourceConfig)
-    assert restored.source.host == "192.168.1.50"
-    assert restored.source.port == 4567
-    assert restored.source.preamble_mode is RWDPreambleMode.MACHINE_NAME_4
-    assert restored.source.timestamp_scale_s == 0.002
-    assert restored.source.value_scale == 0.004
-    assert restored.source.maximum_expected_record_rate_hz == 321
-    assert restored.source.enabled_wavelengths_nm == (410, 560)
-    assert [mapping.device_channel for mapping in restored.source.channel_mappings] == [7, 9]
-    assert [mapping.label for mapping in restored.source.channel_mappings] == ["A", "B"]
-    assert restored.display.visible_wavelengths == (410, 560)
-    assert restored.display.smoothing_window_s == 0.5
-    assert window._roi_metadata_editors[0].rwd_channel_spin.value() == 7
-    assert window._roi_metadata_editors[1].rwd_label_edit.text() == "B"
+    assert restored.source == RWDSourceConfig()
     assert window.source_combo.currentData() == "rwd"
-    assert isinstance(AcquisitionWorker(restored, 1)._engine, RWDAcquisitionEngine)
-
-    window._roi_metadata_editors[1].rwd_channel_spin.setValue(7)
-    with pytest.raises(ValueError, match="device channel mappings must be unique"):
-        window._build_config()
-
-
-def test_gui_projects_rwd_progress_into_exact_device_wavelength_curve(
-    qtbot,
-    tmp_path: Path,
-) -> None:
-    window = MainWindow(output_directory=tmp_path, default_fibers=1)
-    qtbot.addWidget(window)
-    base = demo_config(tmp_path, fiber_count=1)
-    config = base.model_copy(
-        update={
-            "source": RWDSourceConfig(
-                channel_mappings=(
-                    RWDChannelMapping(device_channel=3, fiber_id="fiber_01", label="A"),
-                )
-            )
-        }
-    )
-    window._apply_configuration(config)
-    active = window._build_config()
-    window._prepare_trace_curves(active)
-    decoder = RWDDecoderDiagnostics(
-        bytes_received=31,
-        records_decoded=1,
-        fluorescence_records=1,
-        event_records=0,
-        buffered_bytes=0,
-        configured_preamble_mode=RWDPreambleMode.AUTO,
-        resolved_preamble_mode=RWDPreambleMode.NONE,
-        preamble=None,
-        machine_name=b"RWD1",
-        failed=False,
-    )
-    progress = RWDAcquisitionProgress(
-        record_count=1,
-        received=RWDReceivedRecord(
-            0,
-            0.01,
-            RWDFluorescenceRecord(
-                b"RWD1",
-                3,
-                (RWDFluorescenceSample(RWDWavelength.LED_410, 100, 1234, 1.234),),
-            ),
-        ),
-        diagnostics=RWDAcquisitionDiagnostics(
-            spool=SpoolDiagnostics(0, 4, 1, 1, 1, 0.0, 0.0),
-            client=RWDClientDiagnostics(True, False, 1, decoder),
-        ),
-    )
-
-    window._on_progress(progress)
-
-    assert list(window._trace_times[(410, 0)]) == [0.0]
-    assert list(window._trace_values[(410, 0)]) == pytest.approx([1.234])
-    _, displayed = window._curves[(410, 0)].getData()
-    np.testing.assert_allclose(displayed, [1.234])
-    assert window.frame_counter.text() == "1 RWD records"
-    assert "31 bytes" in window.connection_diagnostics_label.text()
-
-    for sequence, status in ((1, 0), (2, 1)):
-        window._on_progress(
-            RWDAcquisitionProgress(
-                record_count=sequence + 1,
-                received=RWDReceivedRecord(
-                    sequence,
-                    0.02 + sequence * 0.01,
-                    RWDEventRecord(
-                        b"RWD1",
-                        100 + sequence,
-                        b"lever".ljust(20, b"\x00"),
-                        status,
-                    ),
-                ),
-                diagnostics=progress.diagnostics,
-            )
-        )
-    assert "lever OFF" in window.rwd_event_status.text()
-    assert window.rwd_event_status.text().endswith("active: none")
+    for worker in (AcquisitionWorker, PreviewWorker):
+        with pytest.raises(ValueError, match="cannot preview or record yet"):
+            worker(restored, 1) if worker is AcquisitionWorker else worker(restored)
+    window.start_preview()
+    window.start_recording()
+    assert len(notices) == 2
+    assert all("not implemented" in notice for notice in notices)
+    assert window._thread is None
 
 
 def test_gui_display_smoothing_is_time_based_and_does_not_change_raw_buffer(

@@ -7,7 +7,7 @@ import pytest
 from pynwb import NWBHDF5IO
 
 from driftless_photometry.acquisition import AcquisitionEngine, preview_duration_s, run_preview
-from driftless_photometry.config import RWDChannelMapping, RWDSourceConfig, demo_config
+from driftless_photometry.config import RWDSourceConfig, demo_config
 from driftless_photometry.diagnostics import FinalizationStage
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from driftless_photometry.hardware import RigPacket, SimulatedRig
@@ -31,31 +31,19 @@ def test_preview_validates_all_channels_without_creating_output(tmp_path: Path) 
     assert not list(tmp_path.iterdir())
 
 
-def test_native_services_reject_rwd_source_before_creating_output(tmp_path: Path) -> None:
+def test_camera_services_reject_rwd_source_before_creating_output(tmp_path: Path) -> None:
     base = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
-    rwd_config = base.model_copy(
-        update={
-            "source": RWDSourceConfig(
-                channel_mappings=(
-                    RWDChannelMapping(
-                        device_channel=0,
-                        fiber_id="fiber_01",
-                        label="RWD channel 0",
-                    ),
-                )
-            )
-        }
-    )
+    rwd_config = base.model_copy(update={"source": RWDSourceConfig()})
 
-    with pytest.raises(ValueError, match="native preview"):
+    with pytest.raises(ValueError, match="preview requires the custom acquisition system"):
         run_preview(rwd_config, SimulatedRig(rwd_config))
-    with pytest.raises(ValueError, match="native acquisition engine"):
+    with pytest.raises(ValueError, match="acquisition requires the custom acquisition system"):
         AcquisitionEngine().run(
             rwd_config,
             SimulatedRig(rwd_config),
             duration_s=0.1,
         )
-    with pytest.raises(ValueError, match="native session spool"):
+    with pytest.raises(ValueError, match="session spool requires the custom acquisition"):
         SessionSpool(rwd_config)
 
     assert not list(tmp_path.iterdir())

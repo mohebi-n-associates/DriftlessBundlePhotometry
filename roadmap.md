@@ -220,48 +220,41 @@ Create the hardware-free reader, complete simulator-backed operator workflow, an
 adapter test harness required to develop physical camera and controller integrations
 without weakening regression coverage on macOS or machines without vendor SDKs.
 
-### RWD read-only bridge track
+### Retired: RWD read-only bridge track
 
-This approved track integrates the RWD software's exported fluorescence/event TCP
-stream into the same trace, analysis, recovery, and NWB product. RWD retains hardware
-control; DBF is a read-only client/recorder. Work proceeds in these gated commits:
+Versions 0.2.0–0.2.1 shipped a read-only client for the fluorescence/event TCP stream
+exported by RWD's software, with its own spool and trace-only NWB writer. It was
+validated only against synthetic servers. It was removed after 0.2.1 because the RWD
+direct-control track below records RWD hardware through the full camera path without
+RWD's software in the loop. Recover any leftover `*.rwd-spool` with DBF 0.2.1.
 
-1. **Protocol/configuration foundation — implemented in 0.2.0**
-   - Review the vendor manual, MATLAB operating instructions, `Wave.m`, and `Video.m`.
-   - Document fixed record layouts plus every assumption and unsupported behavior.
-   - Add a discriminated native/RWD source, exact 410/470/560 identities, unique
-     device-channel/fiber mappings, typed raw records, and explicit settings-v1 to
-     native migration.
-2. **Pure incremental parsers — implemented in 0.2.0**
-   - Parse arbitrary TCP fragmentation/coalescing without using read boundaries.
-   - Add golden fixtures for masks, mixed records, preamble modes, malformed input,
-     rollover, truncation, and unknown channels.
-3. **Trace-only recovery and canonical NWB — implemented in 0.2.0**
-   - Add an append-safe RWD spool that never requires fake camera images.
-   - Write raw device traces/events/ticks/scales and immutable derived outputs into
-     one independently valid NWB per mapped fiber/animal.
-4. **Headless TCP bridge — implemented with a synthetic local server in 0.2.0**
-   - Add a single-owner client worker, bounded queues, prompt stop, timeouts,
-     disconnect/malformed-stream faults, and a local fake-server test path.
-5. **Shared trace and startup workflow — implemented in 0.2.0**
-   - Refactor source-neutral trace services, then present native or RWD selection at
-     startup and hide inactive hardware controls.
-6. **RWD mapping and analysis GUI — implemented with synthetic streams in 0.2.0**
-   - Configure channel/fiber/animal labels, show raw/smoothed/dF/F traces, event
-     activity, connection state, queue pressure, and validation progress without
-     changing stored raw values.
-7. **Operator docs and live bench harness — software implemented in 0.2.0;
-   physical capture remains hardware required**
-   - Document the RWD connection sequence, recovery, provenance, and limitations;
-     provide checksummed exact-wire capture, inspection, and deterministic replay.
-   - Capture real streams to confirm preamble, timestamp unit, scale, channel IDs,
-     masks, event padding, disconnect behavior, and long-run capacity when the
-     physical RWD system is available.
+### RWD direct-control track
 
-Behavior-video ports are deferred until safe payload limits, changing-dimension
-semantics, RGB orientation, timestamp units, and canonical storage requirements are
-confirmed. No RWD phase may claim live validation without the real RWD system and
-recorded evidence.
+Approved 2026-10-20. DBF drives the RWD controller board and photometry cameras
+itself and records through the shared camera acquisition path, under the scoped
+wavelength-identity exception in [the design record](docs/rwd-direct-control.md) and
+the agent contract. Setup offers exactly two systems: Custom and RWD.
+
+0. **Two-system setup — implemented.** Settings v3 select `custom` or `rwd`; v1/v2
+   files migrate with explicit warnings. RWD mode can be configured but every preview,
+   acquisition, spool, and NWB entry point refuses it until step 5.
+1. **Controller codec and USB-capture decoder — implemented, not hardware validated**
+   - Pure codec for the recovered serial protocol, checked against frames produced by
+     OFRS's own encoder, with fragmentation, escaping, malformed-frame, and unsafe-command
+     tests.
+   - Offline USBPcap decoder and `--decode-rwd-usb-capture` CLI, with synthetic
+     pcap/pcapng fixtures.
+2. **Bench capture of OFRS traffic — hardware required**
+   - Follow [the bench-capture procedure](docs/rwd-direct-bench-capture.md); promote real
+     frames to golden fixtures and close the design record's open questions.
+3. **Serial transport — planned; depends on step 2**
+4. **Alvium camera adapter — planned; depends on step 2**
+5. **RWD rig source with phase-derived wavelength identity and gap detection —
+   planned; depends on steps 3 and 4.** Adds exact 410/470/560 channel identities,
+   records the phase-derived provenance in every NWB, and lifts the step-0 refusals.
+6. **Bench characterization — hardware required**
+   - LED/trigger timing, disconnect and watchdog LED state, TTL latency, and clock drift
+     must be measured before any animal recording.
 
 ### Deliverables
 

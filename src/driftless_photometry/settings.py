@@ -27,14 +27,15 @@ from driftless_photometry.config import (
 )
 
 SETTINGS_FORMAT_V1 = "driftless_bundle_photometry_settings_v1"
-SETTINGS_FORMAT = "driftless_bundle_photometry_settings_v2"
+SETTINGS_FORMAT_V2 = "driftless_bundle_photometry_settings_v2"
+SETTINGS_FORMAT = "driftless_bundle_photometry_settings_v3"
 SETTINGS_SUFFIX = ".settings.json"
 DEFAULT_SETTINGS_NAME = "default_settings.json"
 NWB_SETTINGS_SCRATCH_NAME = "driftless_bundle_photometry_settings_json"
 
 _ABOUT = (
     "Complete Driftless Bundle Photometry settings, including session metadata, "
-    "the discriminated native or RWD acquisition source, camera/controller "
+    "the custom or RWD acquisition system, camera/controller "
     "configuration, excitation channels, display preferences, and every "
     "subject-specific fiber definition."
 )
@@ -103,7 +104,7 @@ def _config_from_document(
     if not isinstance(document, dict):
         raise ValueError(f"{source_name} does not contain a settings object")
     declared = document.get("format")
-    if declared not in {SETTINGS_FORMAT, SETTINGS_FORMAT_V1}:
+    if declared not in {SETTINGS_FORMAT, SETTINGS_FORMAT_V2, SETTINGS_FORMAT_V1}:
         raise ValueError(
             f"{source_name} is not a Driftless Bundle Photometry settings file "
             f"(expected format {SETTINGS_FORMAT!r}, found {declared!r})"
@@ -115,16 +116,37 @@ def _config_from_document(
     if declared == SETTINGS_FORMAT_V1:
         if "source" in values:
             raise ValueError(f"{source_name} declares settings v1 but contains the v2 source field")
-        values = dict(values)
-        values["source"] = {"kind": "native"}
+        values = {**values, "source": {"kind": "custom"}}
         warnings.append(
-            f"{source_name} used settings v1 and was migrated explicitly to the native "
-            "camera/controller source; v1 predates system selection and RWD settings."
+            f"{source_name} used settings v1 and was migrated explicitly to the custom "
+            "camera/controller system; v1 predates system selection."
         )
+    elif declared == SETTINGS_FORMAT_V2:
+        values, notice = _migrate_v2_source(values, source_name)
+        warnings.append(notice)
     try:
         return SessionConfig.model_validate(values), warnings
     except ValidationError as error:
         raise ValueError(f"{source_name} contains invalid settings: {error}") from error
+
+
+def _migrate_v2_source(values: dict[str, Any], source_name: str) -> tuple[dict[str, Any], str]:
+    """Map a settings-v2 source onto v3, naming every field that could not be kept."""
+
+    source = values.get("source")
+    if not isinstance(source, dict) or source.get("kind") not in {"native", "rwd"}:
+        raise ValueError(f"{source_name} declares settings v2 without a native or rwd source")
+    if source["kind"] == "native":
+        return {**values, "source": {"kind": "custom"}}, (
+            f"{source_name} used settings v2; its native source is now the custom "
+            "camera/controller system."
+        )
+    dropped = ", ".join(sorted(key for key in source if key != "kind")) or "none"
+    return {**values, "source": {"kind": "rwd"}}, (
+        f"{source_name} used settings v2 for the removed RWD read-only TCP bridge. Session, "
+        "camera, fiber, and channel settings were kept and now select RWD direct control; "
+        f"these TCP source fields were dropped: {dropped}."
+    )
 
 
 def export_settings(path: str | Path, config: SessionConfig) -> Path:
