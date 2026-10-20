@@ -16,6 +16,8 @@ version, move its completed entries into a dated version section.
   bench-capture procedure. Bench tests on a physical RWD controller confirmed the
   framing, CRC, escaping, acknowledgements, version handshake, heartbeat, LED power and
   enable, continuous and interleaved modes, and starting and stopping excitation.
+  Camera tests confirmed that the board triggers only the camera for the active LED and
+  that the frame rate is shared across interleaved LEDs.
   Nothing in the application itself sends commands to RWD hardware yet. Timing units,
   TTL functions, and behavior after host loss remain unconfirmed.
 
