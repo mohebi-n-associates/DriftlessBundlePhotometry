@@ -52,6 +52,7 @@ from driftless_photometry.config import (
     CustomSourceConfig,
     ROIConfig,
     RWDSourceConfig,
+    RWDTTLOutputConfig,
     SessionConfig,
     SystemProfile,
     TraceDisplayConfig,
@@ -81,7 +82,7 @@ from .trace_display import (
     downsample_min_max,
     trailing_mean,
 )
-from .worker import RWD_BACKEND_UNAVAILABLE, AcquisitionWorker, PreviewWorker
+from .worker import AcquisitionWorker, PreviewWorker, RigFactory, default_rig_factory
 
 _TRACE_REFRESH_INTERVAL_S = 0.1
 
@@ -121,9 +122,17 @@ _CUSTOM_MODE_HINT = (
     "simulator until those adapters are validated."
 )
 _RWD_MODE_HINT = (
-    "RWD mode will drive the RWD controller board and its photometry cameras directly, "
-    "without RWD's software. " + RWD_BACKEND_UNAVAILABLE + "."
+    "RWD mode drives the RWD controller board and its two photometry cameras directly, "
+    "without RWD's software. Wavelengths are derived from camera identity and the LED "
+    "cycle after each sequencer start, and every exposure is marked phase-derived."
 )
+_RWD_SAFETY_WARNING = (
+    "The RWD unit has no fail-safe: if DBF stops unexpectedly or its USB cable is "
+    "unplugged, the LEDs stay on. DBF switches them off whenever it can; otherwise use "
+    "the unit's power switch. Keep the fiber on its target or capped and never look "
+    "into it."
+)
+_RWD_AUTO_PORT = "Auto: the only FTDI port"
 
 
 class SummaryCard(QWidget):
@@ -199,8 +208,10 @@ class MainWindow(QMainWindow):
         default_duration_s: float = 5.0,
         default_fibers: int = 3,
         default_raw: bool = False,
+        rig_factory: RigFactory = default_rig_factory,
     ) -> None:
         super().__init__()
+        self._rig_factory = rig_factory
         pg.setConfigOptions(
             imageAxisOrder="row-major",
             antialias=True,
@@ -221,6 +232,10 @@ class MainWindow(QMainWindow):
         self._pending_preview_signature: str | None = None
         self._progress_duration_s = default_duration_s
         self._roi_items: list[pg.CircleROI] = []
+        self._roi_items_cam2: list[pg.CircleROI] = []
+        self._calibration_camera = 1
+        self._camera_frame_counts: dict[int, int] = {}
+        self._last_camera_images: dict[int, np.ndarray] = {}
         self._curves: dict[tuple[int, int], pg.PlotDataItem] = {}
         self._trace_times: dict[tuple[int, int], array] = {}
         self._trace_values: dict[tuple[int, int], array] = {}
@@ -463,16 +478,7 @@ class MainWindow(QMainWindow):
         retention_layout.addWidget(raw_hint)
         controls_layout.addWidget(retention_group)
 
-        self.rwd_group = QGroupBox("RWD direct control")
-        rwd_layout = QVBoxLayout(self.rwd_group)
-        self.rwd_status_label = QLabel(
-            "The RWD controller protocol is decoded, and captures of RWD's own software "
-            "can be inspected with dbf --decode-rwd-usb-capture. Controller and camera "
-            "control will be added after bench validation; see docs/rwd-direct-control.md."
-        )
-        self.rwd_status_label.setObjectName("hint")
-        self.rwd_status_label.setWordWrap(True)
-        rwd_layout.addWidget(self.rwd_status_label)
+        self.rwd_group = self._build_rwd_group()
         self.rwd_group.setVisible(False)
         controls_layout.addWidget(self.rwd_group)
         controls_layout.addStretch(1)
@@ -642,6 +648,121 @@ class MainWindow(QMainWindow):
         self.raw_checkbox.toggled.connect(self._invalidate_preview)
         return page
 
+    def _build_rwd_group(self) -> QGroupBox:
+        group = QGroupBox("RWD hardware")
+        layout = QVBoxLayout(group)
+        self.rwd_safety_label = QLabel(_RWD_SAFETY_WARNING)
+        self.rwd_safety_label.setObjectName("safetyWarning")
+        self.rwd_safety_label.setWordWrap(True)
+        layout.addWidget(self.rwd_safety_label)
+        form = QFormLayout()
+        port_row = QWidget()
+        port_layout = QHBoxLayout(port_row)
+        port_layout.setContentsMargins(0, 0, 0, 0)
+        self.rwd_port_combo = QComboBox()
+        self.rwd_port_combo.setEditable(True)
+        self.rwd_port_combo.setToolTip(
+            "The COM port Windows created for the controller's FTDI USB bridge"
+        )
+        self.rwd_port_refresh = QPushButton("Refresh")
+        self.rwd_port_refresh.clicked.connect(self._refresh_rwd_ports)
+        port_layout.addWidget(self.rwd_port_combo, stretch=1)
+        port_layout.addWidget(self.rwd_port_refresh)
+        form.addRow("Controller port", port_row)
+        layout.addLayout(form)
+        outputs_title = QLabel("TTL OUTPUT PULSE TRAINS")
+        outputs_title.setObjectName("eyebrow")
+        layout.addWidget(outputs_title)
+        outputs = QGridLayout()
+        self.rwd_output_checks: dict[int, QCheckBox] = {}
+        self.rwd_output_frequency: dict[int, QDoubleSpinBox] = {}
+        self.rwd_output_width: dict[int, QSpinBox] = {}
+        for row, port in enumerate(range(1, 5)):
+            check = QCheckBox(f"Output {port}")
+            frequency = QDoubleSpinBox()
+            frequency.setRange(0.01, 655.35)
+            frequency.setDecimals(2)
+            frequency.setSuffix(" Hz")
+            frequency.setValue(1.0)
+            width = QSpinBox()
+            width.setRange(1, 65_535)
+            width.setSuffix(" ms")
+            width.setValue(10)
+            for widget in (check, frequency, width):
+                outputs.addWidget(widget, row, (check, frequency, width).index(widget))
+            check.toggled.connect(self._invalidate_preview)
+            frequency.valueChanged.connect(self._invalidate_preview)
+            width.valueChanged.connect(self._invalidate_preview)
+            self.rwd_output_checks[port] = check
+            self.rwd_output_frequency[port] = frequency
+            self.rwd_output_width[port] = width
+        layout.addLayout(outputs)
+        self.rwd_status_label = QLabel(
+            "Preview connects to the controller and cameras, switches the LEDs on for a "
+            "few frames, and switches everything off again. Run it with the fiber on its "
+            "target."
+        )
+        self.rwd_status_label.setObjectName("hint")
+        self.rwd_status_label.setWordWrap(True)
+        layout.addWidget(self.rwd_status_label)
+        self._refresh_rwd_ports()
+        self.rwd_port_combo.currentTextChanged.connect(self._invalidate_preview)
+        return group
+
+    def _refresh_rwd_ports(self) -> None:
+        current = self._rwd_port()
+        try:
+            from driftless_photometry.hardware import candidate_rwd_ports
+
+            ports = candidate_rwd_ports()
+        except Exception:
+            ports = ()
+        blocker = QSignalBlocker(self.rwd_port_combo)
+        self.rwd_port_combo.clear()
+        self.rwd_port_combo.addItem(_RWD_AUTO_PORT)
+        for port in ports:
+            self.rwd_port_combo.addItem(port)
+        self._set_rwd_port(current)
+        del blocker
+
+    def _rwd_port(self) -> str | None:
+        if not hasattr(self, "rwd_port_combo"):
+            return None
+        text = self.rwd_port_combo.currentText().strip()
+        return None if not text or text == _RWD_AUTO_PORT else text
+
+    def _set_rwd_port(self, port: str | None) -> None:
+        if port is None:
+            self.rwd_port_combo.setCurrentIndex(0)
+            return
+        index = self.rwd_port_combo.findText(port)
+        if index < 0:
+            self.rwd_port_combo.addItem(port)
+            index = self.rwd_port_combo.count() - 1
+        self.rwd_port_combo.setCurrentIndex(index)
+
+    def _rwd_source_from_controls(self) -> RWDSourceConfig:
+        outputs = tuple(
+            RWDTTLOutputConfig(
+                port=port,
+                frequency_hz=self.rwd_output_frequency[port].value(),
+                pulse_width_ms=self.rwd_output_width[port].value(),
+            )
+            for port, check in self.rwd_output_checks.items()
+            if check.isChecked()
+        )
+        return RWDSourceConfig(controller_port=self._rwd_port(), ttl_outputs=outputs)
+
+    def _apply_rwd_source(self, source: RWDSourceConfig) -> None:
+        self._set_rwd_port(source.controller_port)
+        configured = {output.port: output for output in source.ttl_outputs}
+        for port, check in self.rwd_output_checks.items():
+            output = configured.get(port)
+            check.setChecked(output is not None)
+            if output is not None:
+                self.rwd_output_frequency[port].setValue(output.frequency_hz)
+                self.rwd_output_width[port].setValue(output.pulse_width_ms)
+
     def _update_overview(self) -> None:
         enabled = sum(check.isChecked() for check in self.channel_checks.values())
         self.channels_summary.value_label.setText(str(enabled))
@@ -770,21 +891,28 @@ class MainWindow(QMainWindow):
         for wavelength, image_group in self.wavelength_image_groups.items():
             image_group.setVisible(wavelength in profile.wavelengths)
         self._use_profile_camera(profile)
+        self._sync_camera2_items()
+        self.calibration_camera_combo.setVisible(profile.camera_count > 1)
+        if profile.camera_count < 2:
+            self.calibration_camera_combo.setCurrentIndex(0)
         self._active_trace_wavelengths = tuple(int(w) for w in profile.wavelengths)
         for wavelength_nm, check in self.trace_wavelength_checks.items():
             check.setVisible(wavelength_nm in self._active_trace_wavelengths)
         if is_rwd:
             self.source_mode_hint.setText(_RWD_MODE_HINT)
-            self.backend_badge.setText("RWD - not available")
-            self.statusBar().showMessage(f"RWD mode selected - {RWD_BACKEND_UNAVAILABLE}")
+            self.backend_badge.setText("RWD hardware")
+            self.statusBar().showMessage(
+                "RWD mode - DBF drives the RWD controller and cameras; the unit's power "
+                "switch is the only hardware fail-safe"
+            )
         else:
             self.source_mode_hint.setText(_CUSTOM_MODE_HINT)
             self.backend_badge.setText("Simulator")
             self.statusBar().showMessage(
                 "Ready - simulator mode; no physical camera or controller connected"
             )
-        self.preview_button.setEnabled(self._thread is None and not is_rwd)
-        self.backend_badge.setProperty("hardware", False)
+        self.preview_button.setEnabled(self._thread is None)
+        self.backend_badge.setProperty("hardware", is_rwd)
         self.backend_badge.style().unpolish(self.backend_badge)
         self.backend_badge.style().polish(self.backend_badge)
         self._update_overview()
@@ -923,6 +1051,15 @@ class MainWindow(QMainWindow):
         camera_group = QGroupBox("Camera calibration — full frame")
         self.camera_calibration_group = camera_group
         camera_layout = QVBoxLayout(camera_group)
+        self.calibration_camera_combo = QComboBox()
+        self.calibration_camera_combo.addItem("Camera 1 — 410/470 nm", 1)
+        self.calibration_camera_combo.addItem("Camera 2 — 560 nm", 2)
+        self.calibration_camera_combo.setToolTip(
+            "RWD images 560 nm on its second camera; place each fiber's circle on both"
+        )
+        self.calibration_camera_combo.currentIndexChanged.connect(self._show_calibration_camera)
+        self.calibration_camera_combo.setVisible(False)
+        camera_layout.addWidget(self.calibration_camera_combo)
         self.calibration_plot = pg.PlotWidget()
         self.calibration_plot.setAspectLocked(True)
         self.calibration_plot.invertY(True)
@@ -993,6 +1130,10 @@ class MainWindow(QMainWindow):
                 color: #61778a; background: #13283a; border-color: #22394d;
             }
             QLabel#hint { color: #7694aa; }
+            QLabel#safetyWarning {
+                background: #3a1820; color: #ffb3b9; border-radius: 6px; padding: 8px;
+                font-weight: 700;
+            }
             QLabel#liveStatus { font-weight: 700; color: #f2b134; }
             QLabel#previewStatus {
                 border: 1px solid #315570; border-radius: 6px; padding: 7px 10px;
@@ -1091,13 +1232,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "start_button"):
             self.start_button.setEnabled(False)
         if hasattr(self, "preview_status") and self._thread is None:
-            if self._is_rwd_mode():
-                self._set_preview_status(RWD_BACKEND_UNAVAILABLE, "required")
-            else:
-                self._set_preview_status(
-                    "Preview required - settings changed; run preview before recording",
-                    "required",
-                )
+            self._set_preview_status(
+                "Preview required - settings changed; run preview before recording",
+                "required",
+            )
 
     def _browse_output(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -1228,6 +1366,8 @@ class MainWindow(QMainWindow):
         profile = profile_for(config.source)
         if profile is CUSTOM_PROFILE:
             self._custom_camera = config.camera
+        if isinstance(config.source, RWDSourceConfig):
+            self._apply_rwd_source(config.source)
         checks, sliders, _group = self._channel_controls[profile.kind]
         scale = self._intensity_scale(profile)
         configured_channels = {channel.wavelength_nm: channel for channel in config.channels}
@@ -1311,8 +1451,9 @@ class MainWindow(QMainWindow):
         if index < self.roi_metadata_tabs.count():
             suffix = "" if checked else " (off)"
             self.roi_metadata_tabs.setTabText(index, f"ROI {index + 1}{suffix}")
-        if index < len(self._roi_items):
-            self._roi_items[index].setOpacity(1.0 if checked else 0.25)
+        for items in (self._roi_items, self._roi_items_cam2):
+            if index < len(items):
+                items[index].setOpacity(1.0 if checked else 0.25)
         try:
             rois = self._roi_configs_from_controls()
         except ValueError:
@@ -1346,9 +1487,10 @@ class MainWindow(QMainWindow):
         rois: tuple[ROIConfig, ...],
         camera: CameraConfig,
     ) -> None:
-        for item in self._roi_items:
+        for item in (*self._roi_items, *self._roi_items_cam2):
             self.calibration_plot.removeItem(item)
         self._roi_items.clear()
+        self._roi_items_cam2.clear()
         self._configure_trace_plots(tuple(roi for roi in rois if roi.enabled))
         blank = np.zeros((camera.height_px, camera.width_px), dtype=np.uint16)
         self._image_item.setImage(
@@ -1373,7 +1515,61 @@ class MainWindow(QMainWindow):
             self._roi_items.append(circle)
         self.calibration_plot.setXRange(0, camera.width_px, padding=0.02)
         self.calibration_plot.setYRange(0, camera.height_px, padding=0.02)
+        if self._active_profile.camera_count > 1:
+            self._add_camera2_items(rois)
+        self._show_calibration_camera()
         self._update_roi_summary()
+
+    def _add_camera2_items(self, rois: tuple[ROIConfig, ...]) -> None:
+        for index, roi in enumerate(rois):
+            if roi.has_camera2_geometry:
+                x = float(roi.camera2_center_x_px or 0.0)
+                y = float(roi.camera2_center_y_px or 0.0)
+                radius = float(roi.camera2_radius_px or 0.0)
+            else:
+                x, y, radius = roi.center_x_px, roi.center_y_px, roi.radius_px
+            circle = pg.CircleROI(
+                [x - radius, y - radius],
+                [2 * radius, 2 * radius],
+                pen=pg.mkPen(_FIBER_COLORS[index], width=2, style=Qt.PenStyle.DashLine),
+                hoverPen=pg.mkPen("#ffffff", width=2),
+                movable=True,
+                rotatable=False,
+                resizable=True,
+            )
+            circle.setZValue(10)
+            circle.setOpacity(1.0 if roi.enabled else 0.25)
+            circle.sigRegionChangeFinished.connect(self._on_roi_geometry_changed)
+            self.calibration_plot.addItem(circle)
+            self._roi_items_cam2.append(circle)
+
+    def _sync_camera2_items(self) -> None:
+        """Keep camera-2 circles exactly when the active system has a second camera."""
+
+        if not hasattr(self, "calibration_plot") or not self._roi_items:
+            return
+        wanted = self._active_profile.camera_count > 1
+        if wanted == bool(self._roi_items_cam2):
+            return
+        rois = self._roi_configs_from_controls()
+        self._set_roi_items(rois, self._session_template.camera)
+
+    def _show_calibration_camera(self, *_args: object) -> None:
+        if not hasattr(self, "calibration_camera_combo"):
+            return
+        camera = int(self.calibration_camera_combo.currentData() or 1)
+        if camera == 2 and not self._roi_items_cam2:
+            camera = 1
+        self._calibration_camera = camera
+        for item in self._roi_items:
+            item.setVisible(camera == 1)
+        for item in self._roi_items_cam2:
+            item.setVisible(camera == 2)
+        image = self._last_camera_images.get(camera)
+        if image is not None:
+            self._image_item.setImage(
+                image, autoLevels=False, levels=(0, self._image_display_maximum)
+            )
 
     def _on_roi_geometry_changed(self) -> None:
         self._update_roi_summary()
@@ -1389,12 +1585,23 @@ class MainWindow(QMainWindow):
             center_y = float(position.y()) + radius
             enabled = self._roi_metadata_editors[index].enabled_check.isChecked()
             state = "enabled" if enabled else "disabled"
-            rows.append(
+            row = (
                 f'<span style="color:{_FIBER_COLORS[index]}">●</span> '
                 f"Fiber {index + 1} ({state}): x {center_x:.1f}, y {center_y:.1f}, "
                 f"r {radius:.1f} px"
             )
+            if index < len(self._roi_items_cam2):
+                x2, y2, r2 = self._circle_geometry(self._roi_items_cam2[index])
+                row += f"; camera 2: x {x2:.1f}, y {y2:.1f}, r {r2:.1f} px"
+            rows.append(row)
         self.roi_summary.setText("<br>".join(rows))
+
+    @staticmethod
+    def _circle_geometry(item: pg.CircleROI) -> tuple[float, float, float]:
+        position = item.pos()
+        size = item.size()
+        radius = min(float(size.x()), float(size.y())) / 2.0
+        return float(position.x()) + radius, float(position.y()) + radius, radius
 
     def _roi_configs_from_controls(self) -> tuple[ROIConfig, ...]:
         rois: list[ROIConfig] = []
@@ -1423,7 +1630,14 @@ class MainWindow(QMainWindow):
             center_y = float(position.y()) + radius
             camera2: dict[str, float] = {}
             template_roi = template_rois.get(fiber_id)
-            if two_cameras and template_roi is not None and template_roi.has_camera2_geometry:
+            if two_cameras and index < len(self._roi_items_cam2):
+                x2, y2, r2 = self._circle_geometry(self._roi_items_cam2[index])
+                camera2 = {
+                    "camera2_center_x_px": x2,
+                    "camera2_center_y_px": y2,
+                    "camera2_radius_px": r2,
+                }
+            elif two_cameras and template_roi is not None and template_roi.has_camera2_geometry:
                 camera2 = {
                     "camera2_center_x_px": float(template_roi.camera2_center_x_px or 0.0),
                     "camera2_center_y_px": float(template_roi.camera2_center_y_px or 0.0),
@@ -1492,7 +1706,7 @@ class MainWindow(QMainWindow):
         )
         source: CustomSourceConfig | RWDSourceConfig
         if self._is_rwd_mode():
-            source = RWDSourceConfig()
+            source = self._rwd_source_from_controls()
             session_prefix = "rwd"
         else:
             source = CustomSourceConfig()
@@ -1526,9 +1740,6 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(self, "Invalid configuration", str(error))
             return
-        if isinstance(config.source, RWDSourceConfig):
-            QMessageBox.information(self, "RWD not available", RWD_BACKEND_UNAVAILABLE)
-            return
         self.last_preview = None
         self.last_error = None
         self._operation_kind = "preview"
@@ -1546,8 +1757,13 @@ class MainWindow(QMainWindow):
         self._set_system_status("PREVIEW", "preview")
         self.statusBar().showMessage("Running non-recording acquisition preview...")
 
+        self._camera_frame_counts = {}
         thread = QThread(self)
-        worker = PreviewWorker(config)
+        try:
+            worker = PreviewWorker(config, self._rig_factory)
+        except Exception as error:
+            self._on_preview_failed(str(error))
+            return
         self._progress_duration_s = worker.duration_s
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -1572,9 +1788,6 @@ class MainWindow(QMainWindow):
         except Exception as error:
             QMessageBox.critical(self, "Invalid configuration", str(error))
             return
-        if isinstance(config.source, RWDSourceConfig):
-            QMessageBox.information(self, "RWD not available", RWD_BACKEND_UNAVAILABLE)
-            return
         if self._preview_signature != self._configuration_signature(config):
             self._invalidate_preview()
             QMessageBox.warning(
@@ -1596,16 +1809,22 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("0%")
         self.frame_counter.setText("0 frames")
-        self.live_status.setText("Arming simulator...")
+        arming = (
+            "Connecting to the RWD controller and cameras..."
+            if isinstance(config.source, RWDSourceConfig)
+            else "Arming simulator..."
+        )
+        self.live_status.setText(arming)
         self._set_preview_status(
             "Preview passed for these settings - recording in progress",
             "passed",
         )
         self._set_system_status("STARTING...", "recording")
-        self.statusBar().showMessage("Arming simulator...")
+        self.statusBar().showMessage(arming)
 
+        self._camera_frame_counts = {}
         thread = QThread(self)
-        worker = AcquisitionWorker(config, config.recording_duration_s)
+        worker = AcquisitionWorker(config, config.recording_duration_s, self._rig_factory)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)
@@ -1896,7 +2115,12 @@ class MainWindow(QMainWindow):
         if self._active_config is None:
             raise RuntimeError("camera progress arrived without an active configuration")
         self._append_live_trace_points(camera_live_trace_points(self._active_config, progress))
-        if progress.frame_count == 1 or progress.frame_count % 5 == 0:
+        camera_count = self._camera_frame_counts.get(progress.camera_index, 0) + 1
+        self._camera_frame_counts[progress.camera_index] = camera_count
+        self._last_camera_images[progress.camera_index] = progress.image
+        if progress.camera_index == self._calibration_camera and (
+            camera_count == 1 or camera_count % 5 == 0
+        ):
             self._image_item.setImage(
                 progress.image,
                 autoLevels=False,
@@ -2013,10 +2237,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.close)
 
     def _set_busy_controls(self, busy: bool) -> None:
-        self.preview_button.setEnabled(not busy and not self._is_rwd_mode())
-        self.start_button.setEnabled(
-            not busy and not self._is_rwd_mode() and self._preview_signature is not None
-        )
+        self.preview_button.setEnabled(not busy)
+        self.start_button.setEnabled(not busy and self._preview_signature is not None)
+        if hasattr(self, "calibration_camera_combo"):
+            self.calibration_camera_combo.setEnabled(True)
         self.stop_button.setEnabled(busy)
         for widget in self._settings_widgets:
             widget.setEnabled(not busy)

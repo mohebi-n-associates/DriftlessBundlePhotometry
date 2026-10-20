@@ -56,9 +56,11 @@ Planned gated steps:
       `hardware/rwd_timing.py`; see [RWD rig source](#rwd-rig-source).
    3. **Camera-aware ROI extraction and NWB — implemented; simulator-tested.** The
       preview, acquisition, spool, recovery, and NWB services accept RWD sessions; see
-      [RWD recordings](#rwd-recordings). Only the GUI still refuses until part 4.
-   4. **GUI controls** — planned. COM port, camera-2 ROI placement, live preview, TTL
-      outputs, and the no-fail-safe warning.
+      [RWD recordings](#rwd-recordings).
+   4. **GUI controls — implemented; simulator-tested.** Preview and recording run on
+      the RWD hardware. The RWD panel has the no-fail-safe warning, the COM port,
+      and the TTL outputs. The calibration view has a camera selector, so each
+      fiber's camera-2 circle is placed over camera 2's latest frame.
    5. **Bench validation and operator guide** — hardware required.
 6. **Bench characterization — hardware required.** LED/trigger timing, the
    disconnect and watchdog LED state, TTL latency, and clock drift.
@@ -137,8 +139,14 @@ optionally pins the controller's COM port.
 
 Switching the GUI between systems swaps the channel group, the trace and image
 wavelengths, and the camera template. Fiber circles are laid out again if they do not
-fit the new sensor. Until camera-2 placement arrives in part 4, each camera-2 circle
-starts at its camera-1 position and is kept from loaded settings.
+fit the new sensor. A new camera-2 circle starts at its fiber's camera-1 position;
+the calibration view's camera selector shows camera 2 so it can be placed.
+
+`RWDSourceConfig.ttl_outputs` lists pulse trains (frequency in 0.01 Hz steps up to
+655.35 Hz, pulse width in ms, shorter than the period) for any of the four BNC
+outputs. The rig configures and enables them after the board settings and before
+the sequencer starts. The transport's off sequence disables all four outputs at
+the end. Whether outputs pause while the sequencer restarts is a bench item.
 
 Settings v2 files for the removed TCP bridge migrate as follows:
 

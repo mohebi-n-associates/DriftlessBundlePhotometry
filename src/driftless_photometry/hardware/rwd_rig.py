@@ -37,7 +37,7 @@ from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 
 from .alvium import AlviumFrame, AlviumSettings, AlviumTriggeredCameras
 from .base import RigPacket
-from .rwd_controller_protocol import device_enable
+from .rwd_controller_protocol import device_enable, output_config, output_enable
 from .rwd_timing import (
     RWDBrightnessCheck,
     RWDCameraFrame,
@@ -273,6 +273,7 @@ class _RWDSession:
         self._event("rwd_controller_connected", detail)
         for command in self._plan.commands():
             transport.command(command)
+        self._start_outputs()
         self._start_run()
         try:
             finished = False
@@ -310,6 +311,24 @@ class _RWDSession:
                 transport.command(device_enable(False))
 
     # Sequencer runs ----------------------------------------------------------------------
+    def _start_outputs(self) -> None:
+        outputs = self._config.source.ttl_outputs  # type: ignore[union-attr]
+        for output in outputs:
+            self._transport.command(
+                output_config(output.port, output.frequency_hz, output.pulse_width_ms)
+            )
+            self._transport.command(output_enable(output.port, True))
+        if outputs:
+            self._event(
+                "rwd_ttl_outputs_started",
+                "; ".join(
+                    f"output {output.port}: {output.frequency_hz:g} Hz, "
+                    f"{output.pulse_width_ms} ms pulses"
+                    + (f" ({output.label})" if output.label else "")
+                    for output in outputs
+                ),
+            )
+
     def _start_run(self) -> None:
         self._run_index += 1
         self._held.clear()

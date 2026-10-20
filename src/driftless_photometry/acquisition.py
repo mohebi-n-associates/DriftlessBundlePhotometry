@@ -40,6 +40,7 @@ class AcquisitionProgress:
     sample: TraceSample
     image: np.ndarray
     diagnostics: AcquisitionDiagnostics | None = None
+    camera_index: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +161,7 @@ def run_preview(
                         frame_count=frame_count,
                         sample=sample,
                         image=packet.image,
+                        camera_index=exposure.camera_index,
                     )
                 )
     finally:
@@ -343,6 +345,7 @@ class AcquisitionEngine:
                                     maximum_absolute_clock_residual_s
                                 ),
                             ),
+                            camera_index=packet.exposure.camera_index,
                         )
                     )
                 # After stop(), keep reading until the source ends so that it can hand
