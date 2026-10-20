@@ -268,8 +268,9 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
    1. System profile and settings — implemented. Exact 410/560 nm wavelengths, percent
       power, per-fiber camera-2 circles, profile-driven validation and GUI, and
       migration of v2 RWD settings to runnable RWD settings.
-   2. Rig source with phase assignment, gap detection, and board-clock TTL timing,
-      against the simulated board — planned.
+   2. Rig source with phase assignment, gap detection, and board-clock TTL timing —
+      implemented and tested against simulated board and cameras; not yet run on
+      hardware.
    3. Camera-aware ROI extraction and NWB — planned.
    4. GUI RWD controls: COM port, camera-2 ROI placement, preview, and TTL outputs —
       planned.

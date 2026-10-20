@@ -42,6 +42,20 @@ version, move its completed entries into a dated version section.
   wavelengths, a percent power slider, and the Alvium camera; switching back restores
   the Custom camera.
 
+- Added the RWD rig source, which records an RWD session as DBF frames. It:
+  - configures the controller and cameras and runs the sequencer;
+  - derives each exposure's wavelength and time from camera identity and the board's
+    trigger grid, marking the identity as phase-derived;
+  - restarts the sequencer and records an invalid span whenever a frame is missing,
+    repeated, or off-grid;
+  - places TTL edges on the session clock from their board ticks.
+
+  The board is switched off on every exit path. It is tested against a simulated R821
+  and its cameras, and is not yet connected to recording.
+- Acquisition now records invalid spans and system events reported by the
+  acquisition source. After a stop request it reads until the source ends, so the
+  source can hand over its final events.
+
 ### Changed
 
 - Setup now offers exactly two acquisition systems: **Custom** (DBF's own camera and

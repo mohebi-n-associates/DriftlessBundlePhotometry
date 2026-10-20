@@ -52,9 +52,9 @@ Planned gated steps:
    Built in five parts:
    1. **System profile and settings — implemented.** See
       [System profiles](#system-profiles).
-   2. **Rig source** — planned. Phase assignment, gap detection, invalidation of the
-      truncated last exposure, and TTL timing from the board clock, tested against the
-      simulated board.
+   2. **Rig source — implemented; simulator-tested.** `hardware/rwd_rig.py` and
+      `hardware/rwd_timing.py`; see [RWD rig source](#rwd-rig-source). The engine
+      refuses RWD settings until part 3.
    3. **Camera-aware ROI extraction and NWB** — planned. Camera identity, phase-derived
       provenance, commanded power in percent, and the step-0 refusals lifted.
    4. **GUI controls** — planned. COM port, camera-2 ROI placement, live preview, TTL
@@ -101,8 +101,8 @@ The approved method for the RWD direct track, recorded 2026-10-20:
 5. **Provenance.** Every exposure from this backend records that its wavelength is
    phase-derived, so these data are never mistaken for controller-asserted identity.
 
-`CLAUDE.md` and `AGENTS.md` record this scoped exception. No code performs the
-assignment until the rig source (step 5) exists.
+`CLAUDE.md` and `AGENTS.md` record this scoped exception. `hardware/rwd_timing.py`
+performs the assignment; [RWD rig source](#rwd-rig-source) describes how.
 
 RWD hardware uses 410, 470, and 560 nm LEDs, while the Custom system's channel model is
 405, 470, and 565 nm. `Wavelength` therefore has exact `CONTROL_410` and `RED_560`
@@ -149,6 +149,107 @@ Settings v2 files for the removed TCP bridge migrate as follows:
 - Circles are rescaled when they do not fit the 728 × 544 sensor, and camera 2 copies
   camera 1.
 - The warning names each of these changes and every dropped TCP field.
+
+## RWD rig source
+
+`RWDRig` is the RWD `RigSource`. One `packets()` call owns the controller and the
+cameras for a session. Its tests run against `SimulatedRWDBoard` and
+`SimulatedRWDCameras` (`hardware/rwd_rig_simulator.py`), which reproduce the bench
+behavior on a virtual clock. Nothing below has run on hardware yet; part 5 does that.
+
+**Session lifecycle.**
+
+1. Open the controller port: the configured `controller_port`, or the only FT232R
+   port present. Several candidates are an error, so DBF never probes other FTDI
+   devices. The transport handshakes and forces the board all-off. Any model other
+   than the R821 (code 0) is refused.
+2. Open only the cameras that an enabled LED triggers, then send every LED's power
+   and enable, the camera timing, and the excitation mode.
+3. Enable the sequencer. That starts run 0.
+4. On a stop request, at the requested duration, or on any error, disable the
+   sequencer. The transport then sends the full off sequence as it closes, including
+   when the consumer abandons the generator.
+
+**Wavelength and time.** `RWDExcitationPlan` lists the enabled LEDs in the board's
+cycle order. `RWDSegmentTracker` gives each camera's first frame in a run that
+camera's first slot in the cycle. Each later frame must have the next frame ID, and
+its hardware timestamp must land on the camera's next slot. The tracker fits each
+camera's clock period, so crystal differences of tens of ppm never accumulate.
+
+Session time is the board's trigger grid. Slot `k` of run 0 is at `k / fps`, and
+session zero is run 0's first trigger. A later run starts at the session time
+measured on its first camera's hardware clock since that camera's last recorded
+frame. Exposures carry:
+
+- the slot time;
+- a derived `controller_tick_us` equal to the slot time in microseconds;
+- the commanded power in percent;
+- the camera index;
+- `wavelength_source = "phase_derived"`;
+- the camera's own frame ID and timestamp.
+
+Frames from both cameras are merged into slot order, and sequences stay contiguous
+across runs.
+
+**What breaks a run.** Any of these breaks a run:
+
+- a missing, repeated, or reordered frame ID;
+- a frame early, late, or after a missed slot (beyond a quarter period);
+- a frame from a camera no enabled LED triggers;
+- first frames of two cameras that do not line up within half a period;
+- no frame within 2 s of a start, or 0.5 s past a slot's expected arrival;
+- after a restart, an enable-to-first-frame delay that differs by more than half a
+  period from the delay measured at session start. This catches a camera that missed
+  its first trigger. Run 0 sets the baseline, so it cannot check itself.
+
+**On a break,** the rig:
+
+1. stops the sequencer;
+2. discards the frames that can no longer be attributed and every frame still
+   arriving, until frames have been quiet for 0.15 s;
+3. starts a new run.
+
+An invalid span then covers the time from the first unrecorded slot to the new
+run's first trigger. A `rwd_sequencer_restart` event gives the reason and the number
+of frames discarded. The board reports no TTL edges while its sequencer is stopped,
+and that event says so.
+
+Three consecutive restarts without a recorded frame raise `CAMERA_DISCONNECT`. A
+fitted trigger period more than 0.2 % off the command raises `CLOCK_DISCONTINUITY`
+rather than drifting. That would happen, for example, if firmware rounded 30 Hz to a
+33 ms period.
+
+**The exposure cut short by a stop is never recorded.** That is stricter than
+marking it invalid:
+
+- A session that reaches its duration stops only after a slot beyond the duration has
+  arrived, so no recorded exposure was still in flight.
+- After a stop request, frames that arrive later are discarded. A
+  `rwd_stop_requested` event counts them.
+
+**TTL edges.** Each edge keeps its raw board tick, unwrapped, as `controller_tick_us`
+(1 ms resolution). The board's tick and its trigger grid come from one oscillator, so
+a single offset places every edge on the session clock. `RWDTTLClock` estimates that
+offset from the earliest frame and edge arrivals near each edge. It holds edges until
+8 have arrived or 10 s have passed, then freezes the offset, so intervals between
+edges stay exact. The offset's error is the difference between the camera readout
+floor and the serial delivery floor: about 2 ms in simulation, and not yet measured
+on hardware. Lowering the FTDI port's latency timer (Device Manager, port settings,
+16 ms by default) should tighten it. Edges on lines with no configured input are
+counted in a `rwd_ttl_edges_not_configured` event. A malformed controller frame
+records an invalid span, because it may have been a lost edge.
+
+**QC.** `RWDBrightnessCheck` flags a run whose first 410 and 470 nm frames look
+swapped against earlier means (`rwd_brightness_qc_mismatch`). It never assigns or
+changes a wavelength.
+
+**Bench items for part 5:**
+
+- the enable-to-first-trigger delay;
+- the trigger period at frame rates that do not divide 1000 ms;
+- the TTL offset error;
+- the real camera readout latency against the stall and start checks at high frame
+  rates.
 
 ## Recovered system architecture
 
