@@ -45,7 +45,8 @@ class FakeFrame:
 
 
 class FakeCamera:
-    def __init__(self, user_id: str) -> None:
+    def __init__(self, user_id: str, transport: str = "U3V") -> None:
+        self.transport = transport
         self.values: dict[str, object] = {
             "DeviceUserID": user_id,
             "TriggerMode": "Off",
@@ -70,6 +71,10 @@ class FakeCamera:
 
     def get_feature_by_name(self, name: str) -> FakeFeature:
         return FakeFeature(self, name)
+
+    def get_transport_layer(self) -> SimpleNamespace:
+        kind = SimpleNamespace(name=self.transport)
+        return SimpleNamespace(get_type=lambda: kind)
 
     def start_streaming(self, handler, buffer_count: int) -> None:
         self.handler = handler
@@ -194,3 +199,14 @@ def test_settings_validation() -> None:
         AlviumSettings(exposure_us=1, gain_db=-1)
     with pytest.raises(ValueError, match="queue"):
         AlviumTriggeredCameras(AlviumSettings(exposure_us=1), queue_size=0)
+
+
+def test_skips_cameras_on_other_transport_layers() -> None:
+    green, red = FakeCamera("1"), FakeCamera("2")
+    simulator = FakeCamera("1", transport="Custom")
+    system = FakeSystem([simulator, green, red])
+
+    with _cameras(system):
+        assert green.open and red.open
+        assert not simulator.open
+        assert simulator.history == []

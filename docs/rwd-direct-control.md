@@ -508,3 +508,31 @@ ran with all LEDs disabled at 0 %.
 All 144 Input 2 edges fell inside the enabled windows, and the output stopped on
 disable. This also shows that input timestamps resolve the board's own output timing
 to the millisecond.
+
+**2026-10-20 DBF RWD path, round 1.** These runs used DBF's own `RWDRig` through
+`run_preview` and `AcquisitionEngine`. The R821 was on COM3 with both Alvium cameras,
+the fiber was on its target, and the operator watched. Settings: 410/470/560 nm at
+5 %, 20 Hz, 10 ms exposure, one fiber at the demo position. The run was made twice;
+the second run included the two fixes below.
+
+- **Previews:** 3 of 3 passed each time, 10 frames each. 410 and 470 nm frames came
+  only from camera 1 and 560 nm frames only from camera 2. Mean frame brightness per
+  wavelength was steady across previews (about 6.0, 2.5, and 13.5 counts).
+- **Recordings:** each 10 s recording held 200 frames. Every slot step was exactly
+  50.000 ms on the trigger grid, with no camera breaks, restarts, drops, or invalid
+  spans. The NWB file passed validation and round-trip checks.
+- **LEDs:** the operator saw the LEDs flash for each preview, stay on through the
+  recording, and go off at the end every time.
+- **TTL input:** a burst on Input 1 during the second recording gave alternating rising
+  and falling edges. The TTL clock froze its offset after 8 edges, and edge intervals
+  equal the raw board-tick intervals. The absolute edge-to-exposure offset still has
+  no reference measurement.
+- **Start delay:** the first run reported −4.6 ms from the enable command to the
+  first frame. That was impossible, because the host stamped the enable after the
+  board's confirmation returned through the FTDI latency timer. The rig now stamps it
+  before sending. The second run measured +10.6 ms, and the host-clock residual fell
+  from 13.3 ms to 2.1 ms.
+- **Startup time:** opening the controller and cameras took about 7 s of a preview's
+  wall time. Vimba X's three simulated cameras added 1.7 s, so `AlviumTriggeredCameras`
+  now skips cameras on transport layers other than USB3 Vision.
+

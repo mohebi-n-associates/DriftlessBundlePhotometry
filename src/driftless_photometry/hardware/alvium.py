@@ -70,6 +70,16 @@ class AlviumCameraDiagnostics:
     queue_overflows: int
 
 
+def _is_usb3_vision(camera: Any) -> bool:
+    """True unless the camera reports a transport layer other than USB3 Vision."""
+
+    try:
+        kind = camera.get_transport_layer().get_type()
+    except Exception:
+        return True
+    return getattr(kind, "name", str(kind)) == "U3V"
+
+
 def load_vmbpy() -> ModuleType:
     try:
         return importlib.import_module("vmbpy")
@@ -166,6 +176,10 @@ class AlviumTriggeredCameras:
     def _open_cameras(self) -> None:
         found: dict[str, Any] = {}
         for camera in self._system.get_all_cameras():
+            if not _is_usb3_vision(camera):
+                # Vimba X's camera simulators and other transports are never RWD cameras;
+                # opening each costs about half a second (bench, 2026-10-20).
+                continue
             camera.__enter__()
             try:
                 user_id = str(camera.get_feature_by_name("DeviceUserID").get())

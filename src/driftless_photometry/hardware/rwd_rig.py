@@ -338,8 +338,10 @@ class _RWDSession:
         self._run_start_s = None
         self._run_sequence_base = self._last_sequence + 1
         self._brightness.start_segment(self._run_index)
-        self._transport.command(device_enable(True))
+        # Stamp before sending: the confirmation returns through the FTDI latency timer
+        # (up to 16 ms by default), but the board starts as soon as the command arrives.
         self._enabled_host_s = self._clock()
+        self._transport.command(device_enable(True))
         self._tracker = RWDSegmentTracker(self._plan, enabled_host_s=self._enabled_host_s)
 
     def _restart(self, reason: str) -> None:
