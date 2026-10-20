@@ -67,6 +67,9 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- RWD sessions now time each sequencer start from before the enable command is sent,
+  and the Alvium adapter skips non-USB3 cameras such as Vimba X's simulators, which
+  shortens RWD startup. Both changes came from the first DBF-driven runs on an R821.
 - NWB frame events now record each exposure's camera index, camera hardware
   timestamp, and wavelength source for both systems, and the recovery spool moved to
   schema v3. Earlier spools still load and recover. The Custom simulator now refuses
