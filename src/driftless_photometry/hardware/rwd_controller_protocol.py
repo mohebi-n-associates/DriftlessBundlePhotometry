@@ -322,6 +322,19 @@ def led_enable(led: RWDLed, enabled: bool) -> RWDCommand:
     return RWDCommand(RWDFunction.LED_ENABLE, bytes([led, int(enabled), 0, 0]))
 
 
+def trigger_period_s(frame_rate_hz: int) -> float:
+    """The board's actual trigger period: 1/fps truncated to whole 10 us steps.
+
+    Measured on an R821 (firmware 2.0.0): 15 Hz triggers every 66.660 ms and 30 Hz every
+    33.330 ms, while 20 and 50 Hz are exact. Timing exposures at exactly 1/fps would
+    drift against the board clock by up to 0.25 % at non-divisor rates.
+    """
+
+    if frame_rate_hz <= 0:
+        raise ValueError("frame rate must be positive")
+    return (100_000 // frame_rate_hz) * 1e-5
+
+
 def max_exposure_ms(frame_rate_hz: int) -> float:
     """OFRS's exposure ceiling: the integer frame period minus 2.63 ms of board dead time."""
 

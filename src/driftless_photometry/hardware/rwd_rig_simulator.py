@@ -2,7 +2,8 @@
 
 The cameras follow the bench-measured trigger behavior of an R821:
 
-- each sequencer run triggers slot ``k`` at ``start + delay + k / fps``;
+- each sequencer run triggers slot ``k`` at ``start + delay + k * period``, where the
+  period is 1/fps truncated to 10 us, as measured;
 - interleaved modes cycle 410 → 470 → 560 nm (the enabled ones), starting on the first;
 - the board triggers camera 1 for 410/470 nm and camera 2 for 560 nm;
 - stopping the sequencer cuts the exposure in flight short.
@@ -27,7 +28,7 @@ from driftless_photometry.config import SessionConfig
 
 from .alvium import AlviumFrame, AlviumSettings
 from .rwd_board_simulator import SimulatedRWDBoard, SimulatedRWDRun
-from .rwd_controller_protocol import RWDExcitationMode, RWDLed
+from .rwd_controller_protocol import RWDExcitationMode, RWDLed, trigger_period_s
 
 _MODE_LEDS = {
     RWDExcitationMode.INTERLEAVED_410_470: (RWDLed.LED_410, RWDLed.LED_470),
@@ -96,7 +97,7 @@ class SimulatedRWDCameras:
         self._jitter_s = jitter_s
         self._ppm = {"1": 25.0, "2": -15.0, **(camera_ppm or {})}
         self._offset_ns = {"1": 7_000_000_000, "2": 3_000_000_000, **(camera_offset_ns or {})}
-        self._trigger_period = trigger_period or (lambda fps: 1.0 / fps)
+        self._trigger_period = trigger_period or trigger_period_s
         self._rng = np.random.default_rng(seed)
         self._shape = (config.camera.height_px, config.camera.width_px)
         self._masks = {

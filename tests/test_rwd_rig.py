@@ -360,3 +360,49 @@ def test_rwd_rig_drives_configured_ttl_outputs_until_the_end(tmp_path: Path) -> 
     events = {event.event: event.detail for event in events_of([first, *rest])}
     assert events["rwd_ttl_outputs_started"] == "output 3: 5 Hz, 50 ms pulses (cue)"
     bench.assert_all_off()
+
+
+def test_rwd_rig_handles_retransmitted_and_out_of_run_ttl_edges(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path))
+    bench.board.edge_retransmissions = 2
+    bench.board.report_edges_while_stopped = True
+    start = bench.clock.now_s
+    bench.board.schedule_input_edge(1, True, start - 0.5)
+    bench.pending_setup = lambda cams: cams.missed.add(("2", 0, 8))
+    for offset in (0.2, 0.25):
+        bench.board.schedule_input_edge(1, offset == 0.2, start + offset)
+
+    packets = bench.run(2.0)
+
+    edges = [edge for packet in packets for edge in packet.ttl_edges]
+    assert [edge.edge for edge in edges] == ["rising", "falling"]
+    events = {event.event: event.detail for event in events_of(packets)}
+    assert events["rwd_ttl_edges_before_recording"].startswith("1 edge")
+    assert "repeated controller message" in events["rwd_controller_retransmissions"]
+    assert "may not be reported" in events["rwd_sequencer_restart"]
+
+
+def test_rwd_rig_does_not_restart_when_the_host_falls_behind(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, requested_fps=50.0))
+    received = []
+    for packet in bench.rig.packets(3.0):
+        received.append(packet)
+        if len(frames_of(received)) in (20, 60):
+            # The host stalls; frames wait in the camera queue meanwhile.
+            bench.clock.advance_to(bench.clock.now_s + 0.8)
+
+    frames = frames_of(received)
+    assert len(frames) == 150
+    assert [f.exposure.sequence for f in frames] == list(range(150))
+    assert "rwd_sequencer_restart" not in [event.event for event in events_of(received)]
+    assert not invalid_of(received)
+
+
+def test_rwd_rig_times_non_divisor_rates_on_the_boards_period(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, (W410, W470), requested_fps=30.0))
+
+    frames = frames_of(bench.run(2.0))
+
+    times = [frame.exposure.timestamp_s for frame in frames]
+    np.testing.assert_allclose(np.diff(times), 0.03333, atol=1e-12)
+    assert len(frames) == 61

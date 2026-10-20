@@ -254,7 +254,8 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      flight. The exposure field is the per-trigger LED pulse length, read in the byte
      order sent. Host-loss tests showed that the LEDs stay on through host silence, an
      unclosed port, and USB unplug, so DBF must own the off path. TTL input edges carry a
-     1 ms board-clock timestamp and are reported only while the sequencer runs. An
+     1 ms board-clock timestamp and are reliably reported only while the sequencer
+     runs. An
      Output 1 → Input 2 loopback confirmed the output frequency and pulse width to the
      millisecond. Still needed: the resync sequence as OFRS performs it, from an OFRS
      capture.

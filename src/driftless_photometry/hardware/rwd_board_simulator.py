@@ -105,11 +105,16 @@ class SimulatedRWDBoard:
         self.drop_acks = 0
         self.silent = False
         self.corrupt_confirmations = False
+        self.edge_retransmissions = 0
+        """Extra copies of each edge report, as the board sends when acks are late."""
+        self.report_edges_while_stopped = False
+        """Report edges with the sequencer stopped, as seen once on the bench."""
         self._clock = clock
         self._heartbeat_interval_s = heartbeat_interval_s
         self._next_heartbeat_s = clock()
         self._decoder = RWDFrameStreamDecoder()
         self._outbox = bytearray()
+        self._last_frame_start = 0
         self._sequence = 0
         self.runs: list[SimulatedRWDRun] = []
         self._boot_s = clock()
@@ -119,6 +124,7 @@ class SimulatedRWDBoard:
     # Serial-port surface -------------------------------------------------------------
     @property
     def in_waiting(self) -> int:
+        self._require_link()
         self._emit_due()
         return len(self._outbox)
 
@@ -188,13 +194,16 @@ class SimulatedRWDBoard:
         now = self._clock()
         while self._scheduled and self._scheduled[0].deliver_s <= now:
             edge = heapq.heappop(self._scheduled)
-            if self.running_at(edge.at_s) and not self.silent:
+            reportable = self.running_at(edge.at_s) or self.report_edges_while_stopped
+            if reportable and not self.silent:
                 data = (
                     bytes([edge.line - 1])
                     + self.tick_ms(edge.at_s).to_bytes(4, "big")
                     + bytes([0 if edge.rising else 1])
                 )
                 self._reply(RWDFunction.INPUT_EDGE, data)
+                frame = self._outbox[self._last_frame_start :]
+                self._outbox += bytes(frame) * self.edge_retransmissions
         self._emit_heartbeats()
 
     def _emit_heartbeats(self) -> None:
@@ -207,6 +216,7 @@ class SimulatedRWDBoard:
     def _send(self, message_type: RWDMessageType, function: int, data: bytes) -> None:
         self._sequence = (self._sequence + 1) & 0xFFFF
         message = RWDMessage(message_type, self._sequence, function, data)
+        self._last_frame_start = len(self._outbox)
         self._outbox += encode_rwd_message(message, allow_unsafe=True)
 
     def _reply(self, function: RWDFunction, data: bytes) -> None:

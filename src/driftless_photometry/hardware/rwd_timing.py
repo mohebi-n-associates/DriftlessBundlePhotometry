@@ -35,6 +35,7 @@ from .rwd_controller_protocol import (
     excitation_mode_for,
     led_enable,
     led_power,
+    trigger_period_s,
 )
 
 _LED_FOR_WAVELENGTH = {Wavelength(led.wavelength_nm): led for led in RWDLed}
@@ -68,7 +69,9 @@ class RWDExcitationPlan:
 
     @property
     def period_s(self) -> float:
-        return 1.0 / self.frame_rate_hz
+        """The board's trigger period, which is 1/fps truncated to 10 us (bench)."""
+
+        return trigger_period_s(self.frame_rate_hz)
 
     @property
     def exposure_s(self) -> float:
@@ -190,7 +193,7 @@ class RWDSegmentTracker:
         *,
         enabled_host_s: float,
         tolerance_fraction: float = 0.25,
-        period_tolerance: float = 2e-3,
+        period_tolerance: float = 5e-4,
         frames_for_period_check: int = 20,
     ) -> None:
         if not 0 < tolerance_fraction < 0.5:

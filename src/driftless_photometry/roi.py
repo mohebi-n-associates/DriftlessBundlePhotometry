@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from math import ceil, floor
 
 import numpy as np
@@ -64,6 +65,21 @@ def circular_mask(shape: tuple[int, int], roi: ROIConfig) -> NDArray[np.bool_]:
     return distance_sq <= roi.radius_px**2
 
 
+@lru_cache(maxsize=32)
+def _cached_mask(
+    shape: tuple[int, int], center_x_px: float, center_y_px: float, radius_px: float
+) -> NDArray[np.bool_]:
+    """A read-only circular mask; extraction reuses it for every frame of a session."""
+
+    height, width = shape
+    if height <= 0 or width <= 0:
+        raise ValueError("mask shape must be positive")
+    yy, xx = np.ogrid[:height, :width]
+    mask = (xx - center_x_px) ** 2 + (yy - center_y_px) ** 2 <= radius_px**2
+    mask.setflags(write=False)
+    return mask
+
+
 def extract_circular_rois(
     frame: NDArray[np.uint16],
     rois: tuple[ROIConfig, ...],
@@ -81,7 +97,7 @@ def extract_circular_rois(
     saturation = np.empty(len(rois), dtype=np.float32)
     counts = np.empty(len(rois), dtype=np.int32)
     for index, roi in enumerate(rois):
-        mask = circular_mask(frame.shape, roi)
+        mask = _cached_mask(frame.shape, roi.center_x_px, roi.center_y_px, roi.radius_px)
         pixels = frame[mask]
         if pixels.size == 0:
             raise ValueError(f"ROI {roi.fiber_id} contains no pixels")

@@ -122,7 +122,7 @@ settings are unchanged. `profile_for(source)` picks the profile.
 | Intensity | `voltage_v`, 0–5 V | `power_percent`, 0–100 % |
 | Cameras | 1 | 2 (410/470 nm on camera 1, 560 nm on camera 2) |
 | Interleaved sets | any | one LED, 410+470, 470+560, or all three (no 410+560) |
-| Frame rate | any | whole hertz, 10–250 Hz (total trigger rate) |
+| Frame rate | any | whole hertz, 10–250 Hz (total trigger rate); the board's period is 1/fps truncated to 10 µs |
 | Exposure | any | 500 µs to (1000 // fps) ms − 2.63 ms |
 | Sensor | any | full 728 × 544 Alvium 1800 U-040m |
 | TTL outputs | — | 4 |
@@ -184,8 +184,9 @@ camera's first slot in the cycle. Each later frame must have the next frame ID, 
 its hardware timestamp must land on the camera's next slot. The tracker fits each
 camera's clock period, so crystal differences of tens of ppm never accumulate.
 
-Session time is the board's trigger grid. Slot `k` of run 0 is at `k / fps`, and
-session zero is run 0's first trigger. A later run starts at the session time
+Session time is the board's trigger grid. Slot `k` of run 0 is at `k × period`, where
+the period is 1/fps truncated to whole 10 µs steps (bench: 66.660 ms at 15 Hz, 33.330
+ms at 30 Hz), and session zero is run 0's first trigger. A later run starts at the session time
 measured on its first camera's hardware clock since that camera's last recorded
 frame. Exposures carry:
 
@@ -282,13 +283,13 @@ Each per-ROI NWB file then contains:
 `SimulatedRig` refuses RWD settings, so an RWD recording can never be simulated by the
 Custom simulator.
 
-**Bench items for part 5:**
+**Remaining bench items:**
 
-- the enable-to-first-trigger delay;
-- the trigger period at frame rates that do not divide 1000 ms;
-- the TTL offset error;
-- the real camera readout latency against the stall and start checks at high frame
-  rates.
+- The absolute TTL-to-exposure offset error. It needs a reference signal tied to the
+  exposures, such as a camera's exposure-active output wired to a board input.
+- Restarts on hardware. No run so far broke continuity, so the restart path, and the
+  start-delay check after a restart, have only run in simulation.
+- Whether TTL outputs pause while the sequencer restarts.
 
 ## Recovered system architecture
 
@@ -341,6 +342,9 @@ FTDI virtual COM port, 115200 baud, 8 data bits, no parity, 1 stop bit.
   the new setting with a reply whose function ID is the command's minus `0x20`: `0x41`
   → `0x21` through `0x45` → `0x25` (bench). It does not ack host heartbeats. It numbers
   all of its own frames from one shared sequence counter (bench).
+- **Board retransmissions:** the board resends a reply it has not had acknowledged,
+  with the same sequence number, twice more about a second apart (bench). DBF
+  recognizes a repeated sequence, acknowledges it again, and ignores it.
 
 ## Functions
 
@@ -367,7 +371,7 @@ it. Rows marked "bench" were confirmed by the 2026-10-20 bench tests.
 | 0x25 | `STATE_REPLY` | board → host | `[on, 0, 0, 0]`, the sequencer state | bench |
 | 0x26 | `VERSION_REPLY` | board → host | firmware `data[0].data[1].data[2]`, 4 bytes | bench |
 | 0x27 | `VERSION_DETAIL_REPLY` | board → host | 32-bit build, then `OFRS` | bench |
-| 0x28 | `INPUT_EDGE` | board → host | `[line index 0–3, tick_ms (u32, high byte first), edge 0 rising / 1 falling]`; sent only while the sequencer runs | bench |
+| 0x28 | `INPUT_EDGE` | board → host | `[line index 0–3, tick_ms (u32, high byte first), edge 0 rising / 1 falling]`; reported while the sequencer runs, and at least sometimes while it is stopped | bench |
 | 0x2B | `MODEL_REPLY` | board → host | one byte: 0 = R821 (bench); OFRS maps 1 = R820, 2 = R811, 3 = R810 (code) | bench (0) |
 | 0x29 | `BNC_PORT_REPLY` | board → host | `[port, on]`: output state changed | bench |
 | 0x2A, 0x2D | LED limits, time-check replies | board → host | layouts unknown | name only |
@@ -493,9 +497,10 @@ every 31 s.
   - Bursts were exactly 30 991 ticks apart.
   - The counter continued across sequencer restarts and sessions, consistent with
     counting from power-on.
-- **Implications for DBF:** TTL edges carry a board-clock timestamp. They are only
-  reported while the sequencer runs, so DBF must keep it enabled for the whole
-  recording.
+- **Implications for DBF:** TTL edges carry a board-clock timestamp. They are reliably
+  reported only while the sequencer runs, so DBF keeps it enabled for the whole
+  recording. A later run saw two edges reported with it stopped, so edges are not
+  guaranteed to be suppressed either.
 
 **2026-10-20 TTL output loopback.** A BNC cable joined Output 1 to Input 2. The sequencer
 ran with all LEDs disabled at 0 %.
@@ -536,3 +541,34 @@ the second run included the two fixes below.
   wall time. Vimba X's three simulated cameras added 1.7 s, so `AlviumTriggeredCameras`
   now skips cameras on transport layers other than USB3 Vision.
 
+**2026-10-20 DBF RWD path, round 2.** Same setup and settings as round 1 except the
+frame rate, with the operator watching. The LEDs were off after every run.
+
+- **20 Hz, 70 s:** 1400 frames on an exact 50 ms grid, with no breaks. Two TTL bursts
+  were placed on the session clock 30 991 ms apart, matching the board ticks.
+- **50 Hz, first attempts:** two problems in DBF.
+  - A preview faulted with "TTL ticks went backwards". The serial log showed the
+    board resending two unacknowledged edge reports while DBF was opening the cameras
+    and not reading the port. Those reports also arrived with the sequencer stopped.
+    The transport now ignores repeated sequences, and edges before the first exposure
+    are counted rather than recorded.
+  - The recording restarted every 1–3 s. The fault was in DBF's host loop: each idle
+    serial poll waited up to the port's 20 ms timeout, so at 50 Hz the loop fell
+    behind, and the stall check took the camera-queue backlog for missing frames.
+    Polling no longer waits, the stall check uses frame arrival times, and ROI masks
+    are cached (2 ms per frame before).
+  - One recording found camera 1 missing right after the preview closed the cameras.
+    Camera discovery now re-scans for up to 5 s.
+- **50 Hz, after the fixes:** 2000 of 2000 frames on an exact 20 ms grid, with no
+  restarts, and a TTL burst aligned.
+- **Trigger period:** camera timestamps give the period to well under a microsecond.
+  - At 20 and 50 Hz, both cameras ran 24 ppm slow against the board grid, a crystal
+    offset only.
+  - At 30 Hz the period was 33.330 ms (100 ppm short of 1/30 s), and at 15 Hz it was
+    66.660 ms. The board truncates 1/fps to whole 10 µs steps.
+  - DBF now uses that period. A repeat 30 Hz run then showed only the same −24 ppm
+    crystal offset, with residuals within 3.7 µs.
+  - The trigger-period sanity check was tightened from 0.2 % to 0.05 %.
+- **Start delay:** from the enable command to the first frame, 10.6–11.5 ms at 20, 30,
+  and 50 Hz with a 10 ms exposure. That leaves about 1 ms for board start and camera
+  readout.
