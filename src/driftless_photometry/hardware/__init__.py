@@ -15,6 +15,7 @@ from .controller_protocol import (
     encode_message,
 )
 from .controller_serial import SerialControllerTransport
+from .rwd_board_simulator import SimulatedRWDBoard
 from .rwd_controller_protocol import (
     RWDCommand,
     RWDExcitationMode,
@@ -27,6 +28,13 @@ from .rwd_controller_protocol import (
     RWDMessageType,
     decode_rwd_frame,
     encode_rwd_message,
+)
+from .rwd_transport import (
+    RWDControllerIdentity,
+    RWDControllerTransport,
+    RWDPollResult,
+    RWDReceivedEdge,
+    candidate_rwd_ports,
 )
 from .rwd_usb_capture import (
     RWDUSBCaptureDecode,
@@ -48,6 +56,8 @@ __all__ = [
     "MessageType",
     "ProtocolError",
     "RWDCommand",
+    "RWDControllerIdentity",
+    "RWDControllerTransport",
     "RWDExcitationMode",
     "RWDFrameError",
     "RWDFrameStreamDecoder",
@@ -56,14 +66,18 @@ __all__ = [
     "RWDMalformedFrame",
     "RWDMessage",
     "RWDMessageType",
+    "RWDPollResult",
+    "RWDReceivedEdge",
     "RWDUSBCaptureDecode",
     "RWDUSBCaptureError",
     "RigPacket",
     "RigSource",
     "SerialControllerTransport",
+    "SimulatedRWDBoard",
     "SimulatedRig",
     "ThorlabsSDKStatus",
     "ThorlabsSDKUnavailable",
+    "candidate_rwd_ports",
     "decode_message",
     "decode_rwd_frame",
     "decode_rwd_usb_capture",

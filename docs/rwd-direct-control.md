@@ -30,16 +30,39 @@ Planned gated steps:
 2. **Bench capture of OFRS traffic — hardware required.** Follow
    [the bench-capture procedure](rwd-direct-bench-capture.md), then promote captured
    frames to golden fixtures and resolve the open questions below.
-3. **Serial transport — planned.** Single-owner port: handshake, automatic ACKs,
-   resend, heartbeat, and malformed-frame faults. It sends the full off sequence on
-   connect and on every exit path, because the board has no fail-safe (see
-   [Bench evidence](#bench-evidence)).
-4. **Alvium camera adapter — planned.** Lazy vendor SDK import, hardware trigger,
-   `uint16` frames with hardware frame IDs and timestamps.
+3. **Serial transport — implemented; simulator-tested and bench-checked.**
+   `hardware/rwd_transport.py` is a single-owner port. It handles:
+   - handshake and identity check, automatic acks, and OFRS-style resends;
+   - confirmation checks for each setting;
+   - the host heartbeat, and faults on controller silence, link loss, or malformed
+     frames.
+
+   It sends the full off sequence on connect and on every close, because the board
+   has no fail-safe (see [Bench evidence](#bench-evidence)).
+   `hardware/rwd_board_simulator.py` reproduces the bench-measured firmware behavior
+   for tests and simulation.
+4. **Alvium camera adapter — implemented; simulator-tested and bench-checked.**
+   `hardware/alvium.py` imports VmbPy lazily, finds the cameras by `DeviceUserID`, and
+   applies OFRS's trigger setup in every session, restoring the previous settings on
+   exit. It delivers `uint16` frames with hardware frame IDs and timestamps through a
+   bounded queue, and counts incomplete frames and overflows.
 5. **RWD rig source — planned.** Pairs the transport and cameras, assigns wavelength
-   identity as described below, and emits `RigPacket`s.
+   identity as described below, and emits `RigPacket`s. Each fiber gets its own
+   camera-2 ROI for 560 nm, placed separately as in OFRS (decided 2026-10-20).
 6. **Bench characterization — hardware required.** LED/trigger timing, the
    disconnect and watchdog LED state, TTL latency, and clock drift.
+
+## Installing for RWD hardware
+
+The RWD controller needs only the COM port that Windows creates for its FTDI bridge;
+Windows Update installs that driver automatically. The cameras need Allied Vision
+Vimba X with its USB transport layer, and DBF needs its Python binding:
+
+```bash
+python -m pip install "driftless-bundle-photometry[rwd]"
+```
+
+Start DBF after installing Vimba X, so it sees `GENICAM_GENTL64_PATH`.
 
 ## Approved exception: wavelength identity
 
