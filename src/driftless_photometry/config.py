@@ -185,11 +185,29 @@ class CustomSourceConfig(BaseModel):
     kind: Literal["custom"] = "custom"
 
 
-class RWDSourceConfig(BaseModel):
-    """RWD photometry hardware driven directly by DBF; see ``docs/rwd-direct-control.md``.
+class RWDTTLOutputConfig(BaseModel):
+    """A pulse train the RWD board drives on one BNC TTL output during a session."""
 
-    Until the RWD rig source exists this source can be configured but not recorded.
-    """
+    model_config = ConfigDict(frozen=True)
+
+    port: int = Field(ge=1, le=4)
+    frequency_hz: float = Field(gt=0.0, le=655.35)
+    """Board resolution is 0.01 Hz."""
+    pulse_width_ms: int = Field(ge=1, le=65_535)
+    label: str = Field(default="", max_length=64)
+
+    @model_validator(mode="after")
+    def validate_pulse_fits_period(self) -> RWDTTLOutputConfig:
+        if self.pulse_width_ms >= 1000.0 / self.frequency_hz:
+            raise ValueError(
+                f"TTL output {self.port} pulse of {self.pulse_width_ms} ms does not fit its "
+                f"{1000.0 / self.frequency_hz:g} ms period"
+            )
+        return self
+
+
+class RWDSourceConfig(BaseModel):
+    """RWD photometry hardware driven directly by DBF; see ``docs/rwd-direct-control.md``."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -198,8 +216,20 @@ class RWDSourceConfig(BaseModel):
         default=None,
         min_length=1,
         max_length=64,
-        description="Controller COM port; None selects the FT232R port that answers.",
+        description="Controller COM port; None uses the only FT232R port present.",
     )
+    ttl_outputs: tuple[RWDTTLOutputConfig, ...] = Field(
+        default=(),
+        max_length=4,
+        description="Pulse trains to drive while recording; outputs not listed stay off.",
+    )
+
+    @model_validator(mode="after")
+    def validate_output_ports(self) -> RWDSourceConfig:
+        ports = [output.port for output in self.ttl_outputs]
+        if len(ports) != len(set(ports)):
+            raise ValueError("each RWD TTL output may be configured once")
+        return self
 
 
 AcquisitionSourceConfig = Annotated[

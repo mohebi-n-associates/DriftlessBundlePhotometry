@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import traceback
+from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -12,21 +13,19 @@ from driftless_photometry.acquisition import (
     preview_duration_s,
     run_preview,
 )
-from driftless_photometry.config import CustomSourceConfig, SessionConfig
-from driftless_photometry.hardware import SimulatedRig
+from driftless_photometry.config import RWDSourceConfig, SessionConfig
+from driftless_photometry.hardware import RigSource, RWDRig, SimulatedRig
 from driftless_photometry.state import AcquisitionState
 
-RWD_BACKEND_UNAVAILABLE = (
-    "RWD direct control cannot preview or record yet: its controller and camera "
-    "backend is not implemented"
-)
+RigFactory = Callable[[SessionConfig], RigSource]
 
 
-def require_recordable_source(config: SessionConfig) -> None:
-    """Refuse sources that have no acquisition backend instead of simulating them."""
+def default_rig_factory(config: SessionConfig) -> RigSource:
+    """RWD settings drive the RWD hardware; Custom settings run the simulator."""
 
-    if not isinstance(config.source, CustomSourceConfig):
-        raise ValueError(RWD_BACKEND_UNAVAILABLE)
+    if isinstance(config.source, RWDSourceConfig):
+        return RWDRig(config)
+    return SimulatedRig(config, realtime=True)
 
 
 class AcquisitionWorker(QObject):
@@ -36,19 +35,24 @@ class AcquisitionWorker(QObject):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, config: SessionConfig, duration_s: float) -> None:
+    def __init__(
+        self,
+        config: SessionConfig,
+        duration_s: float,
+        rig_factory: RigFactory = default_rig_factory,
+    ) -> None:
         super().__init__()
-        require_recordable_source(config)
         self._config = config
         self._duration_s = duration_s
         self._engine = AcquisitionEngine()
+        self._rig_factory = rig_factory
 
     @Slot()
     def run(self) -> None:
         try:
             result = self._engine.run(
                 self._config,
-                SimulatedRig(self._config, realtime=True),
+                self._rig_factory(self._config),
                 duration_s=self._duration_s,
                 on_progress=self._emit_progress,
                 on_state=self._emit_state,
@@ -78,12 +82,13 @@ class PreviewWorker(QObject):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, config: SessionConfig) -> None:
+    def __init__(
+        self, config: SessionConfig, rig_factory: RigFactory = default_rig_factory
+    ) -> None:
         super().__init__()
-        require_recordable_source(config)
         self._config = config
         self.duration_s = preview_duration_s(config)
-        self._source = SimulatedRig(config, realtime=True)
+        self._source = rig_factory(config)
 
     @Slot()
     def run(self) -> None:

@@ -28,7 +28,7 @@ version, move its completed entries into a dated version section.
 
 - Added the RWD controller transport, a simulated RWD board, and an Alvium camera
   adapter (VmbPy, via the new `rwd` extra) as the building blocks for RWD acquisition.
-  They are checked on an R821 but not yet wired into recording.
+  Both were checked on an R821, and the RWD rig source below uses them.
 
 - RWD settings now describe the RWD hardware as it is:
   - exact 410, 470, and 560 nm LEDs, with power in percent;
@@ -51,12 +51,12 @@ version, move its completed entries into a dated version section.
   - places TTL edges on the session clock from their board ticks.
 
   The board is switched off on every exit path. It is tested against a simulated R821
-  and its cameras, and is not yet connected to recording.
+  and its cameras but has not yet recorded on hardware.
 - Acquisition now records invalid spans and system events reported by the
   acquisition source. After a stop request it reads until the source ends, so the
   source can hand over its final events.
 - RWD sessions can now be previewed, recorded, spooled, recovered, and written to NWB
-  by the shared engine; the GUI still keeps RWD disabled until its controls land.
+  by the shared engine.
   - The 560 nm traces use each fiber's camera-2 circle.
   - Each exposure's camera, commanded power in percent, camera timestamp, and
     phase-derived wavelength source are kept through the spool (schema v3) into
@@ -71,10 +71,18 @@ version, move its completed entries into a dated version section.
   timestamp, and wavelength source for both systems, and the recovery spool moved to
   schema v3. Earlier spools still load and recover. The Custom simulator now refuses
   RWD settings.
+- The setup window's RWD mode now previews and records on the RWD hardware. Its
+  RWD panel:
+  - warns that the unit has no fail-safe and names the power switch;
+  - picks the controller's COM port;
+  - configures pulse trains on the four TTL outputs.
+
+  The camera calibration view switches between camera 1 (410/470 nm) and camera 2
+  (560 nm). There each fiber's camera-2 circle is placed separately, over that
+  camera's latest frame.
 - Setup now offers exactly two acquisition systems: **Custom** (DBF's own camera and
   timing controller, simulator-backed today) and **RWD** (direct control of RWD
-  hardware). RWD mode can be configured and saved, shows its development status, and
-  keeps preview and recording disabled until its controller and camera backend exists.
+  hardware).
 - Settings files are now format v3 with source kinds `custom` and `rwd`. Settings v1
   files and v2 `native` sources migrate to Custom. v2 RWD TCP-bridge sources migrate to
   RWD mode. Their session and fiber metadata are kept. Channels reset to the RWD LEDs

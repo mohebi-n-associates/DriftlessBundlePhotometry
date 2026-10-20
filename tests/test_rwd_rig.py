@@ -8,6 +8,7 @@ from rwd_bench import rwd_config as _config
 
 from driftless_photometry.config import (
     RWDSourceConfig,
+    RWDTTLOutputConfig,
     SessionConfig,
     TTLInputConfig,
     demo_config,
@@ -342,3 +343,20 @@ def test_rwd_rig_port_selection(tmp_path: Path) -> None:
 def test_rwd_rig_needs_rwd_settings(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="needs an RWD session configuration"):
         RWDRig(demo_config(tmp_path))
+
+
+def test_rwd_rig_drives_configured_ttl_outputs_until_the_end(tmp_path: Path) -> None:
+    payload = _config(tmp_path).model_dump()
+    payload["source"] = RWDSourceConfig(
+        ttl_outputs=(RWDTTLOutputConfig(port=3, frequency_hz=5.0, pulse_width_ms=50, label="cue"),)
+    ).model_dump()
+    bench = Bench(SessionConfig.model_validate(payload))
+    packets = bench.rig.packets(1.0)
+    first = next(packets)
+
+    assert bench.board.state.output_enabled == {1: False, 2: False, 3: True, 4: False}
+    assert bench.board.state.output_config[3] == (500).to_bytes(2, "big") + (50).to_bytes(2, "big")
+    rest = list(packets)
+    events = {event.event: event.detail for event in events_of([first, *rest])}
+    assert events["rwd_ttl_outputs_started"] == "output 3: 5 Hz, 50 ms pulses (cue)"
+    bench.assert_all_off()

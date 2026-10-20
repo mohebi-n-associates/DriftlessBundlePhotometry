@@ -11,6 +11,7 @@ from driftless_photometry.config import (
     CustomSourceConfig,
     ROIConfig,
     RWDSourceConfig,
+    RWDTTLOutputConfig,
     SessionConfig,
     TTLInputConfig,
     Wavelength,
@@ -112,7 +113,11 @@ def test_sources_round_trip_as_discriminated_custom_or_rwd_kinds(tmp_path: Path)
     assert SessionConfig.model_validate(base.model_dump(mode="json")).source == CustomSourceConfig()
     restored = SessionConfig.model_validate(rwd.model_dump(mode="json"))
     assert restored.source == RWDSourceConfig()
-    assert rwd.model_dump(mode="json")["source"] == {"kind": "rwd", "controller_port": None}
+    assert rwd.model_dump(mode="json")["source"] == {
+        "kind": "rwd",
+        "controller_port": None,
+        "ttl_outputs": [],
+    }
 
     with pytest.raises(ValidationError):
         SessionConfig.model_validate({**base.model_dump(mode="json"), "source": {"kind": "native"}})
@@ -265,3 +270,17 @@ def test_channel_power_percent_is_bounded() -> None:
         ChannelConfig(wavelength_nm=Wavelength.GREEN_470, voltage_v=None, power_percent=100.5)
     with pytest.raises(ValidationError):
         ChannelConfig(wavelength_nm=Wavelength.GREEN_470, voltage_v=None, power_percent=-1.0)
+
+
+def test_rwd_ttl_outputs_must_fit_their_period_and_use_each_port_once() -> None:
+    output = RWDTTLOutputConfig(port=2, frequency_hz=10.0, pulse_width_ms=20, label="laser")
+    assert RWDSourceConfig(ttl_outputs=(output,)).ttl_outputs == (output,)
+
+    with pytest.raises(ValidationError, match="does not fit its 100 ms period"):
+        RWDTTLOutputConfig(port=1, frequency_hz=10.0, pulse_width_ms=100)
+    with pytest.raises(ValidationError):
+        RWDTTLOutputConfig(port=5, frequency_hz=1.0, pulse_width_ms=10)
+    with pytest.raises(ValidationError):
+        RWDTTLOutputConfig(port=1, frequency_hz=700.0, pulse_width_ms=1)
+    with pytest.raises(ValidationError, match="configured once"):
+        RWDSourceConfig(ttl_outputs=(output, output))

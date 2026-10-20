@@ -42,9 +42,9 @@ photometry hardware driven directly by DBF, as described in
 [the RWD direct-control design record](rwd-direct-control.md). Both systems produce
 camera frames, so both are validated against camera ROI bounds and enabled excitation
 channels, and both feed the same frame, ROI, spool, and NWB path. The preview,
-acquisition, spool, and NWB services accept both. The GUI keeps RWD preview and
-recording disabled until its RWD controls land (RWD step 5, part 4). The simulator
-stands in for the Custom system only.
+acquisition, spool, and NWB services accept both. The GUI workers get their source
+from a rig factory: `RWDRig` for RWD settings, and the simulator, which stands in
+for the Custom system only, otherwise.
 
 The RWD backend (`hardware.rwd_rig`) works under a scoped, documented exception to
 the wavelength rule above. The RWD controller reports no per-exposure records, so
@@ -63,8 +63,10 @@ canonical spool without passing through the display projection.
 
 The desktop system selector is part of the persisted settings workflow. Both systems
 show camera ROI, excitation-voltage, raw-frame, and wavelength-image controls. Custom
-mode retains its mandatory preview. RWD mode adds a direct-control status panel and,
-until RWD step 5 part 4, keeps preview and recording disabled. Live smoothing is an elapsed-time trailing mean
+mode retains its mandatory preview, and so does RWD mode. RWD mode adds a panel
+with the no-fail-safe warning, the controller port, and TTL output pulse trains.
+The calibration view switches between the two RWD cameras, each with its own fiber
+circles. Live smoothing is an elapsed-time trailing mean
 applied after horizon selection and before optional dF/F display conversion; it
 operates only on bounded GUI buffers.
 

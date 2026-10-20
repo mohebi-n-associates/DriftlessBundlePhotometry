@@ -6,12 +6,14 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QAbstractSpinBox
+from rwd_bench import Bench
 
 from driftless_photometry import __version__
 from driftless_photometry.config import (
     CUSTOM_PROFILE,
     RWD_PROFILE,
     RWDSourceConfig,
+    RWDTTLOutputConfig,
     SessionConfig,
     TraceDisplayConfig,
     Wavelength,
@@ -22,7 +24,6 @@ from driftless_photometry.diagnostics import (
     FinalizationStage,
 )
 from driftless_photometry.gui.main_window import MainWindow
-from driftless_photometry.gui.worker import AcquisitionWorker, PreviewWorker
 from driftless_photometry.settings import save_default_settings
 
 
@@ -182,45 +183,105 @@ def test_gui_offers_only_custom_and_rwd_systems(qtbot, tmp_path: Path) -> None:
     window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
 
     assert window.rwd_group.isVisible()
-    assert window.backend_badge.text() == "RWD - not available"
-    assert not window.preview_button.isEnabled()
+    assert window.backend_badge.text() == "RWD hardware"
+    assert window.preview_button.isEnabled()
     assert not window.start_button.isEnabled()
-    assert "not implemented" in window.preview_status.text()
+    assert "no fail-safe" in window.rwd_safety_label.text()
+    assert "power switch" in window.rwd_safety_label.text()
+    assert window.rwd_safety_label.isVisible()
     assert window.tabs.isTabVisible(2)
     assert not window.camera_calibration_group.isHidden()
+    assert not window.calibration_camera_combo.isHidden()
 
     window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
 
     assert not window.rwd_group.isVisible()
     assert window.preview_button.isEnabled()
     assert window.backend_badge.text() == "Simulator"
+    assert window.calibration_camera_combo.isHidden()
 
 
-def test_gui_round_trips_rwd_source_and_refuses_to_acquire(
-    qtbot, tmp_path: Path, monkeypatch
-) -> None:
+def test_gui_round_trips_rwd_port_and_ttl_outputs(qtbot, tmp_path: Path) -> None:
     window = MainWindow(output_directory=tmp_path, default_fibers=2)
     qtbot.addWidget(window)
-    expected = demo_config(tmp_path, fiber_count=2).model_copy(update={"source": RWDSourceConfig()})
-    notices: list[str] = []
-    monkeypatch.setattr(
-        "driftless_photometry.gui.main_window.QMessageBox.information",
-        lambda _parent, _title, text: notices.append(text),
+    source = RWDSourceConfig(
+        controller_port="COM7",
+        ttl_outputs=(RWDTTLOutputConfig(port=2, frequency_hz=12.5, pulse_width_ms=30),),
+    )
+    expected = demo_config(tmp_path, fiber_count=2, system="rwd").model_copy(
+        update={"source": source}
     )
 
     window._apply_configuration(expected)
     restored = window._build_config()
 
-    assert restored.source == RWDSourceConfig()
     assert window.source_combo.currentData() == "rwd"
-    for worker in (AcquisitionWorker, PreviewWorker):
-        with pytest.raises(ValueError, match="cannot preview or record yet"):
-            worker(restored, 1) if worker is AcquisitionWorker else worker(restored)
+    assert restored.source == source
+    window.rwd_output_checks[2].setChecked(False)
+    window.rwd_port_combo.setCurrentIndex(0)
+    assert window._build_config().source == RWDSourceConfig()
+
+
+def test_gui_places_camera2_circles_separately(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.show()
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    assert len(window._roi_items_cam2) == 2
+    before = window._build_config().rois[0]
+
+    window.calibration_camera_combo.setCurrentIndex(1)
+    assert window._calibration_camera == 2
+    assert window._roi_items_cam2[0].isVisible()
+    assert not window._roi_items[0].isVisible()
+    window._roi_items_cam2[0].setPos(
+        [before.center_x_px - before.radius_px + 40, before.center_y_px - before.radius_px]
+    )
+
+    after = window._build_config().rois[0]
+    assert (after.center_x_px, after.center_y_px) == (before.center_x_px, before.center_y_px)
+    assert after.camera2_center_x_px == pytest.approx(before.center_x_px + 40)
+    assert after.camera2_center_y_px == pytest.approx(before.center_y_px)
+    assert "camera 2: x" in window.roi_summary.text()
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+    assert window._roi_items_cam2 == []
+    assert window._calibration_camera == 1
+
+
+def test_gui_previews_and_records_rwd_hardware(qtbot, tmp_path: Path) -> None:
+    benches = []
+
+    def rig_factory(config):
+        bench = Bench(config)
+        benches.append(bench)
+        return bench.rig
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, rig_factory=rig_factory)
+    qtbot.addWidget(window)
+    window.show()
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    window.duration_spin.setValue(1.0)
+
     window.start_preview()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    assert window.last_error is None, window.last_error
+    assert window.last_preview is not None
+    assert window.start_button.isEnabled()
+    benches[-1].assert_all_off()
+
     window.start_recording()
-    assert len(notices) == 2
-    assert all("not implemented" in notice for notice in notices)
-    assert window._thread is None
+    qtbot.waitUntil(lambda: window._thread is None, timeout=30_000)
+    assert window.last_error is None, window.last_error
+    assert window.last_result is not None
+    assert window.last_result.report.frame_count == 20
+    benches[-1].assert_all_off()
+    for wavelength in RWD_PROFILE.wavelengths:
+        assert window.wavelength_frame_labels[wavelength].text().startswith("Frame ")
+    window.calibration_camera_combo.setCurrentIndex(1)
+    np.testing.assert_array_equal(window._image_item.image, window._last_camera_images[2])
+    window.calibration_camera_combo.setCurrentIndex(0)
+    np.testing.assert_array_equal(window._image_item.image, window._last_camera_images[1])
 
 
 def test_gui_display_smoothing_is_time_based_and_does_not_change_raw_buffer(
