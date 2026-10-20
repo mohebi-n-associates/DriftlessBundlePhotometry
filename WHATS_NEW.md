@@ -64,6 +64,9 @@ version, move its completed entries into a dated version section.
   - RWD files name both Alvium cameras as photodetectors, store a commanded-power
     series in percent per LED, and draw each wavelength's ROI overlay on its own
     camera.
+- Added [the RWD operator guide](docs/rwd-direct-operator-guide.md). It covers safety
+  (the unit's power switch is its only fail-safe), installation, placing fiber circles
+  on both cameras, recording, what the NWB files contain, and troubleshooting.
 
 ### Changed
 
