@@ -249,9 +249,15 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      and enable, continuous and three-LED interleaved modes, and the sequencer start and
      stop against a physical controller. Camera tests confirmed per-LED trigger routing
      (410/470 to camera 1, 560 to camera 2), the frame rate as a total trigger rate, and
-     a 410 → 470 → 560 interleave. Still needed: the exposure field (its echo is
-     byte-swapped), repeatable phase after enable, TTL payloads, the resync sequence as
-     OFRS performs it, and LED behavior after host loss.
+     a 410 → 470 → 560 interleave. Phase tests showed that every sequencer restart (50
+     of 50) begins on the cycle's first LED, and that stopping truncates the exposure in
+     flight. The exposure field is the per-trigger LED pulse length, read in the byte
+     order sent. Host-loss tests showed that the LEDs stay on through host silence, an
+     unclosed port, and USB unplug, so DBF must own the off path. TTL input edges carry a
+     1 ms board-clock timestamp and are reported only while the sequencer runs. An
+     Output 1 → Input 2 loopback confirmed the output frequency and pulse width to the
+     millisecond. Still needed: the resync sequence as OFRS performs it, from an OFRS
+     capture.
    - Follow [the bench-capture procedure](docs/rwd-direct-bench-capture.md); promote real
      frames to golden fixtures and close the design record's open questions.
 3. **Serial transport — planned; depends on step 2**

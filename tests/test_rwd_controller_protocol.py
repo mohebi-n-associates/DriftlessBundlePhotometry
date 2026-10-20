@@ -215,7 +215,7 @@ def test_reply_parsers_and_descriptions() -> None:
     assert parse_version_detail(b"\x00\x00\x96\xc6OFRS") == (38598, True)
     assert parse_version_detail(b"\x00\x00\x00\x01XXXX") == (1, False)
     edge = parse_input_edge(b"\x02\x00\x00\x12\x34\x01")
-    assert (edge.line, edge.edge, edge.unconfirmed_tick) == (3, "falling", 0x1234)
+    assert (edge.line, edge.edge, edge.tick_ms) == (3, "falling", 0x1234)
     for payload in (b"\x00", b"\x04\x00\x00\x00\x00\x00", b"\x00\x00\x00\x00\x00\x02"):
         with pytest.raises(RWDFrameError):
             parse_input_edge(payload)
@@ -282,7 +282,7 @@ def test_decodes_bench_bytes_from_a_physical_controller() -> None:
     assert results[2] == ack_for(model_query().to_message(2))
     assert parse_version_reply(results[3].data) == (2, 0, 0)
     assert parse_version_detail(results[4].data) == (37619, True)
-    assert describe_rwd_message(results[5]) == "model code 0"
+    assert describe_rwd_message(results[5]) == "model code 0 (R821)"
 
 
 # Exact board frames from the 2026-10-20 LED test: 470 nm at 5 %, continuous mode,
@@ -345,3 +345,32 @@ def test_decodes_bench_interleaved_mode_confirmation() -> None:
     assert describe_rwd_message(timing) == "10 Hz, exposure bytes 88 13 (byte order unconfirmed)"
     assert mode.function is RWDFunction.EXCITATION_MODE_REPLY
     assert describe_rwd_message(mode) == "410+470+560 interleaved"
+
+
+# Input 1 edges reported by the physical controller on 2026-10-20 while its sequencer ran
+# (LEDs off): a 10 ms pulse followed by the start of a 30 ms pulse, 1 ms board ticks.
+BENCH_INPUT_EDGE_FRAMES_2026_10_20 = [
+    "7eff03002103134e28000040020400404c7e",
+    "7eff03002103134f28000040020f017c4b7e",
+    "7eff03002103135028000040023600a0d97e",
+    "7eff030021031351280000400255015cf17e",
+]
+
+
+def test_decodes_bench_input_edges_with_board_millisecond_ticks() -> None:
+    stream = bytes.fromhex("".join(BENCH_INPUT_EDGE_FRAMES_2026_10_20))
+    edges = [parse_input_edge(m.data) for m in RWDFrameStreamDecoder().feed(stream)]
+
+    assert [(e.line, e.edge, e.tick_ms) for e in edges] == [
+        (1, "rising", 4_194_820),
+        (1, "falling", 4_194_831),
+        (1, "rising", 4_194_870),
+        (1, "falling", 4_194_901),
+    ]
+
+
+def test_describes_output_state_confirmation_seen_on_hardware() -> None:
+    """Firmware 2.0.0 confirms an output state change with BNC_PORT_REPLY [port, on] (bench)."""
+
+    confirmation = RWDMessage(RWDMessageType.REPLY, 9, RWDFunction.BNC_PORT_REPLY, b"")
+    assert describe_rwd_message(confirmation) == "Output1 on"

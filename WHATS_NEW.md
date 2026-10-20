@@ -16,10 +16,15 @@ version, move its completed entries into a dated version section.
   bench-capture procedure. Bench tests on a physical RWD controller confirmed the
   framing, CRC, escaping, acknowledgements, version handshake, heartbeat, LED power and
   enable, continuous and interleaved modes, and starting and stopping excitation.
-  Camera tests confirmed that the board triggers only the camera for the active LED and
-  that the frame rate is shared across interleaved LEDs.
-  Nothing in the application itself sends commands to RWD hardware yet. Timing units,
-  TTL functions, and behavior after host loss remain unconfirmed.
+  Camera tests confirmed that the board triggers only the camera for the active LED,
+  that the frame rate is shared across interleaved LEDs, that every sequencer restart
+  begins on the cycle's first LED, and that the exposure setting is the per-trigger LED
+  pulse length.
+  Host-loss tests showed that the RWD board keeps its LEDs on when the host goes silent,
+  closes the port, or is unplugged, so any future RWD transport must always send the off
+  sequence itself. TTL input edges carry a millisecond board-clock timestamp. Nothing in
+  the application sends commands to RWD hardware yet. A loopback test confirmed that the
+  TTL output pulse trains match their configured frequency and width.
 
 ### Changed
 
