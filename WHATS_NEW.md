@@ -26,6 +26,10 @@ version, move its completed entries into a dated version section.
   the application sends commands to RWD hardware yet. A loopback test confirmed that the
   TTL output pulse trains match their configured frequency and width.
 
+- Added the RWD controller transport, a simulated RWD board, and an Alvium camera
+  adapter (VmbPy, via the new `rwd` extra) as the building blocks for RWD acquisition.
+  They are checked on an R821 but not yet wired into recording.
+
 ### Changed
 
 - Setup now offers exactly two acquisition systems: **Custom** (DBF's own camera and

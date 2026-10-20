@@ -260,8 +260,8 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      capture.
    - Follow [the bench-capture procedure](docs/rwd-direct-bench-capture.md); promote real
      frames to golden fixtures and close the design record's open questions.
-3. **Serial transport — planned; depends on step 2**
-4. **Alvium camera adapter — planned; depends on step 2**
+3. **Serial transport — implemented; simulator-tested and checked on an R821**
+4. **Alvium camera adapter — implemented; simulator-tested and checked on an R821**
 5. **RWD rig source with phase-derived wavelength identity and gap detection —
    planned; depends on steps 3 and 4.** Adds exact 410/470/560 channel identities,
    records the phase-derived provenance in every NWB, and lifts the step-0 refusals.
