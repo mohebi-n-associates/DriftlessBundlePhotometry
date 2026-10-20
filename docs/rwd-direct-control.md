@@ -46,7 +46,7 @@ Planned gated steps:
    applies OFRS's trigger setup in every session, restoring the previous settings on
    exit. It delivers `uint16` frames with hardware frame IDs and timestamps through a
    bounded queue, and counts incomplete frames and overflows.
-5. **RWD rig source — in progress.** Pairs the transport and cameras, assigns
+5. **RWD rig source — implemented and bench-checked on an R821.** Pairs the transport and cameras, assigns
    wavelength identity as described below, and emits `RigPacket`s. Each fiber gets its
    own camera-2 ROI for 560 nm, placed separately as in OFRS (decided 2026-10-20).
    Built in five parts:
@@ -61,7 +61,9 @@ Planned gated steps:
       the RWD hardware. The RWD panel has the no-fail-safe warning, the COM port,
       and the TTL outputs. The calibration view has a camera selector, so each
       fiber's camera-2 circle is placed over camera 2's latest frame.
-   5. **Bench validation and operator guide** — hardware required.
+   5. **Bench validation and operator guide — done for one R821.** Previews and
+      recordings ran at 15, 20, 30, and 50 Hz; see the round 1 and round 2 bench
+      evidence below. Operators follow [the RWD operator guide](rwd-direct-operator-guide.md).
 6. **Bench characterization — hardware required.** LED/trigger timing, the
    disconnect and watchdog LED state, TTL latency, and clock drift.
 

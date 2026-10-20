@@ -263,8 +263,8 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      frames to golden fixtures and close the design record's open questions.
 3. **Serial transport — implemented; simulator-tested and checked on an R821**
 4. **Alvium camera adapter — implemented; simulator-tested and checked on an R821**
-5. **RWD rig source with phase-derived wavelength identity and gap detection — in
-   progress.** Records the phase-derived provenance in every NWB and lifts the step-0
+5. **RWD rig source with phase-derived wavelength identity and gap detection —
+   implemented; bench-checked on one R821.** Records the phase-derived provenance in every NWB and lifts the step-0
    refusals. Parts:
    1. System profile and settings — implemented. Exact 410/560 nm wavelengths, percent
       power, per-fiber camera-2 circles, profile-driven validation and GUI, and
@@ -276,10 +276,22 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
       NWB layout tested end to end against simulated hardware.
    4. GUI RWD controls: COM port, camera-2 ROI placement, preview, and TTL outputs —
       implemented and tested with the simulated R821.
-   5. Bench validation on the R821 and an operator guide — hardware required.
+   5. Bench validation on the R821 and an operator guide — done 2026-10-20.
+      - Previews and recordings at 15, 20, 30, and 50 Hz with all three LEDs had
+        exact trigger grids, correct camera routing, and the LEDs off after every
+        run.
+      - The bench found and fixed the board's 10 µs period truncation, controller
+        retransmissions, and a 50 Hz host-loop stall.
+      - Operators follow docs/rwd-direct-operator-guide.md.
 6. **Bench characterization — hardware required**
    - LED/trigger timing, disconnect and watchdog LED state, TTL latency, and clock drift
      must be measured before any animal recording.
+   - For RWD, still open:
+     - the absolute TTL-to-exposure offset, which needs a reference such as a
+       camera's exposure-active output wired to a board input;
+     - the restart path on hardware;
+     - whether TTL outputs pause during a restart;
+     - long recordings.
 
 ### Deliverables
 

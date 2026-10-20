@@ -51,7 +51,7 @@ target; the simulator and GUI demo are cross-platform.
   defaults, and restore the complete setup from a previous DBF NWB recording.
 - Two acquisition systems, chosen first in setup and persisted in settings v3:
   **Custom** (DBF's own camera and timing controller, simulator-backed today) and
-  **RWD** (direct control of RWD photometry hardware, not yet able to record). Settings
+  **RWD** (direct control of an RWD R821 and its two cameras). Settings
   v1 and v2 files migrate explicitly with a visible warning.
 - A raw uint16 reference frame and fixed-scale ROI-annotated diagnostic view for
   every wavelength observed in a recording are saved inside each ROI NWB file.
@@ -64,15 +64,16 @@ LED intensity electronics are not yet physically validated. Those require the re
 Windows rig, vendor SDK, trigger cabling, DAC/driver hardware, and bench timing and
 safety measurements. Simulator success is not evidence of physical validation.
 
-RWD mode will let DBF drive an RWD controller board and its photometry cameras
-directly, without RWD's software. Its first step is in place: a codec for the RWD
-controller's serial protocol, checked against frames produced by RWD's own encoder, and
-an offline decoder for USB captures of RWD software sessions
-(`dbf --decode-rwd-usb-capture`). RWD mode can be configured but cannot preview or
-record, and nothing sends commands to RWD hardware yet. See
-[the design record](docs/rwd-direct-control.md) and
-[the bench-capture procedure](docs/rwd-direct-bench-capture.md). The earlier read-only
-bridge to RWD's TCP data stream was removed after 0.2.1.
+RWD mode drives an RWD R821 controller board and its two Alvium cameras directly,
+without RWD's software. It previews and records into the same per-ROI NWB files as the
+Custom system. Each exposure's wavelength is derived from the camera and the LED cycle
+and is marked as phase-derived. The RWD unit has no fail-safe: if DBF cannot switch
+its LEDs off, the unit's power switch must. Read
+[the RWD operator guide](docs/rwd-direct-operator-guide.md) before using it. The design and
+bench evidence are in [the design record](docs/rwd-direct-control.md). An offline
+decoder for USB captures of RWD software sessions is also included
+(`dbf --decode-rwd-usb-capture`). The earlier read-only bridge to RWD's TCP data
+stream was removed after 0.2.1.
 
 The historical MATLAB, Arduino, and Bonsai sources remain under `old mescoscope/`
 for reference and are not runtime dependencies.
