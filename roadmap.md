@@ -247,9 +247,11 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
 2. **Bench capture of OFRS traffic — hardware required; first probe done 2026-10-20**
    - Host bench tests confirmed the framing, CRC, acks, handshake, heartbeat, LED power
      and enable, continuous and three-LED interleaved modes, and the sequencer start and
-     stop against a physical controller. Still needed: timing units (the exposure echo is
-     byte-swapped), TTL payloads, the resync sequence as OFRS performs it, and LED
-     behavior after host loss.
+     stop against a physical controller. Camera tests confirmed per-LED trigger routing
+     (410/470 to camera 1, 560 to camera 2), the frame rate as a total trigger rate, and
+     a 410 → 470 → 560 interleave. Still needed: the exposure field (its echo is
+     byte-swapped), repeatable phase after enable, TTL payloads, the resync sequence as
+     OFRS performs it, and LED behavior after host loss.
    - Follow [the bench-capture procedure](docs/rwd-direct-bench-capture.md); promote real
      frames to golden fixtures and close the design record's open questions.
 3. **Serial transport — planned; depends on step 2**

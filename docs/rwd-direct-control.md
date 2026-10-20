@@ -48,11 +48,13 @@ sequencer is re-enabled and takes `frame number mod enabled-LED count` as the LE
 
 The approved method for the RWD direct track, recorded 2026-10-20:
 
-1. **Camera identity.** The 560 nm channel is imaged by the second photometry camera.
-   Whether that camera is triggered only on 560 nm exposures must be confirmed on the
-   bench.
+1. **Camera identity.** The board triggers camera 2 only for 560 nm exposures and
+   camera 1 only for 410 and 470 nm exposures (bench).
 2. **Phase anchor.** Sequence position is counted per camera from the first exposure
-   after the sequencer is re-enabled, mirroring OFRS's resync.
+   after the sequencer is re-enabled, mirroring OFRS's resync. In one three-LED
+   interleaved run the first exposure after enable was 410 nm, followed by 470 and
+   560 nm, repeating (bench). Determinism across runs and modes 1 and 2 is not yet
+   shown.
 3. **Gap detection.** Every frame's hardware frame ID and hardware timestamp are checked
    against the commanded period. Any missing, duplicated, or late exposure ends the
    valid span, is recorded in `invalid_times`, and requires a resync before samples are
@@ -83,7 +85,11 @@ repository.
   `TriggerSelector=FrameStart`, `TriggerMode=On`, `TriggerSource=Line0` (`Line1` on
   Basler), `TriggerActivation=FallingEdge`, `ExposureMode=Timed`, and disables auto
   exposure and gain. `DeviceUserID` distinguishes camera 1 from camera 2, and camera 2
-  is mirrored with `ReverseX`.
+  is mirrored with `ReverseX`. The cameras power up untriggered, so these settings
+  must be applied in every session (bench).
+- **Camera I/O lines:** Lines 0–3 are inputs. Line0 carries the board's trigger and
+  reads low at exposure start; Lines 1–3 read high throughout and carry no LED
+  identity (bench).
 - **Excitation:** a single LED runs continuously; LED combinations are interleaved
   with one LED per exposure. OFRS defines no 410+560 combination.
 - **Signal:** OFRS averages pixels inside circular ROIs, the same model as DBF's `roi`.
@@ -126,7 +132,7 @@ it. Rows marked "bench" were confirmed by the 2026-10-20 bench tests.
 | --- | --- | --- | --- | --- |
 | 0x41 | `LED_VALUE` | host → board | `[led, 0, value_hi, value_lo]`, value = percent × 100 | bench |
 | 0x42 | `LED_ENABLE` | host → board | `[led, on, 0, 0]` | bench |
-| 0x43 | `CAMERA_TIMING` | host → board | `[fps_hi, fps_lo, exp_hi, exp_lo]`, exposure in 10 µs units | accepted (bench); units code |
+| 0x43 | `CAMERA_TIMING` | host → board | `[fps_hi, fps_lo, exp_hi, exp_lo]`: total trigger rate across all LEDs (bench), exposure in 10 µs units (code) | bench (rate) |
 | 0x44 | `EXCITATION_MODE` | host → board | `[mode, 0, 0, 0]`: 0 continuous, 1 410+470, 2 470+560, 3 all | bench (0, 3) |
 | 0x45 | `DEVICE_ENABLE` | host → board | `[on, 0, 0, 0]`: sequencer enable; light starts and stops with it | bench |
 | 0x46 | `OUTPUT_ENABLE` | host → board | `[port 1–4, on]` | code |
@@ -156,13 +162,13 @@ caller passes `allow_unsafe=True`, which no DBF code does.
 
 ## Open questions for the bench capture
 
-- Exact `CAMERA_TIMING` semantics: whether the frame rate is per exposure or per LED
-  cycle, how the board splits triggers between the two cameras, and why its
-  confirmation returns the exposure bytes swapped (`0F A0` comes back as `A0 0F`).
-  Either the board only reports them swapped, or it reads the exposure byte-swapped.
-  Camera frames or an OFRS capture will tell.
+- What the `CAMERA_TIMING` exposure field controls (probably the LED on-time per
+  trigger), and why its confirmation returns the exposure bytes swapped (`0F A0` comes
+  back as `A0 0F`). Either the board only reports them swapped, or it reads the
+  exposure byte-swapped.
+- Whether the interleave always starts at 410 nm after enable, and the order in modes
+  1 and 2.
 - Whether the board needs host heartbeats at all.
-- Whether camera 2 receives triggers only for 560 nm exposures.
 - The meaning of `INPUT_EDGE` bytes 1–4 (a controller tick would allow one TTL clock).
 - What the board does with its LEDs when heartbeats stop or the USB link drops.
 - Reply layouts for `0x29`, `0x2A`, and `0x2D`, the time-check exchange, and which
@@ -209,3 +215,23 @@ caller passes `allow_unsafe=True`, which no DBF code does.
   `tests/test_rwd_controller_protocol.py`.
 - **Still unmeasured:** the LED state after host loss. The tests stopped the light by
   command only.
+
+**2026-10-20 camera test.** Both Alvium cameras were set to hardware trigger (Line0,
+falling edge), Mono12, 10 ms exposure, gain 0, with chunk data enabled. The fiber was on
+the kit's green fluorescent film. DBF then ran each LED alone at 5 % with a 20 Hz
+setting, followed by all three interleaved with a 10 Hz setting.
+
+| Step | Camera 1 (`DeviceUserID` 1) | Camera 2 (`DeviceUserID` 2) |
+| --- | --- | --- |
+| 410 nm alone | 62 frames, 50.0 ms apart, mean 8.2 counts | none |
+| 470 nm alone | 63 frames, 50.0 ms apart, mean 2.9 counts | none |
+| 560 nm alone | none | 63 frames, 50.0 ms apart, mean 13.6 counts |
+| Interleaved, 10 Hz | 21 frames, intervals alternating 100 and 200 ms | 10 frames, 300 ms apart |
+
+- **Trigger routing:** neither camera received triggers while the sequencer was
+  disabled, and no frames were incomplete.
+- **Interleave order:** in the interleaved run, frames arrived as 410 → 470 → 560
+  (identified by the per-LED brightness levels), one exposure every 100 ms in total.
+- **Line state:** `ChunkLineStatusAll` was `14` on every frame.
+- **Not yet confirmed:** that the exposure field is read correctly. The camera's own
+  10 ms exposure was set separately, so this test did not exercise the board's field.
