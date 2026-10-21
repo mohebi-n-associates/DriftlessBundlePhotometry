@@ -1096,3 +1096,23 @@ def test_gui_measures_led_power_after_asking(qtbot, tmp_path: Path, monkeypatch)
     assert "470 nm at 5 %: 0.123 mW" in window.power_label.text()
     assert window.last_power_readings[0].power_mw == 0.123
     assert window._warmup.warm_s() >= 0 and not window._warmup.leds_are_on
+
+
+def test_gui_scrolls_settings_and_traces_separately(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=4)
+    qtbot.addWidget(window)
+    window.resize(1400, 900)
+    window.show()
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=4))
+
+    assert window.tabs.widget(0) is not window.controls_scroll
+    assert window.controls_scroll.isAncestorOf(window.source_combo)
+    assert window.trace_scroll.isAncestorOf(window.trace_workspace)
+    assert window.trace_workspace.height() == 4 * 230
+    assert window.trace_scroll.viewport().height() < window.trace_workspace.height()
+    assert window.height() <= 900
+
+    window.gain_slider.setValue(125)
+    assert window.gain_spin.value() == 12.5
+    window.gain_spin.setValue(3.0)
+    assert window.gain_slider.value() == 30

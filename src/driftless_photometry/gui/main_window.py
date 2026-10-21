@@ -356,13 +356,11 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._build_header())
         self.tabs = QTabWidget()
         self.tabs.addTab(
-            self._scrollable(
-                self._build_acquire_tab(
-                    output_directory,
-                    default_duration_s,
-                    default_raw,
-                    default_fibers,
-                )
+            self._build_acquire_tab(
+                output_directory,
+                default_duration_s,
+                default_raw,
+                default_fibers,
             ),
             "Acquire",
         )
@@ -550,15 +548,14 @@ class MainWindow(QMainWindow):
         self._duration_label = session_form.labelForField(self.duration_spin)
         controls_layout.addWidget(session_group)
         self._apply_recording_modes()
-        self.events_group = self._build_events_group()
-        controls_layout.addWidget(self.events_group)
-
         self._channel_controls: dict[
             str, tuple[dict[Wavelength, QCheckBox], dict[Wavelength, QSlider], QGroupBox]
         ] = {}
         self._channel_readouts: dict[str, dict[Wavelength, QLabel]] = {}
         for profile in (CUSTOM_PROFILE, RWD_PROFILE):
             controls_layout.addWidget(self._build_channel_group(profile))
+        self.events_group = self._build_events_group()
+        controls_layout.addWidget(self.events_group)
 
         retention_group = QGroupBox("Data retention")
         retention_layout = QVBoxLayout(retention_group)
@@ -580,7 +577,12 @@ class MainWindow(QMainWindow):
         self.rwd_group.setVisible(False)
         controls_layout.addWidget(self.rwd_group)
         controls_layout.addStretch(1)
-        layout.addWidget(controls)
+        # Settings scroll on their own; the live display keeps the window's height.
+        self.controls_scroll = self._scrollable(controls)
+        self.controls_scroll.setMinimumWidth(370)
+        self.controls_scroll.setMaximumWidth(470)
+        self.controls_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self.controls_scroll)
 
         live_group = QGroupBox("Live acquisition")
         live_layout = QVBoxLayout(live_group)
@@ -696,7 +698,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("0%")
         live_layout.addWidget(self.progress_bar)
-        live_layout.addWidget(self._build_trace_workspace(), stretch=1)
+        self.trace_scroll = self._scrollable(self._build_trace_workspace())
+        self.trace_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        live_layout.addWidget(self.trace_scroll, stretch=1)
 
         self.preview_status = QLabel(
             "Preview required - validate the current acquisition settings before recording"
@@ -1310,13 +1314,27 @@ class MainWindow(QMainWindow):
         self.gain_spin.setDecimals(1)
         self.gain_spin.setSingleStep(1.0)
         self.gain_spin.setSuffix(" dB")
-        self.gain_spin.setToolTip(
+        self.gain_spin.setMaximumWidth(90)
+        gain_tip = (
             "Camera gain. Raise it to find and focus the fiber face; record at 0 dB, "
             "since gain does not improve the signal-to-noise ratio."
         )
+        self.gain_spin.setToolTip(gain_tip)
+        self.gain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gain_slider.setRange(0, round(_MAX_GAIN_DB * 10))
+        self.gain_slider.setSingleStep(1)
+        self.gain_slider.setPageStep(10)
+        self.gain_slider.setToolTip(gain_tip)
+        self.gain_slider.valueChanged.connect(lambda tenths: self.gain_spin.setValue(tenths / 10))
+        self.gain_spin.valueChanged.connect(lambda db: self.gain_slider.setValue(round(db * 10)))
+        gain_row = QWidget()
+        gain_layout = QHBoxLayout(gain_row)
+        gain_layout.setContentsMargins(0, 0, 0, 0)
+        gain_layout.addWidget(self.gain_slider, stretch=1)
+        gain_layout.addWidget(self.gain_spin)
         form.addRow("Frame rate", self.fps_spin)
         form.addRow("Exposure", exposure_row)
-        form.addRow("Gain", self.gain_spin)
+        form.addRow("Gain", gain_row)
         self.camera_settings_hint = QLabel()
         self.camera_settings_hint.setObjectName("hint")
         self.camera_settings_hint.setWordWrap(True)
@@ -1450,7 +1468,8 @@ class MainWindow(QMainWindow):
 
     def _configure_trace_plots(self, rois: tuple[ROIConfig, ...]) -> None:
         self.trace_workspace.clear()
-        self.trace_workspace.setMinimumHeight(max(380, 150 * len(rois)))
+        # Each ROI keeps a fixed-height row; more ROIs scroll inside the trace area.
+        self.trace_workspace.setFixedHeight(_TRACE_ROW_HEIGHT_PX * max(1, len(rois)))
         self.trace_plots = {}
         self.trace_view_boxes = {}
         self._trace_manual_x_range = None
@@ -3508,3 +3527,6 @@ _MARKER_ROWS = 4
 _TTL_EVENT_ROWS = 4
 
 _DFF_MODES = frozenset({"dff", "dff_fit"})
+
+_TRACE_ROW_HEIGHT_PX = 230
+"""Height of one ROI's live trace row; rows beyond the visible area scroll."""

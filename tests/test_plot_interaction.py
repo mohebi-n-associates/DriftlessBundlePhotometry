@@ -93,12 +93,11 @@ def test_trace_view_box_emits_axis_specific_box_zoom_and_double_click_reset(qtbo
     assert resets == [True]
 
 
-def test_trace_wheel_scrolls_acquire_page_instead_of_zooming(qtbot, tmp_path: Path) -> None:
+def test_trace_wheel_scrolls_the_trace_area_instead_of_zooming(qtbot, tmp_path: Path) -> None:
     window = MainWindow(output_directory=tmp_path)
     qtbot.addWidget(window)
     window.show()
-    acquire_page = window.tabs.widget(0)
-    scroll_bar = acquire_page.verticalScrollBar()
+    scroll_bar = window.trace_scroll.verticalScrollBar()
     scroll_bar.setRange(0, 1000)
     scroll_bar.setValue(500)
     event = _WheelEvent(120)

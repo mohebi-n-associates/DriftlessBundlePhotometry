@@ -148,6 +148,10 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- The *Acquire* tab scrolls its settings column and its live traces separately, so
+  the window keeps a fixed height. Each ROI's trace row is a fixed 230 px; more ROIs
+  scroll within the trace area. LED excitation now sits above *TTL inputs and
+  events*, and camera gain is a slider with a typed value beside it.
 - Recovery spools moved to schema v5, which adds the event-mark log. Spools from
   schemas 1–4 still load.
 - The setup window keeps each finished worker until Qt has deleted it. Dropping it at
