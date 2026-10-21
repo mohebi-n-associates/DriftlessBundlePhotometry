@@ -292,8 +292,9 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      - the restart path on hardware;
      - whether TTL outputs pause during a restart;
      - where the board's timer step changes between 30 and 120 Hz;
-     - a clean multi-hour run at 120 Hz with spool v4. A 4 h run at 20 Hz passed
-       on 2026-10-21.
+     - a clean multi-hour run at 120 Hz with 64 camera buffers and an idle host. A
+       4 h run at 20 Hz passed on 2026-10-21. A 2.5 h run at 120 Hz completed the same
+       day with 103 restarts (0.24 % invalid), mostly while the host ran test suites.
      - whether the cameras are triggered while a TTL start waits with the LEDs dark,
        and the start latency on hardware.
 7. **OFRS acquisition features DBF lacked — in progress (user-approved 2026-10-21)**
