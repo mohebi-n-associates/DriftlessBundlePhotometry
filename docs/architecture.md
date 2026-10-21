@@ -200,9 +200,11 @@ provenance.
 
 The separate `scratch/driftless_runtime_provenance_json` snapshot records the exact
 application, Python, operating-system, dependency, adapter, and protocol versions.
-Recovery spool schema v4 persists the per-exposure provenance needed to reconstruct
+Recovery spool schema v5 persists the per-exposure provenance needed to reconstruct
 these fields, including camera index, commanded power, wavelength source, and camera
-timestamps. Schema-v2 spools load with camera 1, controller-reported wavelengths, and
+timestamps. It also logs event marks (`event_marks.jsonl`): operator markers and
+named TTL pulses, which each NWB file holds in an `event_marks` events table. Schema-v4
+spools load with no event marks. Schema-v2 spools load with camera 1, controller-reported wavelengths, and
 no camera timestamps. Schema-v1 spools remain readable, but recovery adds an explicit invalid
 interval over the affected recording because actual host receipt times and dynamic
 voltage commands were not historically available.

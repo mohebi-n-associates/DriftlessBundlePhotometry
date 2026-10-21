@@ -75,6 +75,11 @@ class AcquisitionWorker(QObject):
 
         self._engine.stop()
 
+    def mark_event(self, name: str, source: str) -> None:
+        """Thread-safe operator event mark, timed now."""
+
+        self._engine.mark_event(name, source)
+
     def _emit_progress(self, progress: AcquisitionProgress) -> None:
         self.progress.emit(progress)
 

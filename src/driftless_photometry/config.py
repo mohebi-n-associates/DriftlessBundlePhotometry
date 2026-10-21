@@ -138,6 +138,35 @@ class TTLInputConfig(BaseModel):
     edges: EdgeSelection = EdgeSelection.BOTH
 
 
+EVENT_MARKER_KEYS = tuple(str(key) for key in range(1, 10))
+
+
+class EventMarkerConfig(BaseModel):
+    """An operator event marker, set with its number key or button while recording."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: Literal["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    name: str = Field(min_length=1, max_length=64)
+
+
+class TTLEventRuleConfig(BaseModel):
+    """Name the pulses on one TTL input whose width falls in [min, max) milliseconds."""
+
+    model_config = ConfigDict(frozen=True)
+
+    line: int = Field(ge=1, le=4)
+    min_width_ms: float = Field(default=0.0, ge=0.0)
+    max_width_ms: float = Field(default=100.0, gt=0.0, le=3_600_000.0)
+    name: str = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_width_range(self) -> TTLEventRuleConfig:
+        if self.max_width_ms <= self.min_width_ms:
+            raise ValueError(f"TTL event {self.name!r} needs a maximum width above its minimum")
+        return self
+
+
 MANUAL_STOP_LIMIT_S = 24 * 60 * 60.0
 """A recording that stops only on Stop still ends after 24 hours."""
 
@@ -377,6 +406,8 @@ class SessionConfig(BaseModel):
     institution: str | None = None
     display: TraceDisplayConfig = Field(default_factory=TraceDisplayConfig)
     recording: RecordingControlConfig = Field(default_factory=RecordingControlConfig)
+    event_markers: tuple[EventMarkerConfig, ...] = Field(default=(), max_length=9)
+    ttl_events: tuple[TTLEventRuleConfig, ...] = Field(default=(), max_length=8)
 
     @model_validator(mode="after")
     def validate_contract(self) -> SessionConfig:
@@ -399,6 +430,16 @@ class SessionConfig(BaseModel):
         ttl_lines = [ttl.line for ttl in self.ttl_inputs]
         if len(ttl_lines) != len(set(ttl_lines)):
             raise ValueError("TTL input lines must be unique")
+        keys = [marker.key for marker in self.event_markers]
+        if len(keys) != len(set(keys)):
+            raise ValueError("each event-marker key may be used once")
+        for rule in self.ttl_events:
+            ttl = next((item for item in self.ttl_inputs if item.line == rule.line), None)
+            if ttl is None or ttl.edges is not EdgeSelection.BOTH:
+                raise ValueError(
+                    f"TTL event {rule.name!r} measures pulse widths, so TTL input {rule.line} "
+                    "must be configured to record both edges"
+                )
         recording = self.recording
         if recording.stop == "ttl":
             stop_input = next(

@@ -135,6 +135,31 @@ class SystemEvent:
             raise ValueError("system-event classification is required")
 
 
+EVENT_MARK_SOURCES = frozenset({"key", "button", "ttl"})
+
+
+@dataclass(frozen=True, slots=True)
+class EventMark:
+    """A named experimental event: a marker the operator set, or a classified TTL pulse.
+
+    Keyboard and button marks are timed on the host clock, mapped onto session time
+    through the most recent camera frame. TTL marks take their pulse's rising edge.
+    """
+
+    timestamp_s: float
+    name: str
+    source: str
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.timestamp_s) or self.timestamp_s < 0:
+            raise ValueError("event-mark timestamp must be finite and non-negative")
+        if not self.name:
+            raise ValueError("event marks need a name")
+        if self.source not in EVENT_MARK_SOURCES:
+            raise ValueError(f"event-mark source must be one of {sorted(EVENT_MARK_SOURCES)}")
+
+
 def _or_nan(value: float | None) -> float:
     return float("nan") if value is None else float(value)
 
@@ -150,6 +175,7 @@ class AcquisitionData:
     dropped_frames: list[DroppedFrameEvent] = field(default_factory=list)
     invalid_times: list[InvalidTimeInterval] = field(default_factory=list)
     system_events: list[SystemEvent] = field(default_factory=list)
+    event_marks: list[EventMark] = field(default_factory=list)
     frame_ids: list[int] = field(default_factory=list)
     frame_timestamps_s: list[float] = field(default_factory=list)
     frame_sequences: list[int] = field(default_factory=list)

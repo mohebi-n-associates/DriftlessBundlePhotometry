@@ -12,8 +12,9 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QSignalBlocker, QSize, Qt, QThread, QTimer
-from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
+import shiboken6
+from PySide6.QtCore import QObject, QSignalBlocker, QSize, Qt, QThread, QTimer
+from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -49,10 +50,13 @@ from driftless_photometry.acquisition import (
 )
 from driftless_photometry.config import (
     CUSTOM_PROFILE,
+    EVENT_MARKER_KEYS,
     RWD_PROFILE,
     CameraConfig,
     ChannelConfig,
     CustomSourceConfig,
+    EdgeSelection,
+    EventMarkerConfig,
     RecordingControlConfig,
     ROIConfig,
     RWDSourceConfig,
@@ -60,11 +64,14 @@ from driftless_photometry.config import (
     SessionConfig,
     SystemProfile,
     TraceDisplayConfig,
+    TTLEventRuleConfig,
+    TTLInputConfig,
     Wavelength,
     demo_config,
     profile_for,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
+from driftless_photometry.domain import EventMark
 from driftless_photometry.hardware import StartCondition
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
 from driftless_photometry.settings import (
@@ -276,6 +283,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1408, 792)
         self._thread: QThread | None = None
         self._worker: AcquisitionWorker | PreviewWorker | None = None
+        self._retired_workers: list[QObject] = []
         self._operation_kind: str | None = None
         self._close_pending = False
         self._preview_signature: str | None = None
@@ -514,6 +522,8 @@ class MainWindow(QMainWindow):
         self._duration_label = session_form.labelForField(self.duration_spin)
         controls_layout.addWidget(session_group)
         self._apply_recording_modes()
+        self.events_group = self._build_events_group()
+        controls_layout.addWidget(self.events_group)
 
         self._channel_controls: dict[
             str, tuple[dict[Wavelength, QCheckBox], dict[Wavelength, QSlider], QGroupBox]
@@ -660,6 +670,20 @@ class MainWindow(QMainWindow):
         self.preview_status.setWordWrap(True)
         live_layout.addWidget(self.preview_status)
 
+        self.marker_row = QHBoxLayout()
+        self.marker_row_label = QLabel("Mark")
+        self.marker_row_label.setObjectName("hint")
+        self.marker_row.addWidget(self.marker_row_label)
+        self.marker_buttons: dict[str, QPushButton] = {}
+        self.marker_row.addStretch(1)
+        live_layout.addLayout(self.marker_row)
+        self._marker_shortcuts: list[QShortcut] = []
+        for key in EVENT_MARKER_KEYS:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(lambda key=key: self.mark_event(key, "key"))
+            self._marker_shortcuts.append(shortcut)
+        self._event_marks_shown: list[EventMark] = []
+
         action_row = QHBoxLayout()
         self.preview_button = QPushButton("Run preview")
         self.preview_button.setObjectName("preview")
@@ -694,6 +718,7 @@ class MainWindow(QMainWindow):
             source_group,
             settings_group,
             session_group,
+            self.events_group,
             *(group for _checks, _sliders, group in self._channel_controls.values()),
             retention_group,
             self.rwd_group,
@@ -876,6 +901,7 @@ class MainWindow(QMainWindow):
 
     def _on_device_thread_finished(self) -> None:
         self._device_thread = None
+        self._retire_worker(self._device_worker)
         self._device_worker = None
         self._set_busy_controls(self._thread is not None)
 
@@ -1552,10 +1578,18 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _configuration_signature(config: SessionConfig) -> str:
-        # Previews always start at once, so the start/stop options need no new preview.
+        # A preview exercises neither TTL inputs nor the start/stop options.
         payload = config.model_dump(
             mode="json",
-            exclude={"session_id", "session_start_time", "display", "recording"},
+            exclude={
+                "session_id",
+                "session_start_time",
+                "display",
+                "recording",
+                "ttl_inputs",
+                "event_markers",
+                "ttl_events",
+            },
         )
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
@@ -1570,6 +1604,197 @@ class MainWindow(QMainWindow):
                 "Preview required - settings changed; run preview before recording",
                 "required",
             )
+
+    def _build_events_group(self) -> QGroupBox:
+        group = QGroupBox("TTL inputs and events")
+        layout = QGridLayout(group)
+        layout.setColumnStretch(1, 1)
+        row = 0
+
+        def heading(text: str, hint: str) -> None:
+            nonlocal row
+            title = QLabel(text)
+            title.setObjectName("eyebrow")
+            title.setToolTip(hint)
+            layout.addWidget(title, row, 0, 1, 4)
+            row += 1
+
+        heading("TTL INPUTS", "Inputs DBF records, with the label stored in the NWB files")
+        self.ttl_input_rows: dict[int, tuple[QCheckBox, QLineEdit, QComboBox]] = {}
+        for line in range(1, 5):
+            check = QCheckBox(f"Input {line}")
+            label = QLineEdit(f"behavior_{line}")
+            label.setMaxLength(64)
+            edges = QComboBox()
+            for text, value in (
+                ("both edges", "both"),
+                ("rising only", "rising"),
+                ("falling only", "falling"),
+            ):
+                edges.addItem(text, value)
+            layout.addWidget(check, row, 0)
+            layout.addWidget(label, row, 1, 1, 2)
+            layout.addWidget(edges, row, 3)
+            self.ttl_input_rows[line] = (check, label, edges)
+            row += 1
+
+        heading(
+            "MARKERS",
+            "Press the number key or the marker's button while recording; blank names are off",
+        )
+        self.marker_name_edits: dict[str, QLineEdit] = {}
+        for key in EVENT_MARKER_KEYS[:_MARKER_ROWS]:
+            name = QLineEdit()
+            name.setMaxLength(64)
+            name.setPlaceholderText("type a name to use this key")
+            layout.addWidget(QLabel(f"Key {key}"), row, 0)
+            layout.addWidget(name, row, 1, 1, 3)
+            name.textChanged.connect(self._rebuild_marker_buttons)
+            self.marker_name_edits[key] = name
+            row += 1
+
+        heading(
+            "NAMED TTL EVENTS",
+            "Name pulses on an input by their width, from rising to falling edge; the "
+            "input must record both edges",
+        )
+        self.ttl_event_rows: list[
+            tuple[QCheckBox, QComboBox, QDoubleSpinBox, QDoubleSpinBox, QLineEdit]
+        ] = []
+        for index in range(_TTL_EVENT_ROWS):
+            check = QCheckBox()
+            line = _ttl_line_combo()
+            low = QDoubleSpinBox()
+            high = QDoubleSpinBox()
+            for spin, value in ((low, 0.0), (high, 100.0)):
+                spin.setRange(0.0, 3_600_000.0)
+                spin.setDecimals(0)
+                spin.setSuffix(" ms")
+                spin.setValue(value)
+            low.setToolTip("Shortest pulse width that gets this name")
+            high.setToolTip("Pulses at least this wide do not get this name")
+            name = QLineEdit(f"TTL event {index + 1}")
+            name.setMaxLength(64)
+            widths = QWidget()
+            widths_layout = QHBoxLayout(widths)
+            widths_layout.setContentsMargins(0, 0, 0, 0)
+            widths_layout.addWidget(low)
+            widths_layout.addWidget(QLabel("to"))
+            widths_layout.addWidget(high)
+            layout.addWidget(check, row, 0)
+            layout.addWidget(name, row, 1)
+            layout.addWidget(line, row, 2)
+            layout.addWidget(widths, row, 3)
+            self.ttl_event_rows.append((check, line, low, high, name))
+            row += 1
+        self._load_event_controls(self._session_template)
+        return group
+
+    def _ttl_inputs_from_controls(self) -> tuple[TTLInputConfig, ...]:
+        return tuple(
+            TTLInputConfig(
+                line=line,
+                label=label.text().strip() or f"input_{line}",
+                edges=EdgeSelection(edges.currentData()),
+            )
+            for line, (check, label, edges) in self.ttl_input_rows.items()
+            if check.isChecked()
+        )
+
+    def _markers_from_controls(self) -> tuple[EventMarkerConfig, ...]:
+        return tuple(
+            EventMarkerConfig(key=key, name=edit.text().strip())
+            for key, edit in self.marker_name_edits.items()
+            if edit.text().strip()
+        )
+
+    def _ttl_events_from_controls(self) -> tuple[TTLEventRuleConfig, ...]:
+        return tuple(
+            TTLEventRuleConfig(
+                line=line.currentData(),
+                min_width_ms=low.value(),
+                max_width_ms=high.value(),
+                name=name.text().strip() or f"TTL event {index + 1}",
+            )
+            for index, (check, line, low, high, name) in enumerate(self.ttl_event_rows)
+            if check.isChecked()
+        )
+
+    def _load_event_controls(self, config: SessionConfig) -> None:
+        inputs = {ttl.line: ttl for ttl in config.ttl_inputs}
+        for line, (check, label, edges) in self.ttl_input_rows.items():
+            ttl = inputs.get(line)
+            check.setChecked(ttl is not None)
+            if ttl is not None:
+                label.setText(ttl.label)
+                edges.setCurrentIndex(edges.findData(ttl.edges.value))
+        markers = {marker.key: marker.name for marker in config.event_markers}
+        for key, edit in self.marker_name_edits.items():
+            edit.setText(markers.get(key, ""))
+        for index, (check, line, low, high, name) in enumerate(self.ttl_event_rows):
+            rule = config.ttl_events[index] if index < len(config.ttl_events) else None
+            check.setChecked(rule is not None)
+            if rule is not None:
+                line.setCurrentIndex(line.findData(rule.line))
+                low.setValue(rule.min_width_ms)
+                high.setValue(rule.max_width_ms)
+                name.setText(rule.name)
+        self._rebuild_marker_buttons()
+
+    def _rebuild_marker_buttons(self, *_args: object) -> None:
+        if not hasattr(self, "marker_row"):
+            return
+        for button in self.marker_buttons.values():
+            self.marker_row.removeWidget(button)
+            button.deleteLater()
+        self.marker_buttons = {}
+        for marker in self._markers_from_controls():
+            button = QPushButton(f"{marker.key} · {marker.name}")
+            button.setObjectName("horizon")
+            button.setToolTip(f"Mark {marker.name!r} now (key {marker.key})")
+            button.clicked.connect(
+                lambda _checked=False, key=marker.key: self.mark_event(key, "button")
+            )
+            self.marker_row.insertWidget(self.marker_row.count() - 1, button)
+            self.marker_buttons[marker.key] = button
+        self._update_marker_buttons()
+
+    def _update_marker_buttons(self) -> None:
+        recording = self._operation_kind == "recording" and self._worker is not None
+        for button in self.marker_buttons.values():
+            button.setEnabled(recording)
+        self.marker_row_label.setVisible(bool(self.marker_buttons))
+
+    def mark_event(self, key: str, source: str) -> None:
+        """Mark the named event for ``key`` in the running recording."""
+
+        if self._operation_kind != "recording" or self._worker is None:
+            return
+        markers = {marker.key: marker.name for marker in self._active_config.event_markers}
+        name = markers.get(key)
+        if name is None:
+            return
+        self._worker.mark_event(name, source)
+        self.statusBar().showMessage(f"Marked {name!r}")
+
+    def _show_event_marks(self, marks: Sequence[EventMark]) -> None:
+        for mark in marks:
+            self._event_marks_shown.append(mark)
+            self._draw_event_mark(mark)
+
+    def _draw_event_mark(self, mark: EventMark) -> None:
+        color = "#ffd166" if mark.source == "ttl" else "#f78fb3"
+        for row, plot in self.trace_plots.items():
+            line = pg.InfiniteLine(
+                pos=mark.timestamp_s,
+                angle=90,
+                movable=False,
+                pen=pg.mkPen(color, width=1.2, style=Qt.PenStyle.DashLine),
+                label=mark.name if row == 0 else None,
+                labelOpts={"position": 0.92, "color": color, "movable": False},
+            )
+            line.setZValue(20)
+            plot.addItem(line)
 
     def _build_start_row(self) -> QWidget:
         self.start_mode_combo = QComboBox()
@@ -1787,6 +2012,7 @@ class MainWindow(QMainWindow):
         del source_blocker
         self.duration_spin.setValue(config.recording_duration_s)
         self._load_recording_controls(config.recording)
+        self._load_event_controls(config)
         self.experimenter_edit.setText(config.experimenter)
         self.session_description_edit.setText(config.session_description)
         self.lab_edit.setText(config.lab or "")
@@ -2230,6 +2456,9 @@ class MainWindow(QMainWindow):
             institution=self.institution_edit.text().strip() or None,
             display=display,
             recording=self._recording_from_controls(),
+            ttl_inputs=self._ttl_inputs_from_controls(),
+            event_markers=self._markers_from_controls(),
+            ttl_events=self._ttl_events_from_controls(),
         )
         return SessionConfig.model_validate(payload)
 
@@ -2484,6 +2713,7 @@ class MainWindow(QMainWindow):
 
     def _prepare_trace_curves(self, config: SessionConfig) -> None:
         self._active_config = config
+        self._event_marks_shown = []
         self._configure_trace_plots(config.enabled_rois)
         self._active_trace_wavelengths = tuple(
             int(channel.wavelength_nm) for channel in config.enabled_channels
@@ -2734,6 +2964,8 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, progress: AcquisitionProgress) -> None:
         self._leds_lit()
+        if progress.event_marks:
+            self._show_event_marks(progress.event_marks)
         sample = progress.sample
         wavelength = int(sample.wavelength_nm)
         self.wavelength_image_items[sample.wavelength_nm].setImage(
@@ -2877,6 +3109,7 @@ class MainWindow(QMainWindow):
         self._operation_uses_leds = False
         self._update_warmup_label()
         self._thread = None
+        self._retire_worker(self._worker)
         self._worker = None
         self._operation_kind = None
         self._set_busy_controls(False)
@@ -2887,7 +3120,21 @@ class MainWindow(QMainWindow):
             self._close_pending = False
             QTimer.singleShot(0, self.close)
 
+    def _retire_worker(self, worker: QObject | None) -> None:
+        """Hold a finished worker until Qt deletes it.
+
+        ``thread.finished`` runs the worker's ``deleteLater`` in the worker's own thread.
+        Dropping the last Python reference here as well made Python delete it from the
+        GUI thread at the same moment, which crashed the device-check test.
+        """
+
+        self._retired_workers = [item for item in self._retired_workers if shiboken6.isValid(item)]
+        if worker is not None:
+            self._retired_workers.append(worker)
+
     def _set_busy_controls(self, busy: bool) -> None:
+        if hasattr(self, "marker_buttons"):
+            self._update_marker_buttons()
         checking = getattr(self, "_device_thread", None) is not None
         if hasattr(self, "check_devices_button"):
             self.check_devices_button.setEnabled(not busy and not checking)
@@ -2925,3 +3172,8 @@ def _ttl_edge_combo() -> QComboBox:
     combo.addItem("rising edge", "rising")
     combo.addItem("falling edge", "falling")
     return combo
+
+
+_MARKER_ROWS = 4
+"""Marker rows shown in setup; settings files may define markers for keys up to 9."""
+_TTL_EVENT_ROWS = 4
