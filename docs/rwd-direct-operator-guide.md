@@ -48,6 +48,10 @@ before starting DBF, because only one program can use the controller's port.
 - Close Vimba X Viewer or any other program that has the cameras open.
 - The cameras must keep RWD's `DeviceUserID` settings: `1` for the camera imaging
   410/470 nm and `2` for the 560 nm camera. Vimba X Viewer shows them.
+- After you choose **RWD**, the **Devices** list in the RWD hardware panel shows a
+  tick for the controller (with its COM port and firmware) and for each camera (with
+  its serial number). A cross names what is missing. Fix it and press **Check
+  devices**. The check switches no LED on.
 
 ## Set up a recording
 
@@ -82,7 +86,8 @@ camera.
    the image's dim and bright pixels, which matters at low LED power. It changes only
    the display, never the recorded data.
 3. The two cameras are shown side by side. Drag each fiber's solid circle over its
-   fiber on **Camera 1 — 410/470 nm**, and drag its handle to resize it.
+   fiber on **Camera 1 — 410/470 nm**, and drag its handle to resize it, or type its
+   **Diameter** in the fiber's ROI tab. Diameters are 40–544 px, as in OFRS.
 4. On **Camera 2 — 560 nm**, place each fiber's dashed circle over the same fiber.
    Camera 2 is mirrored to match camera 1, but the fibers will not sit at exactly the
    same pixels.
@@ -95,6 +100,12 @@ camera.
    **Record** is enabled.
 
 ## Record
+
+RWD recommends running the LEDs for 5 minutes before recording so their output
+settles. Live view counts, so keep it running while you place the circles until
+**LED warm-up** in the RWD panel shows a tick. The preview counts too, and a gap of
+up to 3 minutes between Live view and **Record** keeps the warm-up. With less warm-up,
+**Record** asks before it starts.
 
 Press **Record**. DBF connects, sends the settings, starts the LED sequence, and
 records until the duration ends or you press **Stop**. It then saves and validates one

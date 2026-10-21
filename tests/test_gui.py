@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QAbstractSpinBox
+from PySide6.QtWidgets import QAbstractSpinBox, QMessageBox
 from rwd_bench import Bench
 
 from driftless_photometry import __version__
@@ -272,6 +272,7 @@ def test_gui_previews_and_records_rwd_hardware(qtbot, tmp_path: Path) -> None:
     assert window.start_button.isEnabled()
     benches[-1].assert_all_off()
 
+    window.warmup_check.setChecked(False)  # the warm-up reminder has its own test
     window.start_recording()
     qtbot.waitUntil(lambda: window._thread is None, timeout=30_000)
     assert window.last_error is None, window.last_error
@@ -750,3 +751,90 @@ def test_gui_checks_devices_automatically_in_the_application(qtbot, tmp_path: Pa
     window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
     window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
     qtbot.waitUntil(lambda: len(calls) == 2 and window._device_thread is None, timeout=10_000)
+
+
+def test_gui_roi_diameters_can_be_typed_per_camera(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    editor = window._roi_metadata_editors[0]
+    before = window._build_config().rois[0]
+    assert editor.diameter_spins[1].value() == pytest.approx(2 * before.radius_px)
+    assert (editor.diameter_spins[1].minimum(), editor.diameter_spins[1].maximum()) == (40, 544)
+
+    editor.diameter_spins[1].setValue(80.0)
+    editor.diameter_spins[2].setValue(120.0)
+
+    after = window._build_config().rois[0]
+    assert after.radius_px == pytest.approx(40.0)
+    assert (after.center_x_px, after.center_y_px) == pytest.approx(
+        (before.center_x_px, before.center_y_px)
+    )
+    assert after.camera2_radius_px == pytest.approx(60.0)
+
+    # Dragging a circle smaller than OFRS's 40 px minimum snaps back to it.
+    circle = window._roi_items[0]
+    circle.setSize([20, 20])
+    assert editor.diameter_spins[1].value() == pytest.approx(40.0)
+    assert window._build_config().rois[0].radius_px == pytest.approx(20.0)
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+    assert editor.diameter_spins[1].maximum() == 256
+
+
+def test_gui_live_view_warms_up_the_leds_before_recording(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    clock = [0.0]
+    asked: list[str] = []
+
+    def question(_parent, _title, text, *_args):
+        asked.append(text)
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(QMessageBox, "question", question)
+    window = MainWindow(
+        output_directory=tmp_path,
+        default_fibers=1,
+        rig_factory=lambda config: Bench(config).rig,
+        clock=lambda: clock[0],
+    )
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    assert "LEDs cold" in window.warmup_label.text()
+
+    # Cold LEDs: the reminder appears and "No" leaves recording unstarted.
+    window._preview_signature = window._configuration_signature(window._build_config())
+    window.start_recording()
+    assert window._thread is None
+    assert "have been on for 0:00" in asked[-1]
+
+    window.start_live_view()
+    qtbot.waitUntil(lambda: window._warmup.leds_are_on, timeout=15_000)
+    clock[0] += 120
+    window._update_warmup_label()
+    assert "Warming up: 2:00 of 5:00" in window.warmup_label.text()
+    clock[0] += 180
+    window._update_warmup_label()
+    assert window.warmup_label.text().startswith("✓ LEDs warmed up")
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    assert not window._warmup.leds_are_on
+
+    clock[0] += 60  # a preview's worth of gap keeps the warm-up
+    asked.clear()
+    assert window._confirm_warmup() and not asked
+    clock[0] += 200
+    assert not window._confirm_warmup() and asked
+    window.warmup_check.setChecked(False)
+    assert window._confirm_warmup()
+
+
+def test_gui_simulator_runs_do_not_count_as_led_warm_up(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window.start_live_view()
+    qtbot.waitUntil(lambda: bool(window._last_camera_images), timeout=15_000)
+    assert not window._warmup.leds_are_on
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
