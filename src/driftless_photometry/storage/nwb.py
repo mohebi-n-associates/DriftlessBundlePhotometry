@@ -772,22 +772,26 @@ def _add_events(
             name="event_marks",
             description=(
                 "Named experimental events: operator markers set with a key or button "
-                "(host-timed through the latest camera frame) and TTL pulses classified "
-                "by width (timed at their rising edge)."
+                "(host-timed through the latest camera frame), TTL pulses classified "
+                "by width (timed at their rising edge), and output trains such as "
+                "optogenetic stimulation (host-timed)."
             ),
             source_description="Driftless acquisition coordinator.",
             columns=(
                 ("event_name", "Configured event name."),
-                ("source", "key, button, or ttl."),
+                ("source", "key, button, ttl, or output (a train DBF drove)."),
                 ("detail", "How the event was observed, such as the TTL pulse width."),
             ),
         )
+        # EventsTable's own optional ``duration`` column holds each output train's planned
+        # length in seconds, and 0 for instantaneous marks.
         for mark in sorted(data.event_marks, key=lambda item: item.timestamp_s):
             marks.add_row(
                 timestamp=mark.timestamp_s,
                 event_name=mark.name,
                 source=mark.source,
                 detail=mark.detail,
+                duration=mark.duration_s,
             )
         nwbfile.add_events_table(marks)
 

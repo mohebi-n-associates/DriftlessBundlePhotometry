@@ -86,6 +86,7 @@ from driftless_photometry.settings import (
 )
 
 from .branding import logo_path
+from .output_program import OutputProgramDialog, describe_program
 from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
 from .trace_display import (
     HORIZONS,
@@ -98,6 +99,7 @@ from .trace_display import (
 from .warmup import WARMUP_COOLDOWN_S, LEDWarmup, format_minutes
 from .worker import (
     AcquisitionWorker,
+    BoardTaskWorker,
     DeviceChecker,
     DeviceCheckWorker,
     LiveViewWorker,
@@ -253,9 +255,20 @@ class MainWindow(QMainWindow):
         device_checker: DeviceChecker | None = None,
         auto_check_devices: bool = False,
         clock: Callable[[], float] = time.monotonic,
+        output_tester: Callable[[SessionConfig, int], str] | None = None,
     ) -> None:
         super().__init__()
         self._rig_factory = rig_factory
+        if output_tester is None:
+            from driftless_photometry.hardware.rwd_devices import drive_rwd_output_test
+
+            output_tester = drive_rwd_output_test
+        self._output_tester = output_tester
+        self.last_output_test: str | None = None
+        self._rwd_output_programs = {
+            port: RWDTTLOutputConfig(port=port, frequency_hz=10.0, pulse_width_ms=10)
+            for port in range(1, 5)
+        }
         self._warmup = LEDWarmup(clock=clock)
         self._warmup_announced = False
         self._operation_uses_leds = False
@@ -821,29 +834,33 @@ class MainWindow(QMainWindow):
         outputs_title.setObjectName("eyebrow")
         layout.addWidget(outputs_title)
         outputs = QGridLayout()
+        outputs.setColumnStretch(1, 1)
         self.rwd_output_checks: dict[int, QCheckBox] = {}
-        self.rwd_output_frequency: dict[int, QDoubleSpinBox] = {}
-        self.rwd_output_width: dict[int, QSpinBox] = {}
+        self.rwd_output_summaries: dict[int, QLabel] = {}
+        self.rwd_output_test_buttons: dict[int, QPushButton] = {}
         for row, port in enumerate(range(1, 5)):
             check = QCheckBox(f"Output {port}")
-            frequency = QDoubleSpinBox()
-            frequency.setRange(0.01, 655.35)
-            frequency.setDecimals(2)
-            frequency.setSuffix(" Hz")
-            frequency.setValue(1.0)
-            width = QSpinBox()
-            width.setRange(1, 65_535)
-            width.setSuffix(" ms")
-            width.setValue(10)
-            for widget in (check, frequency, width):
-                outputs.addWidget(widget, row, (check, frequency, width).index(widget))
+            summary = QLabel()
+            summary.setObjectName("hint")
+            summary.setWordWrap(True)
+            edit_button = QPushButton("Edit…")
+            edit_button.setToolTip("Set the pulse train, its trigger, timing, steps and repeats")
+            edit_button.clicked.connect(lambda _checked=False, p=port: self.edit_output_program(p))
+            test_button = QPushButton("Test")
+            test_button.setToolTip(
+                "Drive this output's pulse train for 1 s with the LEDs off; anything "
+                "connected to it, such as a laser, is driven too"
+            )
+            test_button.clicked.connect(lambda _checked=False, p=port: self.start_output_test(p))
+            for column, widget in enumerate((check, summary, edit_button, test_button)):
+                outputs.addWidget(widget, row, column)
             check.toggled.connect(self._invalidate_preview)
-            frequency.valueChanged.connect(self._invalidate_preview)
-            width.valueChanged.connect(self._invalidate_preview)
+            check.toggled.connect(self._rebuild_marker_buttons)
             self.rwd_output_checks[port] = check
-            self.rwd_output_frequency[port] = frequency
-            self.rwd_output_width[port] = width
+            self.rwd_output_summaries[port] = summary
+            self.rwd_output_test_buttons[port] = test_button
         layout.addLayout(outputs)
+        self._refresh_output_summaries()
         self.rwd_status_label = QLabel(
             "Preview connects to the controller and cameras, switches the LEDs on for a "
             "few frames, and switches everything off again. Run it with the fiber on its "
@@ -955,11 +972,7 @@ class MainWindow(QMainWindow):
 
     def _rwd_source_from_controls(self) -> RWDSourceConfig:
         outputs = tuple(
-            RWDTTLOutputConfig(
-                port=port,
-                frequency_hz=self.rwd_output_frequency[port].value(),
-                pulse_width_ms=self.rwd_output_width[port].value(),
-            )
+            self._rwd_output_programs[port]
             for port, check in self.rwd_output_checks.items()
             if check.isChecked()
         )
@@ -972,8 +985,100 @@ class MainWindow(QMainWindow):
             output = configured.get(port)
             check.setChecked(output is not None)
             if output is not None:
-                self.rwd_output_frequency[port].setValue(output.frequency_hz)
-                self.rwd_output_width[port].setValue(output.pulse_width_ms)
+                self._rwd_output_programs[port] = output
+        self._refresh_output_summaries()
+        self._rebuild_marker_buttons()
+
+    def _refresh_output_summaries(self) -> None:
+        for port, summary in self.rwd_output_summaries.items():
+            output = self._rwd_output_programs[port]
+            name = f"{output.label}: " if output.label else ""
+            summary.setText(name + describe_program(output))
+
+    def edit_output_program(self, port: int) -> None:
+        rois = self._roi_configs_from_controls() if self._roi_items else ()
+        fibers = [(roi.fiber_id, f"{roi.label} ({roi.fiber_id})") for roi in rois if roi.enabled]
+        wavelengths = [
+            wavelength for wavelength, check in self.channel_checks.items() if check.isChecked()
+        ]
+        dialog = OutputProgramDialog(
+            self._rwd_output_programs[port], fibers=fibers, wavelengths=wavelengths, parent=self
+        )
+        if dialog.exec() and dialog.result_output is not None:
+            self.apply_output_program(dialog.result_output)
+
+    def apply_output_program(self, output: RWDTTLOutputConfig) -> None:
+        self._rwd_output_programs[output.port] = output
+        self.rwd_output_checks[output.port].setChecked(True)
+        self._refresh_output_summaries()
+        self._rebuild_marker_buttons()
+        self._invalidate_preview()
+
+    def start_output_test(self, port: int) -> None:
+        if self._thread is not None or self._device_thread is not None:
+            return
+        try:
+            config = self._build_config()
+        except Exception as error:
+            QMessageBox.critical(self, "Invalid configuration", str(error))
+            return
+        if not isinstance(config.source, RWDSourceConfig):
+            return
+        output = self._rwd_output_programs[port]
+        answer = QMessageBox.question(
+            self,
+            f"Test TTL output {port}",
+            f"Drive output {port} with {output.frequency_hz:g} Hz, {output.pulse_width_ms} ms "
+            "pulses for 1 s? Anything connected to it, such as a laser, is driven too. "
+            "The LEDs stay off.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        source = config.source.model_copy(
+            update={
+                "ttl_outputs": (
+                    *(o for o in config.source.ttl_outputs if o.port != port),
+                    output,
+                )
+            }
+        )
+        config = config.model_copy(update={"source": source})
+        thread = QThread(self)
+        worker = BoardTaskWorker(lambda: self._output_tester(config, port))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_output_tested)
+        worker.failed.connect(self._on_output_test_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_device_thread_finished)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._device_thread = thread
+        self._device_worker = worker
+        self._set_busy_controls(False)
+        self.statusBar().showMessage(f"Testing TTL output {port}…")
+        thread.start()
+
+    def _on_output_tested(self, summary: str) -> None:
+        self.last_output_test = summary
+        self.statusBar().showMessage(summary)
+
+    def _on_output_test_failed(self, traceback_text: str) -> None:
+        self.last_output_test = None
+        self.statusBar().showMessage("TTL output test failed")
+        if not self._close_pending:
+            QMessageBox.critical(self, "TTL output test failed", traceback_text)
+
+    def fire_output(self, port: int) -> None:
+        """Start a manual output program in the running recording."""
+
+        if self._operation_kind != "recording" or self._worker is None:
+            return
+        self._worker.trigger_output(port)
+        self.statusBar().showMessage(f"Triggered TTL output {port}")
 
     def _update_overview(self) -> None:
         enabled = sum(check.isChecked() for check in self.channel_checks.values())
@@ -1215,6 +1320,7 @@ class MainWindow(QMainWindow):
             image_group.setVisible(wavelength in profile.wavelengths)
         self._use_profile_camera(profile)
         self._sync_camera2_items()
+        self._rebuild_marker_buttons()
         self._enforce_diameter_limits()
         self._sync_diameter_controls()
         two_cameras = profile.camera_count > 1
@@ -1758,6 +1864,21 @@ class MainWindow(QMainWindow):
             self.marker_row.removeWidget(button)
             button.deleteLater()
         self.marker_buttons = {}
+        for button in getattr(self, "output_fire_buttons", {}).values():
+            self.marker_row.removeWidget(button)
+            button.deleteLater()
+        self.output_fire_buttons: dict[int, QPushButton] = {}
+        if hasattr(self, "rwd_output_checks") and self._is_rwd_mode():
+            for port, check in self.rwd_output_checks.items():
+                output = self._rwd_output_programs[port]
+                if not check.isChecked() or output.trigger != "manual":
+                    continue
+                button = QPushButton(f"Fire {output.label or f'output {port}'}")
+                button.setObjectName("attention")
+                button.setToolTip(f"Start TTL output {port}'s program now")
+                button.clicked.connect(lambda _checked=False, p=port: self.fire_output(p))
+                self.marker_row.insertWidget(self.marker_row.count() - 1, button)
+                self.output_fire_buttons[port] = button
         for marker in self._markers_from_controls():
             button = QPushButton(f"{marker.key} · {marker.name}")
             button.setObjectName("horizon")
@@ -1771,9 +1892,10 @@ class MainWindow(QMainWindow):
 
     def _update_marker_buttons(self) -> None:
         recording = self._operation_kind == "recording" and self._worker is not None
-        for button in self.marker_buttons.values():
+        fire_buttons = getattr(self, "output_fire_buttons", {})
+        for button in (*self.marker_buttons.values(), *fire_buttons.values()):
             button.setEnabled(recording)
-        self.marker_row_label.setVisible(bool(self.marker_buttons))
+        self.marker_row_label.setVisible(bool(self.marker_buttons) or bool(fire_buttons))
 
     def mark_event(self, key: str, source: str) -> None:
         """Mark the named event for ``key`` in the running recording."""
@@ -1793,8 +1915,17 @@ class MainWindow(QMainWindow):
             self._draw_event_mark(mark)
 
     def _draw_event_mark(self, mark: EventMark) -> None:
-        color = "#ffd166" if mark.source == "ttl" else "#f78fb3"
+        color = {"ttl": "#ffd166", "output": "#7bdff2"}.get(mark.source, "#f78fb3")
         for row, plot in self.trace_plots.items():
+            if mark.duration_s > 0:
+                region = pg.LinearRegionItem(
+                    values=(mark.timestamp_s, mark.timestamp_s + mark.duration_s),
+                    movable=False,
+                    brush=pg.mkBrush(123, 223, 242, 40),
+                    pen=pg.mkPen(None),
+                )
+                region.setZValue(-5)
+                plot.addItem(region)
             line = pg.InfiniteLine(
                 pos=mark.timestamp_s,
                 angle=90,
@@ -3224,6 +3355,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "marker_buttons"):
             self._update_marker_buttons()
         checking = getattr(self, "_device_thread", None) is not None
+        for button in getattr(self, "rwd_output_test_buttons", {}).values():
+            button.setEnabled(not busy and not checking)
         if hasattr(self, "check_devices_button"):
             self.check_devices_button.setEnabled(not busy and not checking)
         busy = busy or checking

@@ -244,8 +244,52 @@ class CustomSourceConfig(BaseModel):
     kind: Literal["custom"] = "custom"
 
 
+def _check_pulse_fits(port: int, frequency_hz: float, pulse_width_ms: int) -> None:
+    if pulse_width_ms >= 1000.0 / frequency_hz:
+        raise ValueError(
+            f"TTL output {port} pulse of {pulse_width_ms} ms does not fit its "
+            f"{1000.0 / frequency_hz:g} ms period"
+        )
+
+
+class RWDTTLOutputStepConfig(BaseModel):
+    """A later step of a TTL output program: ``cycles`` trains of ``train_s`` each,
+    every one followed by ``gap_s`` with the output off."""
+
+    model_config = ConfigDict(frozen=True)
+
+    frequency_hz: float = Field(gt=0.0, le=655.35)
+    pulse_width_ms: int = Field(ge=1, le=65_535)
+    train_s: float = Field(gt=0.0, le=86_400.0)
+    gap_s: float = Field(default=0.0, ge=0.0, le=86_400.0)
+    cycles: int = Field(default=1, ge=1, le=10_000)
+
+
+class DffTriggerConfig(BaseModel):
+    """Start a TTL output program when one ROI's live dF/F crosses a threshold."""
+
+    model_config = ConfigDict(frozen=True)
+
+    fiber_id: str = Field(min_length=1, max_length=64)
+    wavelength_nm: Wavelength = Wavelength.GREEN_470
+    threshold_percent: float = Field(default=5.0, ge=-1000.0, le=1000.0)
+    direction: Literal["above", "below"] = "above"
+    baseline_s: float = Field(default=5.0, ge=0.1, le=3600.0)
+    """F0 is the median of this ROI and wavelength over the recording's first seconds."""
+    refractory_s: float = Field(default=10.0, ge=0.0, le=86_400.0)
+    """No new trigger this soon after the last one, nor while the program runs."""
+
+
 class RWDTTLOutputConfig(BaseModel):
-    """A pulse train the RWD board drives on one BNC TTL output during a session."""
+    """A pulse-train program the RWD board drives on one BNC TTL output.
+
+    The first step is ``frequency_hz``/``pulse_width_ms`` for ``cycles`` trains of
+    ``train_s`` separated by ``gap_s``; ``steps`` follow it, and the whole sequence runs
+    ``repeats`` times, ``delay_s`` after its trigger. ``train_s`` None is one train that
+    lasts until the recording ends, which is how outputs behaved before programs.
+    DBF times each train from the host, to within a few milliseconds; loop an output
+    back to a TTL input for board-clock times.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -254,15 +298,44 @@ class RWDTTLOutputConfig(BaseModel):
     """Board resolution is 0.01 Hz."""
     pulse_width_ms: int = Field(ge=1, le=65_535)
     label: str = Field(default="", max_length=64)
+    trigger: Literal["recording_start", "manual", "dff_threshold"] = "recording_start"
+    delay_s: float = Field(default=0.0, ge=0.0, le=86_400.0)
+    train_s: float | None = Field(default=None, gt=0.0, le=86_400.0)
+    gap_s: float = Field(default=0.0, ge=0.0, le=86_400.0)
+    cycles: int = Field(default=1, ge=1, le=10_000)
+    steps: tuple[RWDTTLOutputStepConfig, ...] = Field(default=(), max_length=16)
+    repeats: int = Field(default=1, ge=1, le=10_000)
+    dff_trigger: DffTriggerConfig | None = None
+    mark_stimulation: bool = True
+    """Record each train as an event mark (for example, optogenetic stimulation)."""
 
     @model_validator(mode="after")
-    def validate_pulse_fits_period(self) -> RWDTTLOutputConfig:
-        if self.pulse_width_ms >= 1000.0 / self.frequency_hz:
+    def validate_program(self) -> RWDTTLOutputConfig:
+        _check_pulse_fits(self.port, self.frequency_hz, self.pulse_width_ms)
+        for step in self.steps:
+            _check_pulse_fits(self.port, step.frequency_hz, step.pulse_width_ms)
+        if self.train_s is None and (self.steps or self.repeats > 1 or self.cycles > 1):
             raise ValueError(
-                f"TTL output {self.port} pulse of {self.pulse_width_ms} ms does not fit its "
-                f"{1000.0 / self.frequency_hz:g} ms period"
+                f"TTL output {self.port}: only a single train may last until the recording ends"
+            )
+        if self.train_s is None and self.trigger != "recording_start":
+            raise ValueError(f"TTL output {self.port}: a triggered program needs a train length")
+        if (self.trigger == "dff_threshold") != (self.dff_trigger is not None):
+            raise ValueError(
+                f"TTL output {self.port}: a dF/F trigger needs its threshold settings, and "
+                "only a dF/F trigger takes them"
             )
         return self
+
+    @property
+    def program_s(self) -> float | None:
+        """The program's length from trigger to its last train's end; None if open."""
+
+        if self.train_s is None:
+            return None
+        first = self.cycles * (self.train_s + self.gap_s)
+        rest = sum(step.cycles * (step.train_s + step.gap_s) for step in self.steps)
+        return self.delay_s + self.repeats * (first + rest)
 
 
 class RWDSourceConfig(BaseModel):
@@ -436,6 +509,22 @@ class SessionConfig(BaseModel):
         ttl_lines = [ttl.line for ttl in self.ttl_inputs]
         if len(ttl_lines) != len(set(ttl_lines)):
             raise ValueError("TTL input lines must be unique")
+        enabled_fibers = {roi.fiber_id for roi in self.enabled_rois}
+        enabled_wavelengths = {channel.wavelength_nm for channel in self.enabled_channels}
+        for output in getattr(self.source, "ttl_outputs", ()):
+            trigger = output.dff_trigger
+            if trigger is None:
+                continue
+            if trigger.fiber_id not in enabled_fibers:
+                raise ValueError(
+                    f"TTL output {output.port} watches ROI {trigger.fiber_id!r}, which is not "
+                    "an enabled ROI"
+                )
+            if trigger.wavelength_nm not in enabled_wavelengths:
+                raise ValueError(
+                    f"TTL output {output.port} watches {int(trigger.wavelength_nm)} nm, which "
+                    "is not an enabled wavelength"
+                )
         keys = [marker.key for marker in self.event_markers]
         if len(keys) != len(set(keys)):
             raise ValueError("each event-marker key may be used once")

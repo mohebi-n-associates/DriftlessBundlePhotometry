@@ -135,7 +135,7 @@ class SystemEvent:
             raise ValueError("system-event classification is required")
 
 
-EVENT_MARK_SOURCES = frozenset({"key", "button", "ttl"})
+EVENT_MARK_SOURCES = frozenset({"key", "button", "ttl", "output"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,12 +144,15 @@ class EventMark:
 
     Keyboard and button marks are timed on the host clock, mapped onto session time
     through the most recent camera frame. TTL marks take their pulse's rising edge.
+    Output marks are the trains DBF drove on a TTL output, such as optogenetic
+    stimulation, host-timed; ``duration_s`` is the train's planned length.
     """
 
     timestamp_s: float
     name: str
     source: str
     detail: str = ""
+    duration_s: float = 0.0
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.timestamp_s) or self.timestamp_s < 0:
@@ -158,6 +161,8 @@ class EventMark:
             raise ValueError("event marks need a name")
         if self.source not in EVENT_MARK_SOURCES:
             raise ValueError(f"event-mark source must be one of {sorted(EVENT_MARK_SOURCES)}")
+        if not np.isfinite(self.duration_s) or self.duration_s < 0:
+            raise ValueError("event-mark duration must be finite and non-negative")
 
 
 def _or_nan(value: float | None) -> float:

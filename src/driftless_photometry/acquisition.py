@@ -21,7 +21,7 @@ from driftless_photometry.domain import (
     TraceSample,
     TTLEdge,
 )
-from driftless_photometry.events import TTLPulseClassifier
+from driftless_photometry.events import DffThresholdWatcher, TTLPulseClassifier
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from driftless_photometry.hardware import ExcitationCycle, RigSource, StartCondition
 from driftless_photometry.provenance import capture_runtime_provenance
@@ -329,6 +329,15 @@ class AcquisitionEngine:
         if self._source is not None:
             self._source.stop()
 
+    def trigger_output(self, port: int) -> None:
+        """Start a manually triggered TTL output program now (thread-safe)."""
+
+        source = self._source
+        trigger = getattr(source, "trigger_output", None)
+        if trigger is None:
+            raise ValueError("this acquisition source has no TTL outputs to trigger")
+        trigger(port, "manual")
+
     def mark_event(
         self, name: str, source: str = "key", *, at_monotonic_s: float | None = None
     ) -> None:
@@ -378,6 +387,8 @@ class AcquisitionEngine:
         last_frame_monotonic_s: float | None = None
         new_marks: list[EventMark] = []
         classifier = TTLPulseClassifier(config.ttl_events)
+        dff_watchers = DffThresholdWatcher.for_config(config)
+        trigger_output = getattr(source, "trigger_output", None)
         try:
             if self.state is AcquisitionState.DISCONNECTED:
                 self._transition(AcquisitionState.READY, on_state)
@@ -460,6 +471,8 @@ class AcquisitionEngine:
                     spool.submit_invalid_time(interval)
                 for event in rig_packet.system_events:
                     spool.submit_system_event(event)
+                for mark in rig_packet.event_marks:
+                    submit_mark(mark)
                 packet = rig_packet.frame
                 if packet is None:
                     submit_edges(rig_packet.ttl_edges)
@@ -504,6 +517,13 @@ class AcquisitionEngine:
                 )
                 spool.submit_frame(packet, sample)
                 submit_edges(rig_packet.ttl_edges)
+                for watcher in dff_watchers:
+                    reason = watcher.observe(sample, packet.exposure.camera_index)
+                    if reason is not None and trigger_output is not None:
+                        spool.submit_system_event(
+                            SystemEvent(timestamp, "ttl_output_dff_trigger", reason)
+                        )
+                        trigger_output(watcher.port, reason)
                 frame_count += 1
                 if last_sequence >= 0 and sequence > last_sequence + 1:
                     dropped_frames += sequence - last_sequence - 1

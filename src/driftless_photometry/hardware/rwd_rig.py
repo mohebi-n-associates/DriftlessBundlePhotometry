@@ -28,6 +28,7 @@ from typing import Protocol
 
 from driftless_photometry.config import RWD_PROFILE, SessionConfig, profile_for
 from driftless_photometry.domain import (
+    EventMark,
     ExposureRecord,
     FramePacket,
     InvalidTimeInterval,
@@ -39,6 +40,7 @@ from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from .alvium import AlviumFrame, AlviumSettings, AlviumTriggeredCameras
 from .base import ExcitationCycle, RigPacket, StartCondition
 from .rwd_controller_protocol import device_enable, output_config, output_enable
+from .rwd_outputs import OutputProgramRun
 from .rwd_timing import (
     RWDBrightnessCheck,
     RWDCameraFrame,
@@ -144,6 +146,7 @@ class RWDRig:
         self._stop = threading.Event()
         self._gain_lock = threading.Lock()
         self._pending_gain_db: float | None = None
+        self._output_triggers: list[tuple[int, str]] = []
         self.identity: RWDControllerIdentity | None = None
         self.port: str | None = None
 
@@ -164,6 +167,21 @@ class RWDRig:
             raise ValueError("gain must be non-negative")
         with self._gain_lock:
             self._pending_gain_db = float(gain_db)
+
+    def trigger_output(self, port: int, reason: str = "manual") -> None:
+        """Start ``port``'s output program in the running session (thread-safe).
+
+        Only outputs with a manual or dF/F trigger respond, and a program that is still
+        running ignores new triggers.
+        """
+
+        with self._gain_lock:
+            self._output_triggers.append((port, reason))
+
+    def _take_output_triggers(self) -> list[tuple[int, str]]:
+        with self._gain_lock:
+            triggers, self._output_triggers = self._output_triggers, []
+        return triggers
 
     def _take_pending_gain(self) -> float | None:
         with self._gain_lock:
@@ -207,6 +225,7 @@ class RWDRig:
                 identity=self.identity,
                 port=self.port or "",
                 pending_gain=self._take_pending_gain,
+                output_triggers=self._take_output_triggers,
             )
             yield from session.run(duration_s, start, cycle)
         finally:
@@ -281,8 +300,17 @@ class _RWDSession:
         identity: RWDControllerIdentity | None,
         port: str,
         pending_gain: Callable[[], float | None] = lambda: None,
+        output_triggers: Callable[[], list[tuple[int, str]]] = list,
     ) -> None:
         self._pending_gain = pending_gain
+        self._output_triggers = output_triggers
+        self._outputs = {
+            output.port: output for output in getattr(config.source, "ttl_outputs", ())
+        }
+        self._output_runs: dict[int, OutputProgramRun] = {}
+        self._output_settings: dict[int, tuple[float, int]] = {}
+        self._marks: list[EventMark] = []
+        self._last_frame_host_s: float | None = None
         self._config = config
         self._plan = plan
         self._transport = transport
@@ -360,8 +388,8 @@ class _RWDSession:
                 return
             for command in self._plan.commands():
                 transport.command(command)
-            self._start_outputs()
             self._start_run()
+            self._start_outputs()
             if self._start_trigger is not None:
                 detail, read_host_s = self._start_trigger
                 self._event(
@@ -377,13 +405,14 @@ class _RWDSession:
                     self._event("rwd_camera_gain_changed", f"{gain:g} dB on both cameras")
                 frame = self._cameras.get(self._timing.poll_interval_s)
                 self._poll_controller()
+                self._service_outputs()
                 if self._pause is not None:
                     if frame is not None:
                         self._pause.discarded += 1
                     if self._clock() >= self._pause.resume_host_s:
                         self._resume_excitation()
                     self._release_edges(final=False)
-                    if self._edges or self._events or self._invalid:
+                    if self._edges or self._events or self._invalid or self._marks:
                         yield self._packet(None)
                     continue
                 if frame is not None:
@@ -492,6 +521,7 @@ class _RWDSession:
         while self._clock() < quiet_deadline:
             frame = self._cameras.get(self._timing.poll_interval_s)
             self._poll_controller()
+            self._service_outputs()
             if frame is not None:
                 discarded += 1
                 quiet_deadline = self._clock() + self._timing.drain_quiet_s
@@ -551,22 +581,71 @@ class _RWDSession:
 
     # Sequencer runs ----------------------------------------------------------------------
     def _start_outputs(self) -> None:
-        outputs = self._config.source.ttl_outputs  # type: ignore[union-attr]
+        """Start the programs that run from the recording's start; arm the others."""
+
+        outputs = tuple(self._outputs.values())
         for output in outputs:
-            self._transport.command(
-                output_config(output.port, output.frequency_hz, output.pulse_width_ms)
-            )
-            self._transport.command(output_enable(output.port, True))
+            if output.trigger == "recording_start":
+                self._output_runs[output.port] = OutputProgramRun(output, self._enabled_host_s)
+        self._service_outputs()
         if outputs:
             self._event(
                 "rwd_ttl_outputs_started",
-                "; ".join(
-                    f"output {output.port}: {output.frequency_hz:g} Hz, "
-                    f"{output.pulse_width_ms} ms pulses"
-                    + (f" ({output.label})" if output.label else "")
-                    for output in outputs
-                ),
+                "; ".join(_describe_output(output) for output in outputs),
             )
+
+    def _service_outputs(self) -> None:
+        """Start queued triggered programs and send every program's due train changes."""
+
+        now = self._clock()
+        for port, reason in self._output_triggers():
+            output = self._outputs.get(port)
+            if output is None or output.trigger == "recording_start":
+                self._event(
+                    "ttl_output_trigger_ignored",
+                    f"output {port} has no triggered program ({reason})",
+                )
+                continue
+            running = self._output_runs.get(port)
+            if running is not None and not running.done:
+                self._event(
+                    "ttl_output_trigger_ignored",
+                    f"output {port}'s program is still running ({reason})",
+                )
+                continue
+            self._output_runs[port] = OutputProgramRun(output, now)
+            self._event("ttl_output_triggered", f"output {port}: {reason}")
+        for port, run in self._output_runs.items():
+            for action in run.due(now):
+                train = action.train
+                if not action.starts:
+                    self._transport.command(output_enable(port, False))
+                    continue
+                settings = (train.frequency_hz, train.pulse_width_ms)
+                if self._output_settings.get(port) != settings:
+                    self._transport.command(output_config(port, *settings))
+                    self._output_settings[port] = settings
+                self._transport.command(output_enable(port, True))
+                output = run.output
+                if output.mark_stimulation:
+                    length = 0.0 if train.stop_s is None else train.stop_s - train.start_s
+                    self._marks.append(
+                        EventMark(
+                            timestamp_s=self._session_at_host(self._clock()),
+                            name=output.label or f"Output {port}",
+                            source="output",
+                            detail=train.describe(port) + "; host-timed",
+                            duration_s=length,
+                        )
+                    )
+
+    def _session_at_host(self, host_s: float) -> float:
+        """Place a host instant on the session clock through the latest recorded frame."""
+
+        if self._last_frame_host_s is not None and self._last_emitted_s is not None:
+            trigger_host_s = self._last_frame_host_s - (self._baseline_start_delay_s or 0.0)
+            return max(0.0, self._last_emitted_s + host_s - trigger_host_s)
+        return max(0.0, host_s - self._enabled_host_s)
 
     def _start_run(self) -> None:
         self._run_index += 1
@@ -764,6 +843,7 @@ class _RWDSession:
         self._last_sequence = sequence
         self._run_emitted += 1
         self._run_last_host_s = frame.host_received_s
+        self._last_frame_host_s = frame.host_received_s
         self._restarts_without_frames = 0
         self._ttl.observe_frame(frame.host_received_s, session_s)
         if camera == 1:
@@ -905,11 +985,27 @@ class _RWDSession:
             ttl_edges=tuple(self._edges),
             invalid_times=tuple(self._invalid),
             system_events=tuple(self._events),
+            event_marks=tuple(self._marks),
         )
         self._edges.clear()
         self._invalid.clear()
         self._events.clear()
+        self._marks.clear()
         return packet
 
     def _cycle_text(self) -> str:
         return " -> ".join(f"{int(w)} nm" for w in self._plan.order)
+
+
+def _describe_output(output) -> str:
+    text = f"output {output.port}: {output.frequency_hz:g} Hz, {output.pulse_width_ms} ms pulses"
+    if output.label:
+        text += f" ({output.label})"
+    if output.train_s is not None:
+        trigger = {
+            "recording_start": "from the start",
+            "manual": "on a manual trigger",
+            "dff_threshold": "on a dF/F threshold",
+        }[output.trigger]
+        text += f", a {output.program_s:g} s program {trigger}"
+    return text

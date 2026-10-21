@@ -4,6 +4,7 @@ camera check only reads camera identities. No LED is switched on."""
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from driftless_photometry.config import SessionConfig
 
 from .alvium import AlviumCameraInfo, list_alvium_cameras
+from .rwd_controller_protocol import device_enable, output_config, output_enable
 from .rwd_rig import RWDTransportFactory, connect_rwd_controller
 from .rwd_timing import RWDExcitationPlan
 from .rwd_transport import RWDControllerTransport, candidate_rwd_ports
@@ -108,4 +110,62 @@ def _check_controller(
         "Controller",
         True,
         f"{identity.model_name} on {port}, firmware {firmware}, build {identity.build}",
+    )
+
+
+def drive_rwd_output_test(
+    config: SessionConfig,
+    port: int,
+    *,
+    seconds: float = 1.0,
+    transport_factory: RWDTransportFactory = RWDControllerTransport,
+    port_finder: Callable[[], tuple[str, ...]] = candidate_rwd_ports,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
+    """Drive one TTL output's first-step pulse train for ``seconds`` with the LEDs dark.
+
+    The sequencer runs with every LED disabled at 0 %, as when DBF waits for a TTL
+    start, because outputs were only bench-checked with it running. Anything connected
+    to the output, such as a laser, is driven for that time. Returns a summary.
+    """
+
+    if config.source.kind != "rwd":
+        raise ValueError("the output test needs RWD settings")
+    if not 0 < seconds <= 10:
+        raise ValueError("an output test lasts between 0 and 10 s")
+    output = next(
+        (item for item in config.source.ttl_outputs if item.port == port),  # type: ignore[union-attr]
+        None,
+    )
+    frequency_hz, pulse_width_ms = (
+        (10.0, 10)
+        if output is None
+        else (
+            output.frequency_hz,
+            output.pulse_width_ms,
+        )
+    )
+    transport, controller_port, _identity = connect_rwd_controller(
+        config.source.controller_port,  # type: ignore[union-attr]
+        transport_factory=transport_factory,
+        port_finder=port_finder,
+    )
+    try:
+        for command in RWDExcitationPlan.from_config(config).dark_commands():
+            transport.command(command)
+        transport.command(device_enable(True))
+        transport.command(output_config(port, frequency_hz, pulse_width_ms))
+        transport.command(output_enable(port, True))
+        deadline = clock() + seconds
+        while clock() < deadline:
+            transport.poll()
+            sleep(0.01)
+        transport.command(output_enable(port, False))
+        transport.command(device_enable(False))
+    finally:
+        transport.close()
+    return (
+        f"Output {port} on {controller_port} drove {frequency_hz:g} Hz, {pulse_width_ms} ms "
+        f"pulses for {seconds:g} s with the LEDs dark"
     )

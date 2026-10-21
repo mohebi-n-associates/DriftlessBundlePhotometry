@@ -80,3 +80,41 @@ def test_device_check_refuses_other_models(tmp_path: Path) -> None:
 
     assert not report.controller.ok
     assert "R811" in report.controller.detail
+
+
+def test_output_test_drives_one_output_with_the_leds_dark(tmp_path: Path) -> None:
+    from driftless_photometry.config import RWDSourceConfig, RWDTTLOutputConfig, SessionConfig
+    from driftless_photometry.hardware.rwd_controller_protocol import RWDFunction
+    from driftless_photometry.hardware.rwd_devices import drive_rwd_output_test
+
+    payload = rwd_config(tmp_path, (W410, W470)).model_dump()
+    payload["source"] = RWDSourceConfig(
+        ttl_outputs=(RWDTTLOutputConfig(port=3, frequency_hz=40.0, pulse_width_ms=5),)
+    ).model_dump()
+    config = SessionConfig.model_validate(payload)
+    clock = VirtualClock()
+    board = SimulatedRWDBoard(clock=clock)
+    lit = []
+
+    def sleep(seconds: float) -> None:
+        lit.append(board.state.light_on)
+        clock.advance_to(clock.now_s + seconds)
+
+    summary = drive_rwd_output_test(
+        config,
+        3,
+        transport_factory=lambda port: RWDControllerTransport(
+            port, serial_factory=lambda _: board, clock=clock
+        ),
+        port_finder=lambda: ("COM3",),
+        clock=clock,
+        sleep=sleep,
+    )
+
+    assert summary == "Output 3 on COM3 drove 40 Hz, 5 ms pulses for 1 s with the LEDs dark"
+    switches = [m.data for m in board.commands(RWDFunction.OUTPUT_ENABLE) if m.data[0] == 3]
+    assert [bool(data[1]) for data in switches] == [False, True, False, False]
+    assert board.runs and not any(board.runs[0].led_enabled.values())
+    assert lit and not any(lit)
+    assert not board.state.sequencer_enabled
+    assert not any(board.state.output_enabled.values())

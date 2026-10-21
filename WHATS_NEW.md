@@ -126,6 +126,16 @@ version, move its completed entries into a dated version section.
   is the isosbestic control (410 nm on RWD, 405 nm on Custom) fitted to that signal
   by least squares over the recording so far. It changes only the display, and the
   settings keep it.
+- RWD TTL outputs run programs:
+  - **Start:** at the recording's start, on a **Fire** button, or when one ROI's live
+    dF/F crosses a threshold;
+  - **Timing:** a delay; timed trains with gaps and cycles; further steps with their
+    own pulses; repeats of the whole program.
+
+  Each train is recorded as an `output` event mark with its length, for example for
+  optogenetic stimulation, and is shaded on the live traces. **Test** drives an output
+  for 1 s with the LEDs off, after asking. Existing settings keep their continuous
+  trains. Trains are timed from the host to within a few milliseconds.
 - RWD recordings end with a camera-diagnostics event: frames delivered, incomplete
   frames, and frames lost to a full host queue.
 

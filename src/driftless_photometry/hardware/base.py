@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from driftless_photometry.config import SessionConfig
-from driftless_photometry.domain import FramePacket, InvalidTimeInterval, SystemEvent, TTLEdge
+from driftless_photometry.domain import (
+    EventMark,
+    FramePacket,
+    InvalidTimeInterval,
+    SystemEvent,
+    TTLEdge,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +28,7 @@ class RigPacket:
     ttl_edges: tuple[TTLEdge, ...] = ()
     invalid_times: tuple[InvalidTimeInterval, ...] = ()
     system_events: tuple[SystemEvent, ...] = ()
+    event_marks: tuple[EventMark, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -80,6 +80,11 @@ class AcquisitionWorker(QObject):
 
         self._engine.mark_event(name, source)
 
+    def trigger_output(self, port: int) -> None:
+        """Thread-safe manual start of a TTL output program."""
+
+        self._engine.trigger_output(port)
+
     def _emit_progress(self, progress: AcquisitionProgress) -> None:
         self.progress.emit(progress)
 
@@ -177,3 +182,23 @@ class DeviceCheckWorker(QObject):
             self.failed.emit(traceback.format_exc())
         else:
             self.finished.emit(report)
+
+
+class BoardTaskWorker(QObject):
+    """Run one short controller task off the GUI thread, such as an output test."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, task: Callable[[], object]) -> None:
+        super().__init__()
+        self._task = task
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self._task()
+        except BaseException:
+            self.failed.emit(traceback.format_exc())
+        else:
+            self.finished.emit(result)
