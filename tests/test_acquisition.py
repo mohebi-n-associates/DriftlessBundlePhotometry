@@ -20,7 +20,12 @@ from driftless_photometry.config import SessionConfig, demo_config
 from driftless_photometry.diagnostics import FinalizationStage
 from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TTLEdge
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
-from driftless_photometry.hardware import RigPacket, SimulatedRig, StartCondition
+from driftless_photometry.hardware import (
+    ExcitationCycle,
+    RigPacket,
+    SimulatedRig,
+    StartCondition,
+)
 from driftless_photometry.provenance import NWB_RUNTIME_PROVENANCE_SCRATCH_NAME
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
@@ -588,3 +593,32 @@ def test_operator_marks_are_timed_through_the_latest_frame(tmp_path: Path) -> No
     assert [mark.name for mark in shown] == ["Tone"]
     with pytest.raises(ValueError, match="key or a button"):
         engine.mark_event("Tone", "ttl")
+
+
+def test_sequential_excitation_records_only_lit_windows(tmp_path: Path) -> None:
+    config = _with_recording(
+        demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24),
+        excitation="sequential",
+        excitation_on_s=1.0,
+        excitation_off_s=1.0,
+    )
+    seen = []
+
+    class Source(SimulatedRig):
+        def packets(self, duration_s, start=None, cycle=None):
+            seen.append(cycle)
+            return super().packets(duration_s, start, cycle)
+
+    result = AcquisitionEngine().run(config, Source(config), duration_s=4.0)
+
+    assert seen == [ExcitationCycle(1.0, 1.0)]
+    assert result.report.frame_count == 60
+    assert result.diagnostics.dropped_frames == 0
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        nwbfile = io.read()
+        times = nwbfile.events["camera_frames"].to_dataframe()["timestamp"]
+        events = nwbfile.events["system_events"].to_dataframe()
+    assert not ((times >= 1.0) & (times < 2.0)).any()
+    assert ((times >= 2.0) & (times < 3.0)).sum() == 30
+    pauses = events[events["event"] == "excitation_paused"]["timestamp"].tolist()
+    assert pauses == pytest.approx([1.0, 3.0])

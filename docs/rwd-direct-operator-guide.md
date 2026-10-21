@@ -132,7 +132,13 @@ Choose when the recording starts and stops in the *Recording* group:
   TTL input*. A TTL stop still ends at the **Maximum length**. Its input must be a
   configured TTL input recording that edge.
 
-Neither choice needs a new preview.
+- **Excitation:** *Continuous*, or *Sequential* with an on and an off time (1 s to
+  24 h each). Sequential lights the LEDs for the on time, then keeps them dark for the
+  off time, repeating from the start of the recording, to limit photobleaching. No
+  frames are recorded while dark, but TTL inputs still are, and a TTL stop still
+  works. The live traces and progress bar pause with the LEDs.
+
+None of these choices needs a new preview.
 
 Press **Record**. DBF connects, sends the settings, starts the LED sequence, and
 records until the stop condition or **Stop**. It then saves and validates one NWB

@@ -189,6 +189,11 @@ class RecordingControlConfig(BaseModel):
     stop: Literal["duration", "manual", "ttl"] = "duration"
     stop_ttl_line: int = Field(default=1, ge=1, le=4)
     stop_ttl_edge: Literal["rising", "falling"] = "rising"
+    excitation: Literal["continuous", "sequential"] = "continuous"
+    """Sequential excitation lights the LEDs for ``excitation_on_s``, then keeps them off
+    for ``excitation_off_s``, repeating, to limit photobleaching."""
+    excitation_on_s: float = Field(default=60.0, ge=1.0, le=86_400.0)
+    excitation_off_s: float = Field(default=240.0, ge=1.0, le=86_400.0)
 
 
 class CameraConfig(BaseModel):

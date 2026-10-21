@@ -518,6 +518,7 @@ class MainWindow(QMainWindow):
         session_form.addRow("Output root", output_row)
         session_form.addRow("Start", self._build_start_row())
         session_form.addRow("Stop", self._build_stop_row())
+        session_form.addRow("Excitation", self._build_excitation_row())
         session_form.addRow("Duration", self.duration_spin)
         self._duration_label = session_form.labelForField(self.duration_spin)
         controls_layout.addWidget(session_group)
@@ -1840,6 +1841,30 @@ class MainWindow(QMainWindow):
             self.stop_mode_combo, self.stop_ttl_line_combo, self.stop_ttl_edge_combo
         )
 
+    def _build_excitation_row(self) -> QWidget:
+        self.excitation_mode_combo = QComboBox()
+        self.excitation_mode_combo.addItem("Continuous", "continuous")
+        self.excitation_mode_combo.addItem("Sequential", "sequential")
+        self.excitation_mode_combo.setToolTip(
+            "Sequential lights the LEDs for the on time, then keeps them off for the off "
+            "time, repeating, to limit photobleaching. TTL inputs are still recorded while "
+            "they are off."
+        )
+        self.excitation_on_spin = QDoubleSpinBox()
+        self.excitation_off_spin = QDoubleSpinBox()
+        for spin, prefix, value in (
+            (self.excitation_on_spin, "on ", 60.0),
+            (self.excitation_off_spin, "off ", 240.0),
+        ):
+            spin.setRange(1.0, 86_400.0)
+            spin.setDecimals(0)
+            spin.setPrefix(prefix)
+            spin.setSuffix(" s")
+            spin.setValue(value)
+        return self._mode_row(
+            self.excitation_mode_combo, self.excitation_on_spin, self.excitation_off_spin
+        )
+
     def _mode_row(self, mode_combo: QComboBox, *details: QWidget) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -1855,6 +1880,9 @@ class MainWindow(QMainWindow):
         self.start_delay_spin.setVisible(start == "delayed")
         self.start_ttl_line_combo.setVisible(start == "ttl")
         self.start_ttl_edge_combo.setVisible(start == "ttl")
+        sequential = self.excitation_mode_combo.currentData() == "sequential"
+        self.excitation_on_spin.setVisible(sequential)
+        self.excitation_off_spin.setVisible(sequential)
         stop = self.stop_mode_combo.currentData()
         self.stop_ttl_line_combo.setVisible(stop == "ttl")
         self.stop_ttl_edge_combo.setVisible(stop == "ttl")
@@ -1877,6 +1905,9 @@ class MainWindow(QMainWindow):
             stop=self.stop_mode_combo.currentData(),
             stop_ttl_line=self.stop_ttl_line_combo.currentData(),
             stop_ttl_edge=self.stop_ttl_edge_combo.currentData(),
+            excitation=self.excitation_mode_combo.currentData(),
+            excitation_on_s=self.excitation_on_spin.value(),
+            excitation_off_s=self.excitation_off_spin.value(),
         )
 
     def _load_recording_controls(self, recording: RecordingControlConfig) -> None:
@@ -1887,9 +1918,12 @@ class MainWindow(QMainWindow):
             (self.stop_mode_combo, recording.stop),
             (self.stop_ttl_line_combo, recording.stop_ttl_line),
             (self.stop_ttl_edge_combo, recording.stop_ttl_edge),
+            (self.excitation_mode_combo, recording.excitation),
         ):
             combo.setCurrentIndex(combo.findData(value))
         self.start_delay_spin.setValue(recording.start_delay_s)
+        self.excitation_on_spin.setValue(recording.excitation_on_s)
+        self.excitation_off_spin.setValue(recording.excitation_off_s)
         self._apply_recording_modes()
 
     def _browse_output(self) -> None:

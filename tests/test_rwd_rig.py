@@ -15,7 +15,7 @@ from driftless_photometry.config import (
     demo_config,
 )
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
-from driftless_photometry.hardware import StartCondition
+from driftless_photometry.hardware import ExcitationCycle, StartCondition
 from driftless_photometry.hardware.rwd_controller_protocol import (
     RWDFunction,
     RWDLed,
@@ -500,4 +500,37 @@ def test_rwd_rig_stopped_while_armed_switches_off_and_records_nothing(tmp_path: 
     events = {event.event: event.detail for event in events_of(packets)}
     assert "a rising edge on TTL input 1" in events["recording_start_cancelled"]
     assert len(bench.board.runs) == 1
+    bench.assert_all_off()
+
+
+def test_rwd_rig_sequential_excitation_records_lit_windows_and_dark_ttl(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, (W410, W470)))
+    board = bench.board
+    connected = bench.clock.now_s
+    board.schedule_input_edge(1, True, connected + 2.0)  # while the LEDs are dark
+    board.schedule_input_edge(1, False, connected + 2.05)
+
+    packets = list(bench.rig.packets(5.5, cycle=ExcitationCycle(on_s=1.0, off_s=2.0)))
+
+    lit0, dark, lit1 = board.runs
+    lit = {RWDLed.LED_410: True, RWDLed.LED_470: True, RWDLed.LED_560: False}
+    assert lit0.led_enabled == lit1.led_enabled == lit
+    assert not any(dark.led_enabled.values()) and not any(dark.led_value.values())
+    times = [frame.exposure.timestamp_s for frame in frames_of(packets)]
+    first, second = [t for t in times if t < 1.0], [t for t in times if t >= 1.0]
+    assert len(first) == 20
+    assert abs(second[0] - 3.0) < 0.05  # relit on schedule within one frame period
+    assert max(second) < 4.0 and len(second) in {20, 21}
+    sequences = [frame.exposure.sequence for frame in frames_of(packets)]
+    assert sequences == list(range(len(times)))
+    events = [event for event in events_of(packets)]
+    names = [event.event for event in events]
+    assert names.count("excitation_paused") == 1 and names.count("excitation_resumed") == 1
+    paused = next(event for event in events if event.event == "excitation_paused")
+    assert paused.timestamp_s == pytest.approx(1.0)
+    assert "rwd_sequencer_restart" not in names
+    edges = [edge for packet in packets for edge in packet.ttl_edges]
+    assert [edge.edge for edge in edges] == ["rising", "falling"]
+    assert edges[0].timestamp_s == pytest.approx(bench.session_s(connected + 2.0), abs=0.005)
+    assert not invalid_of(packets)
     bench.assert_all_off()
