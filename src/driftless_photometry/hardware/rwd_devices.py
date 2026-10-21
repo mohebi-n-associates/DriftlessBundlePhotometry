@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from driftless_photometry.config import SessionConfig
 
 from .alvium import AlviumCameraInfo, list_alvium_cameras
+from .power_meter import PowerMeter
 from .rwd_controller_protocol import device_enable, output_config, output_enable
 from .rwd_rig import RWDTransportFactory, connect_rwd_controller
 from .rwd_timing import RWDExcitationPlan
@@ -169,3 +170,87 @@ def drive_rwd_output_test(
         f"Output {port} on {controller_port} drove {frequency_hz:g} Hz, {pulse_width_ms} ms "
         f"pulses for {seconds:g} s with the LEDs dark"
     )
+
+
+@dataclass(frozen=True, slots=True)
+class LEDPowerReading:
+    wavelength_nm: int
+    set_percent: float
+    power_mw: float
+    """Mean of the samples, with the LED on continuously (its peak power)."""
+    spread_mw: float
+    """Standard deviation of the samples."""
+    samples: int
+
+
+def measure_rwd_led_power(
+    config: SessionConfig,
+    meter: PowerMeter,
+    *,
+    settle_s: float = 1.0,
+    samples: int = 10,
+    transport_factory: RWDTransportFactory = RWDControllerTransport,
+    port_finder: Callable[[], tuple[str, ...]] = candidate_rwd_ports,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[LEDPowerReading, ...]:
+    """Light each enabled LED alone, continuously, at its set power and read the meter.
+
+    This switches LEDs on: the fiber must point at the meter's sensor. Every LED is off
+    again afterwards, whatever happens. In an interleaved recording each LED is lit
+    only during its exposures, so its average power there is lower than this reading.
+    """
+
+    if config.source.kind != "rwd":
+        raise ValueError("measuring LED power needs RWD settings")
+    if samples < 1 or settle_s < 0:
+        raise ValueError("power measurement needs at least one sample and a settle time")
+    transport, _port, _identity = connect_rwd_controller(
+        config.source.controller_port,  # type: ignore[union-attr]
+        transport_factory=transport_factory,
+        port_finder=port_finder,
+    )
+
+    def wait(seconds: float) -> None:
+        deadline = clock() + seconds
+        while clock() < deadline:
+            transport.poll()
+            sleep(min(0.01, seconds))
+
+    readings = []
+    try:
+        for channel in config.enabled_channels:
+            alone = config.model_copy(
+                update={
+                    "channels": tuple(
+                        item.model_copy(update={"enabled": item is channel})
+                        for item in config.channels
+                    )
+                }
+            )
+            for command in RWDExcitationPlan.from_config(alone).commands():
+                transport.command(command)
+            meter.set_wavelength(float(int(channel.wavelength_nm)))
+            transport.command(device_enable(True))
+            try:
+                wait(settle_s)
+                values = []
+                for _ in range(samples):
+                    values.append(meter.read_power_w() * 1e3)
+                    transport.poll()
+            finally:
+                transport.command(device_enable(False))
+            mean = sum(values) / len(values)
+            spread = (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
+            readings.append(
+                LEDPowerReading(
+                    int(channel.wavelength_nm),
+                    float(channel.power_percent or 0.0),
+                    mean,
+                    spread,
+                    len(values),
+                )
+            )
+    finally:
+        transport.close()
+    return tuple(readings)

@@ -39,6 +39,9 @@ dependencies = [
 rwd = [
   "vmbpy>=1.2,<2",
 ]
+power-meter = [
+  "pyvisa>=1.13,<2",
+]
 gui = [
   "PySide6>=6.8,<6.9",
   "pyqtgraph>=0.13.7,<0.15",

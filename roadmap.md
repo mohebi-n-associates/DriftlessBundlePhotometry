@@ -302,7 +302,8 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      marking (keys, buttons, named TTL events by pulse width; spool v5); sequential
      duty-cycle excitation; live dF/F with a control-fit F0; TTL output programs
      with manual and dF/F triggers, stimulation marking, and an output test.
-   - Next: a Thorlabs PM100/PM400 **Measure Power** button.
+     A Thorlabs PM100/PM400 **Measure power** button (pyvisa), not yet tried with
+     a physical meter.
    - Needs the bench: sequential excitation's pause and relight on the R821; output
      program timing against a looped-back input.
    - Out of scope by the user's choice: behavior video and OFRS's analysis module.

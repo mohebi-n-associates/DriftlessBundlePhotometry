@@ -303,6 +303,12 @@ session clock through the latest frame like operator marks. Outputs keep running
 through sequencer restarts and dark pauses; whether the board pauses them is still
 an open bench question.
 
+**LED power.** `measure_rwd_led_power` lights each enabled LED alone in continuous
+mode at its configured percentage. It reads a `PowerMeter` (`ThorlabsPowerMeter`:
+SCPI `SENS:CORR:WAV`, `MEAS:POW?` over pyvisa) after a 1 s settle, and disables the
+sequencer after each LED and again when the transport closes. The SCPI subset is the
+PM100 family's, which the PM400 shares; no physical meter has been tested yet.
+
 The engine handles TTL stops for every source. The first recorded edge that matches
 `stop_ttl_line` and `stop_ttl_edge` adds a `recording_stop_trigger` event and stops
 the recording, as **Stop** does. A TTL stop therefore needs that line configured as

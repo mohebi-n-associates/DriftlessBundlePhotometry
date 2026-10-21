@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from rwd_bench import W410, W470, rwd_config
 
 from driftless_photometry.hardware.alvium import AlviumCameraInfo
@@ -118,3 +119,50 @@ def test_output_test_drives_one_output_with_the_leds_dark(tmp_path: Path) -> Non
     assert lit and not any(lit)
     assert not board.state.sequencer_enabled
     assert not any(board.state.output_enabled.values())
+
+
+def test_power_measurement_lights_each_led_alone_and_switches_off(tmp_path: Path) -> None:
+    from driftless_photometry.hardware.rwd_controller_protocol import RWDLed
+    from driftless_photometry.hardware.rwd_devices import measure_rwd_led_power
+
+    config = rwd_config(tmp_path, (W410, W470))
+    clock = VirtualClock()
+    board = SimulatedRWDBoard(clock=clock)
+
+    class Meter:
+        description = "fake PM100D"
+        wavelength = None
+
+        def set_wavelength(self, nm):
+            self.wavelength = nm
+
+        def read_power_w(self):
+            lit = [led for led in RWDLed if board.state.led_enabled[led]]
+            assert board.state.sequencer_enabled and len(lit) == 1
+            assert lit[0].wavelength_nm == self.wavelength
+            return board.state.led_value[lit[0]] * 1e-6
+
+        def close(self):
+            pass
+
+    readings = measure_rwd_led_power(
+        config,
+        Meter(),
+        transport_factory=lambda port: RWDControllerTransport(
+            port, serial_factory=lambda _: board, clock=clock
+        ),
+        port_finder=lambda: ("COM3",),
+        clock=clock,
+        sleep=lambda seconds: clock.advance_to(clock.now_s + seconds),
+        samples=3,
+    )
+
+    assert [(r.wavelength_nm, r.set_percent, r.samples) for r in readings] == [
+        (410, 5.0, 3),
+        (470, 12.5, 3),
+    ]
+    assert readings[1].power_mw > readings[0].power_mw > 0
+    assert readings[0].spread_mw == pytest.approx(0.0)
+    assert [run.excitation_mode for run in board.runs] == [0, 0]  # continuous, one LED
+    assert not board.state.sequencer_enabled and not board.state.light_on
+    assert not any(board.state.led_enabled.values())

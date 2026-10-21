@@ -136,6 +136,11 @@ version, move its completed entries into a dated version section.
   optogenetic stimulation, and is shaded on the live traces. **Test** drives an output
   for 1 s with the LEDs off, after asking. Existing settings keep their continuous
   trains. Trains are timed from the host to within a few milliseconds.
+- **Measure power** in the RWD panel reads a Thorlabs PM100 or PM400 power meter
+  over VISA (new `power-meter` extra, `pyvisa`). After asking, it lights each enabled
+  LED alone, continuously, at its set power and sets the meter's wavelength
+  correction. It lists each LED's power in mW and switches every LED off again. It
+  has not yet been run with a physical meter.
 - RWD recordings end with a camera-diagnostics event: frames delivered, incomplete
   frames, and frames lost to a full host queue.
 
