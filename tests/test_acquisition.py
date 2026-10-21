@@ -12,6 +12,7 @@ from driftless_photometry.acquisition import (
     run_live_view,
     run_preview,
     spool_chunk_size_for,
+    spool_queue_size_for,
 )
 from driftless_photometry.config import SessionConfig, demo_config
 from driftless_photometry.diagnostics import FinalizationStage
@@ -481,3 +482,14 @@ def test_spool_chunks_hold_about_a_quarter_second(tmp_path: Path, fps, chunk) ->
     config = SessionConfig.model_validate(payload)
 
     assert spool_chunk_size_for(config) == chunk
+
+
+@pytest.mark.parametrize(
+    ("fps", "raw", "frames"),
+    [(1.0, False, 64), (20.0, False, 600), (120.0, False, 3600), (120.0, True, 1262)],
+)
+def test_spool_queue_holds_seconds_of_frames(tmp_path: Path, fps, raw, frames) -> None:
+    config = demo_config(tmp_path, fiber_count=1, system="rwd")
+    camera = config.camera.model_copy(update={"requested_fps": fps, "raw_capture": raw})
+
+    assert spool_queue_size_for(config.model_copy(update={"camera": camera})) == frames

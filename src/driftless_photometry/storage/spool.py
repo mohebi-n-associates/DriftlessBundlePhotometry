@@ -138,6 +138,7 @@ class SessionSpool:
         self._diagnostics_lock = threading.Lock()
         self._error: BaseException | None = None
         self._closed = False
+        self._last_manifest_write_s = 0.0
         self._wavelengths_submitted: set[Wavelength] = set()
         self._manifest = {
             "schema_version": _SPOOL_SCHEMA_VERSION,
@@ -415,6 +416,8 @@ class SessionSpool:
             os.fsync(index.fileno())
         self._manifest["chunk_count"] = chunk_index + 1
         self._manifest["frame_count"] = int(self._manifest["frame_count"]) + len(items)
+        images_before = len(self._manifest["wavelength_images"])
+        first_chunk = self._manifest["calibration_image"] is None
         if self._manifest["calibration_image"] is None:
             calibration = items[0].image
             if calibration is None:
@@ -429,7 +432,13 @@ class SessionSpool:
                     f"first {item.wavelength_nm} nm frame is required for wavelength recovery"
                 )
             self._commit_wavelength_image(item.wavelength_nm, item.image)
-        self._write_manifest()
+        # The fsynced chunk index is authoritative; the manifest's counts may lag it by up
+        # to a second, which recovery tolerates, so rewrite it at most once a second.
+        now = time.monotonic()
+        new_images = first_chunk or len(self._manifest["wavelength_images"]) != images_before
+        if new_images or now - self._last_manifest_write_s >= 1.0:
+            self._write_manifest()
+            self._last_manifest_write_s = now
 
     def _commit_calibration(self, image: np.ndarray) -> None:
         calibration_path = self.path / "calibration_frame.npy"

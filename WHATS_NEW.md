@@ -84,6 +84,9 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- The recovery spool's queue now holds 30 s of trace-only frames (raw-frame recordings
+  are capped at about 1 GB). A multi-second disk stall no longer ends a high-rate
+  recording; the old 64-frame queue lasted half a second at 120 frames/s.
 - Recovery spools moved to schema v4. Committed chunks are listed in an append-only
   index, so each commit costs the same however long the recording runs. Under the
   old manifest list a 120 frames/s recording fell behind after about 20 minutes.
