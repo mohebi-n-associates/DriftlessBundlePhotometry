@@ -284,3 +284,51 @@ def test_rwd_ttl_outputs_must_fit_their_period_and_use_each_port_once() -> None:
         RWDTTLOutputConfig(port=1, frequency_hz=700.0, pulse_width_ms=1)
     with pytest.raises(ValidationError, match="configured once"):
         RWDSourceConfig(ttl_outputs=(output, output))
+
+
+def _recording(tmp_path: Path, ttl_inputs=None, **recording) -> SessionConfig:
+    payload = demo_config(tmp_path).model_dump()
+    payload["recording"] = recording
+    if ttl_inputs is not None:
+        payload["ttl_inputs"] = ttl_inputs
+    return SessionConfig.model_validate(payload)
+
+
+def test_recordings_start_at_once_and_stop_after_their_duration_by_default(
+    tmp_path: Path,
+) -> None:
+    config = demo_config(tmp_path, recording_duration_s=12.0)
+
+    assert config.recording.start == "immediate"
+    assert config.recording.stop == "duration"
+    assert config.recording_limit_s == 12.0
+
+
+def test_manual_stop_runs_for_at_most_a_day_and_ttl_stop_for_the_duration(
+    tmp_path: Path,
+) -> None:
+    assert _recording(tmp_path, stop="manual").recording_limit_s == 24 * 60 * 60
+    config = _recording(tmp_path, stop="ttl", stop_ttl_line=3, stop_ttl_edge="falling")
+    assert config.recording_limit_s == config.recording_duration_s
+
+
+def test_ttl_stop_needs_an_input_that_records_its_edge(tmp_path: Path) -> None:
+    rising_only = [{"line": 2, "label": "lever", "edges": "rising"}]
+
+    with pytest.raises(ValidationError, match="TTL input 4 needs that input configured"):
+        _recording(tmp_path, ttl_inputs=rising_only, stop="ttl", stop_ttl_line=4)
+    with pytest.raises(ValidationError, match="record its falling edges"):
+        _recording(
+            tmp_path, ttl_inputs=rising_only, stop="ttl", stop_ttl_line=2, stop_ttl_edge="falling"
+        )
+    _recording(tmp_path, ttl_inputs=rising_only, stop="ttl", stop_ttl_line=2)
+    # A TTL start sees every input edge, configured or not.
+    _recording(tmp_path, ttl_inputs=[], start="ttl", start_ttl_line=4)
+
+
+def test_start_delays_run_from_a_tenth_of_a_second_to_a_day(tmp_path: Path) -> None:
+    assert _recording(tmp_path, start="delayed", start_delay_s=86_400).recording.start_delay_s
+    with pytest.raises(ValidationError):
+        _recording(tmp_path, start="delayed", start_delay_s=0)
+    with pytest.raises(ValidationError):
+        _recording(tmp_path, start="delayed", start_delay_s=86_401)

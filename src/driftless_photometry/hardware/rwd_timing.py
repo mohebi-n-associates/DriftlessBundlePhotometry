@@ -116,6 +116,21 @@ class RWDExcitationPlan:
         commands.append(excitation_mode(self.mode))
         return tuple(commands)
 
+    def dark_commands(self) -> tuple[RWDCommand, ...]:
+        """The same timing with every LED disabled at 0 %, for waiting on a TTL start.
+
+        With the sequencer running this way the board reports TTL inputs, and it stays
+        silent when the sequencer is off (bench, 2026-10-20).
+        """
+
+        commands: list[RWDCommand] = []
+        for led in RWDLed:
+            commands.append(led_power(led, 0.0))
+            commands.append(led_enable(led, False))
+        commands.append(camera_timing(self.frame_rate_hz, self.exposure_us / 1000))
+        commands.append(excitation_mode(self.mode))
+        return tuple(commands)
+
 
 @dataclass(frozen=True, slots=True)
 class RWDCameraFrame:

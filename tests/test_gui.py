@@ -838,3 +838,59 @@ def test_gui_simulator_runs_do_not_count_as_led_warm_up(qtbot, tmp_path: Path) -
     assert not window._warmup.leds_are_on
     window.stop_recording()
     qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+
+
+def test_gui_start_and_stop_options_round_trip_without_a_new_preview(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    assert window.start_delay_spin.isHidden() and window.stop_ttl_line_combo.isHidden()
+    window._preview_signature = window._configuration_signature(window._build_config())
+
+    window.start_mode_combo.setCurrentIndex(window.start_mode_combo.findData("ttl"))
+    window.start_ttl_line_combo.setCurrentIndex(2)
+    window.start_ttl_edge_combo.setCurrentIndex(1)
+    window.stop_mode_combo.setCurrentIndex(window.stop_mode_combo.findData("ttl"))
+    window.stop_ttl_line_combo.setCurrentIndex(1)
+    assert not window.start_ttl_line_combo.isHidden() and window.start_delay_spin.isHidden()
+    assert window._duration_label.text() == "Maximum length"
+
+    config = window._build_config()
+    assert config.recording.model_dump() == {
+        "start": "ttl",
+        "start_delay_s": 10.0,
+        "start_ttl_line": 3,
+        "start_ttl_edge": "falling",
+        "stop": "ttl",
+        "stop_ttl_line": 2,
+        "stop_ttl_edge": "rising",
+    }
+    assert window._preview_signature == window._configuration_signature(config)
+
+    window.stop_mode_combo.setCurrentIndex(window.stop_mode_combo.findData("manual"))
+    assert not window.duration_spin.isEnabled()
+    assert window._build_config().recording_limit_s == 24 * 60 * 60
+
+    window._apply_configuration(config)
+    assert window._build_config().recording == config.recording
+    assert window.duration_spin.isEnabled()
+
+
+def test_gui_cancels_a_recording_still_waiting_to_start(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, default_duration_s=1.0)
+    qtbot.addWidget(window)
+    window.start_preview()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    window.start_mode_combo.setCurrentIndex(window.start_mode_combo.findData("delayed"))
+    window.start_delay_spin.setValue(60.0)
+    assert window.start_button.isEnabled()
+
+    window.start_recording()
+    qtbot.waitUntil(lambda: "Waiting for a 60 s delay" in window.live_status.text(), timeout=5_000)
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+
+    assert window.last_error is None
+    assert window.last_result is None
+    assert "nothing was recorded" in window.live_status.text()
+    assert not list(tmp_path.rglob("*.nwb"))
+    assert not list(tmp_path.rglob("*.photometry-spool"))

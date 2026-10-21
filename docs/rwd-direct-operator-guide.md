@@ -107,9 +107,23 @@ settles. Live view counts, so keep it running while you place the circles until
 up to 3 minutes between Live view and **Record** keeps the warm-up. With less warm-up,
 **Record** asks before it starts.
 
+Choose when the recording starts and stops in the *Recording* group:
+
+- **Start:** *Immediately*, *After a delay* (0.1 s to 24 h), or *On a TTL input*
+  (an input and its rising or falling edge). DBF connects and opens the cameras
+  first, then waits with the LEDs off, so the recording begins within a fraction of
+  a second. While it waits, the status reads *WAITING*. **Stop** cancels the wait
+  and nothing is recorded.
+- **Stop:** *After the duration*, *When I press Stop* (24 hours at most), or *On a
+  TTL input*. A TTL stop still ends at the **Maximum length**. Its input must be a
+  configured TTL input recording that edge.
+
+Neither choice needs a new preview.
+
 Press **Record**. DBF connects, sends the settings, starts the LED sequence, and
-records until the duration ends or you press **Stop**. It then saves and validates one
-NWB file per ROI. Connecting and opening the cameras takes about 7 seconds.
+records until the stop condition or **Stop**. It then saves and validates one NWB
+file per ROI. Connecting and opening the cameras takes about 7 seconds. The NWB
+system events record what started and stopped the recording.
 
 If something interrupts the frame stream, DBF stops the sequencer, marks the gap as
 invalid, and restarts it. For example, a camera might miss a frame. The restart keeps

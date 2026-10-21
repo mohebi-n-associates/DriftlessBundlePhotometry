@@ -8,6 +8,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QObject, Signal, Slot
 
 from driftless_photometry.acquisition import (
+    AcquisitionCancelled,
     AcquisitionEngine,
     AcquisitionProgress,
     preview_duration_s,
@@ -37,6 +38,7 @@ class AcquisitionWorker(QObject):
     state_changed = Signal(str)
     completed = Signal(object)
     failed = Signal(str)
+    cancelled = Signal(str)
 
     def __init__(
         self,
@@ -61,6 +63,8 @@ class AcquisitionWorker(QObject):
                 on_state=self._emit_state,
                 on_finalization=self.finalization_progress.emit,
             )
+        except AcquisitionCancelled as cancelled:
+            self.cancelled.emit(str(cancelled))
         except BaseException:
             self.failed.emit(traceback.format_exc())
         else:

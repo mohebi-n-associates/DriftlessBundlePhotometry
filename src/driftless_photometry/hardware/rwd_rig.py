@@ -36,7 +36,7 @@ from driftless_photometry.domain import (
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 
 from .alvium import AlviumFrame, AlviumSettings, AlviumTriggeredCameras
-from .base import RigPacket
+from .base import RigPacket, StartCondition
 from .rwd_controller_protocol import device_enable, output_config, output_enable
 from .rwd_timing import (
     RWDBrightnessCheck,
@@ -162,10 +162,19 @@ class RWDRig:
             gain, self._pending_gain_db = self._pending_gain_db, None
         return gain
 
-    def packets(self, duration_s: float) -> Iterator[RigPacket]:
+    def packets(
+        self, duration_s: float, start: StartCondition | None = None
+    ) -> Iterator[RigPacket]:
         if duration_s <= 0:
             raise ValueError("duration_s must be positive")
+        # Clear now, not when the generator starts: a Stop that arrives before the
+        # first packet is requested must still end the session.
         self._stop.clear()
+        return self._session_packets(duration_s, start)
+
+    def _session_packets(
+        self, duration_s: float, start: StartCondition | None
+    ) -> Iterator[RigPacket]:
         transport = self._connect()
         cameras: RWDCameraSource | None = None
         try:
@@ -188,7 +197,7 @@ class RWDRig:
                 port=self.port or "",
                 pending_gain=self._take_pending_gain,
             )
-            yield from session.run(duration_s)
+            yield from session.run(duration_s, start)
         finally:
             try:
                 transport.close()
@@ -302,9 +311,10 @@ class _RWDSession:
         self._run_last_host_s: float | None = None
         self._run_latest_received_s: float | None = None
         self._open_invalid: tuple[float, str] | None = None
+        self._start_trigger: tuple[str, float] | None = None
 
     # Main loop -------------------------------------------------------------------------
-    def run(self, duration_s: float) -> Iterator[RigPacket]:
+    def run(self, duration_s: float, start: StartCondition | None = None) -> Iterator[RigPacket]:
         transport = self._transport
         identity = self._identity
         detail = f"port {self._port}"
@@ -315,11 +325,25 @@ class _RWDSession:
                 f"build {identity.build}; wavelengths are phase-derived"
             )
         self._event("rwd_controller_connected", detail)
-        for command in self._plan.commands():
-            transport.command(command)
-        self._start_outputs()
-        self._start_run()
         try:
+            if start is not None and not self._wait_for_start(start):
+                self._event(
+                    "recording_start_cancelled",
+                    f"stopped while waiting for {start.describe()}; nothing was recorded",
+                )
+                yield self._packet(None)
+                return
+            for command in self._plan.commands():
+                transport.command(command)
+            self._start_outputs()
+            self._start_run()
+            if self._start_trigger is not None:
+                detail, read_host_s = self._start_trigger
+                self._event(
+                    "recording_start_trigger",
+                    f"{detail}; the sequencer started "
+                    f"{(self._enabled_host_s - read_host_s) * 1e3:.0f} ms after it was read",
+                )
             finished = False
             while not finished and not self._stop.is_set():
                 gain = self._pending_gain()
@@ -376,6 +400,67 @@ class _RWDSession:
             with suppress(AcquisitionFault, OSError):
                 transport.command(device_enable(False))
 
+    # Start conditions ---------------------------------------------------------------------
+    def _wait_for_start(self, start: StartCondition) -> bool:
+        """Wait with every LED off for the start condition; False if Stop came first."""
+
+        if start.ttl_line is None:
+            deadline = self._clock() + start.delay_s
+            while self._clock() < deadline:
+                if self._stop.is_set():
+                    return False
+                self._cameras.get(self._timing.poll_interval_s)
+                self._retransmissions += self._transport.poll().retransmissions
+            self._event("recording_start_trigger", f"started after a {start.delay_s:g} s delay")
+            return True
+        # The board reports TTL inputs only while its sequencer runs, so arm it dark.
+        for command in self._plan.dark_commands():
+            self._transport.command(command)
+        self._transport.command(device_enable(True))
+        frames = other_edges = 0
+        trigger = None
+        try:
+            while trigger is None and not self._stop.is_set():
+                if self._cameras.get(self._timing.poll_interval_s) is not None:
+                    frames += 1
+                result = self._transport.poll()
+                self._retransmissions += result.retransmissions
+                for received in result.edges:
+                    edge = received.edge
+                    if (
+                        trigger is None
+                        and edge.line == start.ttl_line
+                        and edge.edge == start.ttl_edge
+                    ):
+                        trigger = received
+                    else:
+                        other_edges += 1
+        finally:
+            self._transport.command(device_enable(False))
+        if trigger is None:
+            return False
+        frames += self._drain_frames()
+        self._start_trigger = (
+            f"TTL {trigger.edge.edge} edge on input {trigger.edge.line} at board tick "
+            f"{trigger.edge.tick_ms} ms; while armed with the LEDs off, {frames} camera "
+            f"frame(s) and {other_edges} other TTL edge(s) were not recorded",
+            trigger.host_s,
+        )
+        return True
+
+    def _drain_frames(self) -> int:
+        """After a sequencer stop, wait until the cameras fall quiet; return frames dropped."""
+
+        discarded = 0
+        quiet_deadline = self._clock() + self._timing.drain_quiet_s
+        while self._clock() < quiet_deadline:
+            frame = self._cameras.get(self._timing.poll_interval_s)
+            self._poll_controller()
+            if frame is not None:
+                discarded += 1
+                quiet_deadline = self._clock() + self._timing.drain_quiet_s
+        return discarded
+
     # Sequencer runs ----------------------------------------------------------------------
     def _start_outputs(self) -> None:
         outputs = self._config.source.ttl_outputs  # type: ignore[union-attr]
@@ -425,13 +510,7 @@ class _RWDSession:
         start_s = self._first_unemitted_s()
         discarded = len(self._held)
         self._transport.command(device_enable(False))
-        quiet_deadline = self._clock() + self._timing.drain_quiet_s
-        while self._clock() < quiet_deadline:
-            frame = self._cameras.get(self._timing.poll_interval_s)
-            self._poll_controller()
-            if frame is not None:
-                discarded += 1
-                quiet_deadline = self._clock() + self._timing.drain_quiet_s
+        discarded += self._drain_frames()
         if self._open_invalid is None:
             self._open_invalid = (start_s, reason)
         self._event(

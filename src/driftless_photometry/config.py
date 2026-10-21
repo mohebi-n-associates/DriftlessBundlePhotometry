@@ -138,6 +138,30 @@ class TTLInputConfig(BaseModel):
     edges: EdgeSelection = EdgeSelection.BOTH
 
 
+MANUAL_STOP_LIMIT_S = 24 * 60 * 60.0
+"""A recording that stops only on Stop still ends after 24 hours."""
+
+
+class RecordingControlConfig(BaseModel):
+    """When a recording starts and stops, with the choices OFRS offers.
+
+    ``SessionConfig.recording_duration_s`` is the recording's length when ``stop`` is
+    "duration" and its maximum length when ``stop`` is "ttl"; a "manual" recording runs
+    until Stop for at most ``MANUAL_STOP_LIMIT_S``. Previews and live view always start
+    at once and ignore these settings.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    start: Literal["immediate", "delayed", "ttl"] = "immediate"
+    start_delay_s: float = Field(default=10.0, gt=0.0, le=86_400.0)
+    start_ttl_line: int = Field(default=1, ge=1, le=4)
+    start_ttl_edge: Literal["rising", "falling"] = "rising"
+    stop: Literal["duration", "manual", "ttl"] = "duration"
+    stop_ttl_line: int = Field(default=1, ge=1, le=4)
+    stop_ttl_edge: Literal["rising", "falling"] = "rising"
+
+
 class CameraConfig(BaseModel):
     """Camera settings used by both real and simulated backends."""
 
@@ -352,6 +376,7 @@ class SessionConfig(BaseModel):
     lab: str | None = None
     institution: str | None = None
     display: TraceDisplayConfig = Field(default_factory=TraceDisplayConfig)
+    recording: RecordingControlConfig = Field(default_factory=RecordingControlConfig)
 
     @model_validator(mode="after")
     def validate_contract(self) -> SessionConfig:
@@ -374,6 +399,19 @@ class SessionConfig(BaseModel):
         ttl_lines = [ttl.line for ttl in self.ttl_inputs]
         if len(ttl_lines) != len(set(ttl_lines)):
             raise ValueError("TTL input lines must be unique")
+        recording = self.recording
+        if recording.stop == "ttl":
+            stop_input = next(
+                (ttl for ttl in self.ttl_inputs if ttl.line == recording.stop_ttl_line), None
+            )
+            if stop_input is None or stop_input.edges.value not in {
+                "both",
+                recording.stop_ttl_edge,
+            }:
+                raise ValueError(
+                    f"stopping on TTL input {recording.stop_ttl_line} needs that input "
+                    f"configured to record its {recording.stop_ttl_edge} edges"
+                )
 
         for roi in self.rois:
             self._check_circle(roi.fiber_id, roi.center_x_px, roi.center_y_px, roi.radius_px, "")
@@ -445,6 +483,14 @@ class SessionConfig(BaseModel):
                 )
             elif needs_camera2 and roi.enabled:
                 raise ValueError(f"ROI {roi.fiber_id} needs camera-2 geometry for 560 nm")
+
+    @property
+    def recording_limit_s(self) -> float:
+        """How long a recording may run: its duration, or 24 h when it stops on Stop."""
+
+        if self.recording.stop == "manual":
+            return MANUAL_STOP_LIMIT_S
+        return self.recording_duration_s
 
     @property
     def enabled_channels(self) -> tuple[ChannelConfig, ...]:

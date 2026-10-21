@@ -92,6 +92,18 @@ version, move its completed entries into a dated version section.
   recording all count. **Record** asks before starting a recording with less than
   5 minutes of warm-up. A gap of up to 3 minutes, such as the preview, keeps the
   warm-up. The reminder can be switched off in the panel.
+- Recordings have start and stop options, as in OFRS:
+  - **Start:** immediately, after a delay of up to 24 h, or on a chosen TTL input
+    edge;
+  - **Stop:** after the duration, on **Stop** (at most 24 h), or on a chosen TTL
+    input edge, with the duration as the maximum length.
+
+  DBF connects and opens the cameras before it waits, with the LEDs off. For a TTL
+  start on RWD, it runs the sequencer with every LED disabled at 0 % so the board
+  reports inputs. **Stop** while waiting records nothing. The NWB system events record
+  the trigger (`recording_start_trigger`, `recording_stop_trigger`), including the
+  start edge's board tick. The options are saved with the settings and need no new
+  preview.
 - RWD recordings end with a camera-diagnostics event: frames delivered, incomplete
   frames, and frames lost to a full host queue.
 

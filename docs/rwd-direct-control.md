@@ -253,6 +253,30 @@ on hardware. Lowering the FTDI port's latency timer (Device Manager, port settin
 counted in a `rwd_ttl_edges_not_configured` event. A malformed controller frame
 records an invalid span, because it may have been a lost edge.
 
+**Start conditions.** A recording can start after a delay or on a TTL input edge
+(`SessionConfig.recording`, passed to `packets()` as a `StartCondition`). The rig
+connects and opens the cameras first, so the wait ends close to the first exposure.
+
+- **Delay:** the sequencer stays off. The rig keeps polling the controller so its
+  link checks run.
+- **TTL edge:** the board reports inputs only while its sequencer runs. The rig arms
+  it with `RWDExcitationPlan.dark_commands()`: the session's timing with every LED
+  disabled at 0 %, the state in which the bench saw input reports with no light.
+  The chosen edge disables the sequencer. The rig then drains any camera frames and
+  sends the real settings. Run 0 starts after that, so session zero is still run 0's
+  first trigger. The `recording_start_trigger` event gives the edge's board tick, the
+  host delay from reading the edge to the enable command, and the frames and other
+  edges seen while armed. Whether the cameras are triggered while the LEDs are dark
+  has not been measured; the simulator assumes they are.
+- **Stop while waiting** ends the session with a `recording_start_cancelled` event
+  and no frames. The engine then deletes the spool and raises
+  `AcquisitionCancelled`.
+
+The engine handles TTL stops for every source. The first recorded edge that matches
+`stop_ttl_line` and `stop_ttl_edge` adds a `recording_stop_trigger` event and stops
+the recording, as **Stop** does. A TTL stop therefore needs that line configured as
+a TTL input recording that edge.
+
 **QC.** `RWDBrightnessCheck` flags a run whose first 410 and 470 nm frames look
 swapped against earlier means (`rwd_brightness_qc_mismatch`). It never assigns or
 changes a wavelength.

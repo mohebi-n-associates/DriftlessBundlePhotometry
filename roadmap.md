@@ -294,6 +294,16 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      - where the board's timer step changes between 30 and 120 Hz;
      - a clean multi-hour run at 120 Hz with spool v4. A 4 h run at 20 Hz passed
        on 2026-10-21.
+     - whether the cameras are triggered while a TTL start waits with the LEDs dark,
+       and the start latency on hardware.
+7. **OFRS acquisition features DBF lacked — in progress (user-approved 2026-10-21)**
+   - Done in simulation: the Devices panel; typed ROI diameters (40–544 px); the
+     LED warm-up reminder; start and stop options (delay, TTL, manual).
+   - Next: event marking (hotkeys, buttons, named TTL events by pulse width);
+     sequential duty-cycle excitation; live ΔF/F with a 410 nm-fit F0; TTL output
+     programs and stimulation marking; a Thorlabs PM100/PM400 **Measure Power**
+     button.
+   - Out of scope by the user's choice: behavior video and OFRS's analysis module.
 
 ### Deliverables
 

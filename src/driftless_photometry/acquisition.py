@@ -17,9 +17,10 @@ from driftless_photometry.domain import (
     InvalidTimeInterval,
     SystemEvent,
     TraceSample,
+    TTLEdge,
 )
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
-from driftless_photometry.hardware import RigSource
+from driftless_photometry.hardware import RigSource, StartCondition
 from driftless_photometry.provenance import capture_runtime_provenance
 from driftless_photometry.roi import extract_circular_rois, rois_for_camera
 from driftless_photometry.state import AcquisitionState, AcquisitionStateMachine
@@ -295,6 +296,10 @@ StateCallback = Callable[[AcquisitionState], None]
 FinalizationCallback = Callable[[FinalizationProgress], None]
 
 
+class AcquisitionCancelled(RuntimeError):
+    """Stop came before the recording's first frame, so nothing was recorded."""
+
+
 class AcquisitionEngine:
     """Coordinate matched frames, extraction, spool, and NWB finalization."""
 
@@ -349,6 +354,13 @@ class AcquisitionEngine:
             if self.state is not AcquisitionState.READY:
                 raise RuntimeError(f"acquisition cannot start from state {self.state}")
             storage_capacity = check_storage_capacity(config, duration_s)
+            start = StartCondition.for_recording(config)
+            # Ask for packets before reporting ARMED: a Stop from then on must be kept.
+            packets = (
+                source.packets(duration_s)
+                if start is None
+                else source.packets(duration_s, start=start)
+            )
             self._transition(AcquisitionState.ARMED, on_state)
             spool = SessionSpool(
                 config,
@@ -366,17 +378,43 @@ class AcquisitionEngine:
                     protocol_version=str(getattr(source, "protocol_version", "not supplied")),
                 ),
             )
-            self._transition(AcquisitionState.RECORDING, on_state)
-            for rig_packet in source.packets(duration_s):
+            recording = config.recording
+            stop_on_ttl = recording.stop == "ttl"
+            if start is None:
+                self._transition(AcquisitionState.RECORDING, on_state)
+            # Otherwise waiting for the start condition stays ARMED until the first frame.
+
+            def submit_edges(edges: tuple[TTLEdge, ...]) -> None:
+                nonlocal stop_on_ttl
+                for edge in edges:
+                    spool.submit_ttl(edge)
+                    if (
+                        stop_on_ttl
+                        and edge.line == recording.stop_ttl_line
+                        and edge.edge == recording.stop_ttl_edge
+                    ):
+                        stop_on_ttl = False
+                        spool.submit_system_event(
+                            SystemEvent(
+                                timestamp_s=edge.timestamp_s,
+                                event="recording_stop_trigger",
+                                detail=f"TTL {edge.edge} edge on input {edge.line} "
+                                f"({edge.label}) stopped the recording",
+                            )
+                        )
+                        self.stop()
+
+            for rig_packet in packets:
                 for interval in rig_packet.invalid_times:
                     spool.submit_invalid_time(interval)
                 for event in rig_packet.system_events:
                     spool.submit_system_event(event)
                 packet = rig_packet.frame
                 if packet is None:
-                    for edge in rig_packet.ttl_edges:
-                        spool.submit_ttl(edge)
+                    submit_edges(rig_packet.ttl_edges)
                     continue
+                if self.state is AcquisitionState.ARMED:
+                    self._transition(AcquisitionState.RECORDING, on_state)
                 sequence = packet.exposure.sequence
                 timestamp = packet.exposure.timestamp_s
                 if sequence <= last_sequence:
@@ -414,8 +452,7 @@ class AcquisitionEngine:
                     saturation_fractions=extracted.saturation_fractions,
                 )
                 spool.submit_frame(packet, sample)
-                for edge in rig_packet.ttl_edges:
-                    spool.submit_ttl(edge)
+                submit_edges(rig_packet.ttl_edges)
                 frame_count += 1
                 if last_sequence >= 0 and sequence > last_sequence + 1:
                     dropped_frames += sequence - last_sequence - 1
@@ -450,6 +487,16 @@ class AcquisitionEngine:
                 # After stop(), keep reading until the source ends so that it can hand
                 # over the events it observed while shutting down.
             if frame_count == 0:
+                if self._stop_requested.is_set():
+                    spool.close(complete=False)
+                    spool.cleanup()
+                    spool = None
+                    if self.state is AcquisitionState.RECORDING:
+                        self._transition(AcquisitionState.DRAINING, on_state)
+                    self._transition(AcquisitionState.READY, on_state)
+                    raise AcquisitionCancelled(
+                        "the recording was stopped before its first frame; nothing was recorded"
+                    )
                 raise RuntimeError("recording ended without receiving a camera frame")
 
             self._transition(AcquisitionState.DRAINING, on_state)
@@ -479,6 +526,8 @@ class AcquisitionEngine:
                 diagnostics=diagnostics,
                 storage_capacity=storage_capacity,
             )
+        except AcquisitionCancelled:
+            raise
         except BaseException as error:
             with suppress(BaseException):
                 source.stop()

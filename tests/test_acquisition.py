@@ -1,4 +1,5 @@
 import json
+import threading
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -7,6 +8,7 @@ import pytest
 from pynwb import NWBHDF5IO
 
 from driftless_photometry.acquisition import (
+    AcquisitionCancelled,
     AcquisitionEngine,
     preview_duration_s,
     run_live_view,
@@ -18,7 +20,7 @@ from driftless_photometry.config import SessionConfig, demo_config
 from driftless_photometry.diagnostics import FinalizationStage
 from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TTLEdge
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
-from driftless_photometry.hardware import RigPacket, SimulatedRig
+from driftless_photometry.hardware import RigPacket, SimulatedRig, StartCondition
 from driftless_photometry.provenance import NWB_RUNTIME_PROVENANCE_SCRATCH_NAME
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
@@ -493,3 +495,70 @@ def test_spool_queue_holds_seconds_of_frames(tmp_path: Path, fps, raw, frames) -
     camera = config.camera.model_copy(update={"requested_fps": fps, "raw_capture": raw})
 
     assert spool_queue_size_for(config.model_copy(update={"camera": camera})) == frames
+
+
+def _with_recording(config: SessionConfig, **recording) -> SessionConfig:
+    payload = config.model_dump()
+    payload["recording"] = recording
+    return SessionConfig.model_validate(payload)
+
+
+def test_recording_stops_on_a_ttl_edge_and_records_why(tmp_path: Path) -> None:
+    config = _with_recording(
+        demo_config(tmp_path, recording_duration_s=5.0),
+        stop="ttl",
+        stop_ttl_line=2,
+        stop_ttl_edge="falling",
+    )
+
+    result = AcquisitionEngine().run(config, SimulatedRig(config), duration_s=5.0)
+
+    assert result.stopped_by_request
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        nwbfile = io.read()
+        events = nwbfile.events["system_events"].to_dataframe()
+        trigger = events[events["event"] == "recording_stop_trigger"]
+        assert len(trigger) == 1
+        assert trigger["timestamp"].iloc[0] == pytest.approx(0.1)
+        assert "falling edge on input 2" in trigger["detail"].iloc[0]
+        frames = nwbfile.events["camera_frames"].to_dataframe()
+        assert frames["timestamp"].max() < 0.2
+
+
+def test_stopping_while_waiting_for_the_start_records_nothing(tmp_path: Path) -> None:
+    config = _with_recording(demo_config(tmp_path), start="delayed", start_delay_s=30.0)
+    engine = AcquisitionEngine()
+    states: list[AcquisitionState] = []
+    timer = threading.Timer(0.3, engine.stop)
+    timer.start()
+
+    with pytest.raises(AcquisitionCancelled, match="nothing was recorded"):
+        engine.run(
+            config, SimulatedRig(config, realtime=True), duration_s=5.0, on_state=states.append
+        )
+
+    timer.join()
+    assert AcquisitionState.RECORDING not in states
+    assert engine.state is AcquisitionState.READY
+    assert not list(tmp_path.glob("*.photometry-spool"))
+    assert not list(tmp_path.glob("*.nwb"))
+
+
+def test_delayed_and_ttl_starts_reach_the_source_and_are_recorded(tmp_path: Path) -> None:
+    config = _with_recording(
+        demo_config(tmp_path), start="ttl", start_ttl_line=3, start_ttl_edge="falling"
+    )
+    seen = []
+
+    class Source(SimulatedRig):
+        def packets(self, duration_s, start=None):
+            seen.append(start)
+            return super().packets(duration_s, start)
+
+    result = AcquisitionEngine().run(config, Source(config), duration_s=0.5)
+
+    assert seen == [StartCondition(ttl_line=3, ttl_edge="falling")]
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        events = io.read().events["system_events"].to_dataframe()
+    detail = events[events["event"] == "recording_start_trigger"]["detail"].iloc[0]
+    assert detail == "simulated a falling edge on TTL input 3"
