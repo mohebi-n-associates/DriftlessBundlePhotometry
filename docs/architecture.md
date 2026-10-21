@@ -66,7 +66,10 @@ show camera ROI, excitation-voltage, raw-frame, and wavelength-image controls. C
 mode retains its mandatory preview, and so does RWD mode. RWD mode adds a panel
 with the no-fail-safe warning, the controller port, and TTL output pulse trains.
 The calibration view switches between the two RWD cameras, each with its own fiber
-circles. Live smoothing is an elapsed-time trailing mean
+circles. **Live view** streams either system's cameras for focusing and ROI
+placement, with nothing validated or recorded. It throttles the display to 15 frames
+per second per camera and wavelength and stops itself after 10 minutes. Optional
+auto contrast stretches only the displayed image. Live smoothing is an elapsed-time trailing mean
 applied after horizon selection and before optional dF/F display conversion; it
 operates only on bounded GUI buffers.
 

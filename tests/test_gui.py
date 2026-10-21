@@ -589,3 +589,49 @@ def test_gui_round_trips_rwd_settings_with_camera2_circles(qtbot, tmp_path: Path
         rebuilt.rois[1].camera2_center_y_px,
         rebuilt.rois[1].camera2_radius_px,
     ) == (400.0, 300.0, 30.0)
+
+
+def test_gui_live_view_streams_both_cameras_and_stops_the_hardware(qtbot, tmp_path: Path) -> None:
+    benches = []
+
+    def rig_factory(config):
+        bench = Bench(config)
+        benches.append(bench)
+        return bench.rig
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, rig_factory=rig_factory)
+    qtbot.addWidget(window)
+    window.show()
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+
+    window.start_live_view()
+    assert window.tabs.currentIndex() == 1
+    assert not window.live_button.isEnabled()
+    assert window.stop_button.isEnabled()
+    qtbot.waitUntil(lambda: {1, 2} <= set(window._last_camera_images), timeout=15_000)
+    assert benches[-1].board.state.light_on
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+
+    assert window.last_error is None, window.last_error
+    benches[-1].assert_all_off()
+    assert window.live_button.isEnabled()
+    assert "Live view stopped" in window.live_status.text()
+    assert not list(tmp_path.glob("*.nwb"))
+    assert not list(tmp_path.glob("*.photometry-spool"))
+    window.calibration_camera_combo.setCurrentIndex(1)
+    np.testing.assert_array_equal(window._image_item.image, window._last_camera_images[2])
+
+
+def test_gui_auto_contrast_is_display_only(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    image = np.full((40, 40), 10, dtype=np.uint16)
+    image[10:20, 10:20] = 200
+
+    assert window.auto_contrast_check.isChecked()
+    low, high = window._display_levels(image)
+    assert low == 10 and 150 < high <= 200
+    window.auto_contrast_check.setChecked(False)
+    assert window._display_levels(image) == (0.0, 4095.0)
+    assert image.max() == 200

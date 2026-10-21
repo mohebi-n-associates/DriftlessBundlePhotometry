@@ -67,6 +67,12 @@ version, move its completed entries into a dated version section.
 - Added [the RWD operator guide](docs/rwd-direct-operator-guide.md). It covers safety
   (the unit's power switch is its only fail-safe), installation, placing fiber circles
   on both cameras, recording, what the NWB files contain, and troubleshooting.
+- Added **Live view**, which streams the cameras with the current excitation
+  settings. Use it to focus the fiber bundle and place each fiber's circles,
+  including the camera-2 circles on RWD. It records and validates nothing, stops on
+  Stop or by itself after 10 minutes, and on RWD switches the board off afterwards.
+  Camera views gain an **Auto contrast** option, on by default, which stretches only
+  the display. Recorded frames and NWB reference images keep their fixed scaling.
 
 ### Changed
 

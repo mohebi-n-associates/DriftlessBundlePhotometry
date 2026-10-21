@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 from pynwb import NWBHDF5IO
 
-from driftless_photometry.acquisition import AcquisitionEngine, preview_duration_s, run_preview
+from driftless_photometry.acquisition import (
+    AcquisitionEngine,
+    preview_duration_s,
+    run_live_view,
+    run_preview,
+)
 from driftless_photometry.config import demo_config
 from driftless_photometry.diagnostics import FinalizationStage
 from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TTLEdge
@@ -439,3 +444,30 @@ def test_preview_ignores_frameless_packets(tmp_path: Path) -> None:
     result = run_preview(config, _EventRig(config))
 
     assert result.frame_count == 15
+
+
+def test_live_view_streams_without_recording_and_throttles_the_display(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    shown = []
+
+    count = run_live_view(config, SimulatedRig(config), on_frame=shown.append, duration_s=1.0)
+
+    assert count == 30
+    # Simulated frames arrive within microseconds, so each camera/wavelength shows once.
+    assert sorted(int(frame.wavelength_nm) for frame in shown) == [405, 470, 565]
+    assert not list(tmp_path.iterdir())
+
+
+def test_live_view_stops_when_its_source_is_stopped(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    rig = SimulatedRig(config)
+    shown = []
+
+    def stop_after_first(frame) -> None:
+        shown.append(frame)
+        rig.stop()
+
+    count = run_live_view(config, rig, on_frame=stop_after_first, duration_s=60.0)
+
+    assert count == 1
+    assert len(shown) == 1
