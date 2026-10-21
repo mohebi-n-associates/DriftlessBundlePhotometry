@@ -108,10 +108,10 @@ before starting DBF, because only one program can use the controller's port.
 The 560 nm light is imaged by the second camera, so every fiber needs a circle on each
 camera.
 
-1. Press **Live view**. DBF connects, switches the LEDs on with the current excitation
-   settings, and opens *Camera & fiber ROIs* with the cameras streaming. Nothing is
-   recorded. The LEDs stay on until you press **Stop**; live view stops by itself
-   after 10 minutes.
+1. On *Camera & fiber ROIs*, press **Live view**. DBF connects, switches the LEDs on
+   with the current excitation settings, and streams both cameras. Nothing is
+   recorded. The LEDs stay on until you press the same button, now **Stop live
+   view** (or **Stop** on *Acquire*); live view stops by itself after 10 minutes.
 2. Keep **Auto contrast** ticked while focusing. It stretches the display between
    the image's dim and bright pixels, which matters at low LED power. It changes only
    the display, never the recorded data.

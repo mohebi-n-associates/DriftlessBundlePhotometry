@@ -653,18 +653,23 @@ def test_gui_live_view_streams_both_cameras_and_stops_the_hardware(qtbot, tmp_pa
     window.show()
     window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
 
-    window.start_live_view()
+    window.tabs.setCurrentIndex(1)
+    assert window.live_button.window() is window
+    assert window.tabs.widget(1).isAncestorOf(window.live_button)
+    qtbot.mouseClick(window.live_button, Qt.MouseButton.LeftButton)
     assert window.tabs.currentIndex() == 1
-    assert not window.live_button.isEnabled()
-    assert window.stop_button.isEnabled()
+    assert window.live_button.isEnabled()
+    assert window.live_button.text() == "Stop live view"
+    assert window.stop_button.isEnabled() and not window.preview_button.isEnabled()
     qtbot.waitUntil(lambda: {1, 2} <= set(window._last_camera_images), timeout=15_000)
     assert benches[-1].board.state.light_on
-    window.stop_recording()
+    qtbot.mouseClick(window.live_button, Qt.MouseButton.LeftButton)  # stops it
     qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
 
     assert window.last_error is None, window.last_error
     benches[-1].assert_all_off()
     assert window.live_button.isEnabled()
+    assert window.live_button.text() == "Live view"
     assert "Live view stopped" in window.live_status.text()
     assert not list(tmp_path.glob("*.nwb"))
     assert not list(tmp_path.glob("*.photometry-spool"))
