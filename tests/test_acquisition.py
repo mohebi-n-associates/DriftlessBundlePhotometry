@@ -556,13 +556,13 @@ def test_delayed_and_ttl_starts_reach_the_source_and_are_recorded(tmp_path: Path
     seen = []
 
     class Source(SimulatedRig):
-        def packets(self, duration_s, start=None):
-            seen.append(start)
-            return super().packets(duration_s, start)
+        def packets(self, duration_s, start=None, cycle=None):
+            seen.append((start, cycle))
+            return super().packets(duration_s, start, cycle)
 
     result = AcquisitionEngine().run(config, Source(config), duration_s=0.5)
 
-    assert seen == [StartCondition(ttl_line=3, ttl_edge="falling")]
+    assert seen == [(StartCondition(ttl_line=3, ttl_edge="falling"), None)]
     with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
         events = io.read().events["system_events"].to_dataframe()
     detail = events[events["event"] == "recording_start_trigger"]["detail"].iloc[0]
