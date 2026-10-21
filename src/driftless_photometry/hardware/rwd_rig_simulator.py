@@ -26,7 +26,7 @@ from numpy.typing import NDArray
 
 from driftless_photometry.config import SessionConfig
 
-from .alvium import AlviumFrame, AlviumSettings
+from .alvium import AlviumCameraDiagnostics, AlviumFrame, AlviumSettings
 from .rwd_board_simulator import SimulatedRWDBoard, SimulatedRWDRun
 from .rwd_controller_protocol import RWDExcitationMode, RWDLed, trigger_period_s
 
@@ -141,6 +141,10 @@ class SimulatedRWDCameras:
 
         index = next(i for i, item in enumerate(self.delivered) if item is frame)
         return self.delivered_items[index].trigger_s
+
+    @property
+    def diagnostics(self) -> AlviumCameraDiagnostics:
+        return AlviumCameraDiagnostics(len(self.delivered), len(self.lost), 0)
 
     def set_gain(self, gain_db: float) -> None:
         self.gain_db = float(gain_db)

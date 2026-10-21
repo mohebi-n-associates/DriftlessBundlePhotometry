@@ -428,3 +428,13 @@ def test_rwd_rig_does_not_restart_on_host_scatter_at_120_hz(tmp_path: Path) -> N
     np.testing.assert_allclose(
         np.diff([f.exposure.timestamp_s for f in frames_of(packets)[:40]]), 0.008333, atol=1e-9
     )
+
+
+def test_rwd_rig_reports_camera_delivery_counts_at_the_end(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, (W410, W470)))
+    bench.pending_setup = lambda cams: cams.lost.add(("1", 0, 5))
+
+    packets = bench.run(1.0)
+
+    events = {event.event: event.detail for event in events_of(packets)}
+    assert events["rwd_camera_diagnostics"].endswith("1 incomplete, 0 lost to a full host queue")

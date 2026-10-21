@@ -699,3 +699,54 @@ def test_gui_live_view_applies_gain_live_and_restarts_for_timing(qtbot, tmp_path
     qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
     benches[1].assert_all_off()
     assert window.last_error is None, window.last_error
+
+
+def test_gui_device_check_shows_each_device(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.hardware.rwd_devices import DeviceStatus, RWDDeviceReport
+
+    calls = []
+
+    def checker(config):
+        calls.append(config)
+        return RWDDeviceReport(
+            DeviceStatus("Controller", True, "R821 on COM3, firmware 2.0.0, build 37619"),
+            (
+                DeviceStatus("Camera 1 (410/470 nm)", True, "1800 U-040m, serial 0721G"),
+                DeviceStatus("Camera 2 (560 nm)", False, "no camera with DeviceUserID 2"),
+            ),
+        )
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, device_checker=checker)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    assert calls == []  # tests never auto-check real hardware
+
+    window.start_device_check()
+    qtbot.waitUntil(lambda: window._device_thread is None, timeout=10_000)
+
+    assert len(calls) == 1
+    assert window.device_labels["controller"].text().startswith("✓ Controller: R821 on COM3")
+    assert window.device_labels["camera2"].property("state") == "failed"
+    assert window.last_device_report is not None and not window.last_device_report.ok
+    assert window.live_button.isEnabled()
+
+
+def test_gui_checks_devices_automatically_in_the_application(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.hardware.rwd_devices import DeviceStatus, RWDDeviceReport
+
+    calls = []
+    ok = DeviceStatus("x", True, "ok")
+
+    def checker(config):
+        calls.append(config)
+        return RWDDeviceReport(ok, (ok, ok))
+
+    window = MainWindow(
+        output_directory=tmp_path, default_fibers=1, device_checker=checker, auto_check_devices=True
+    )
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    qtbot.waitUntil(lambda: len(calls) == 1 and window._device_thread is None, timeout=10_000)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    qtbot.waitUntil(lambda: len(calls) == 2 and window._device_thread is None, timeout=10_000)

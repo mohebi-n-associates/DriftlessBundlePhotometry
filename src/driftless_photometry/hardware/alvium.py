@@ -99,6 +99,7 @@ class AlviumTriggeredCameras:
         *,
         user_ids: Iterable[str] = RWD_CAMERA_USER_IDS,
         queue_size: int = 512,
+        buffer_count: int = 64,
         clock: Callable[[], float] = time.monotonic,
         vmbpy_loader: Callable[[], ModuleType] = load_vmbpy,
         discovery_timeout_s: float = 5.0,
@@ -106,6 +107,11 @@ class AlviumTriggeredCameras:
     ) -> None:
         if queue_size <= 0:
             raise ValueError("queue size must be positive")
+        if buffer_count < 2:
+            raise ValueError("at least two stream buffers are needed")
+        # 16 buffers let single frames go incomplete at 120 frames/s on the bench
+        # (2026-10-21); 64 hold about half a second per camera (~50 MB).
+        self._buffer_count = buffer_count
         if discovery_timeout_s < 0:
             raise ValueError("discovery timeout must be non-negative")
         self._settings = settings
@@ -146,7 +152,7 @@ class AlviumTriggeredCameras:
                 self._configure(user_id)
             for user_id in self._user_ids:
                 camera = self._cameras[user_id]
-                camera.start_streaming(self._handler(user_id), buffer_count=16)
+                camera.start_streaming(self._handler(user_id), buffer_count=self._buffer_count)
                 self._streaming.append(camera)
         except BaseException:
             self.__exit__(None, None, None)
@@ -274,3 +280,71 @@ class AlviumTriggeredCameras:
                 camera.queue_frame(frame)
 
         return handler
+
+
+@dataclass(frozen=True, slots=True)
+class AlviumCameraInfo:
+    user_id: str
+    model: str
+    serial: str
+    camera_id: str
+
+
+def list_alvium_cameras(
+    vmbpy_loader: Callable[[], ModuleType] = load_vmbpy,
+) -> tuple[AlviumCameraInfo, ...]:
+    """List USB3 Vision cameras with their DeviceUserID, changing no setting."""
+
+    vmbpy = vmbpy_loader()
+    try:
+        system = vmbpy.VmbSystem.get_instance()
+        system.__enter__()
+    except Exception as error:
+        raise AlviumSDKUnavailable(
+            "Vimba X could not load its camera transport layers. Install Vimba X with its "
+            f"USB transport layer and restart DBF so it sees GENICAM_GENTL64_PATH: {error}"
+        ) from error
+    cameras = []
+    try:
+        for camera in system.get_all_cameras():
+            if not _is_usb3_vision(camera):
+                continue
+            try:
+                camera.__enter__()
+            except Exception:
+                cameras.append(
+                    AlviumCameraInfo(
+                        "",
+                        _text(camera, "get_model"),
+                        _text(camera, "get_serial"),
+                        _text(camera, "get_id") + " (in use by another program)",
+                    )
+                )
+                continue
+            try:
+                try:
+                    user_id = str(camera.get_feature_by_name("DeviceUserID").get())
+                except Exception:
+                    user_id = ""
+                cameras.append(
+                    AlviumCameraInfo(
+                        user_id,
+                        _text(camera, "get_model"),
+                        _text(camera, "get_serial"),
+                        _text(camera, "get_id"),
+                    )
+                )
+            finally:
+                with contextlib.suppress(Exception):
+                    camera.__exit__(None, None, None)
+    finally:
+        with contextlib.suppress(Exception):
+            system.__exit__(None, None, None)
+    return tuple(cameras)
+
+
+def _text(camera: Any, getter: str) -> str:
+    try:
+        return str(getattr(camera, getter)())
+    except Exception:
+        return "unknown"

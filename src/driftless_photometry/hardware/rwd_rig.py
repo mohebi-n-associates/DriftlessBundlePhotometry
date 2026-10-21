@@ -198,36 +198,51 @@ class RWDRig:
                         cameras.__exit__(None, None, None)
 
     def _connect(self) -> RWDControllerTransport:
-        configured = self._config.source.controller_port  # type: ignore[union-attr]
-        if configured:
-            ports = (configured,)
-        else:
-            ports = self._port_finder()
-            if not ports:
-                raise AcquisitionFault(
-                    AcquisitionFaultCode.CONTROLLER_DISCONNECT,
-                    "no FTDI serial port for an RWD controller was found; connect the "
-                    "controller's USB cable and switch the unit on",
-                )
-            if len(ports) > 1:
-                raise AcquisitionFault(
-                    AcquisitionFaultCode.CONTROLLER_DISCONNECT,
-                    f"several FTDI serial ports were found ({', '.join(ports)}); choose the "
-                    "RWD controller's port in the RWD settings",
-                )
-        port = ports[0]
-        transport = self._transport_factory(port)
-        identity = transport.open()
-        if identity.model_code not in RWD_SUPPORTED_MODEL_CODES:
-            transport.close()
-            raise AcquisitionFault(
-                AcquisitionFaultCode.CONTROLLER_DISCONNECT,
-                f"the RWD controller on {port} reports model {identity.model_name}; DBF "
-                "drives only the bench-validated R821",
-            )
+        transport, port, identity = connect_rwd_controller(
+            self._config.source.controller_port,  # type: ignore[union-attr]
+            transport_factory=self._transport_factory,
+            port_finder=self._port_finder,
+        )
         self.identity = identity
         self.port = port
         return transport
+
+
+def connect_rwd_controller(
+    configured_port: str | None,
+    *,
+    transport_factory: RWDTransportFactory = RWDControllerTransport,
+    port_finder: Callable[[], tuple[str, ...]] = candidate_rwd_ports,
+) -> tuple[RWDControllerTransport, str, RWDControllerIdentity]:
+    """Open the controller (forcing it all-off) and refuse models other than the R821."""
+
+    if configured_port:
+        ports: tuple[str, ...] = (configured_port,)
+    else:
+        ports = port_finder()
+        if not ports:
+            raise AcquisitionFault(
+                AcquisitionFaultCode.CONTROLLER_DISCONNECT,
+                "no FTDI serial port for an RWD controller was found; connect the "
+                "controller's USB cable and switch the unit on",
+            )
+        if len(ports) > 1:
+            raise AcquisitionFault(
+                AcquisitionFaultCode.CONTROLLER_DISCONNECT,
+                f"several FTDI serial ports were found ({', '.join(ports)}); choose the "
+                "RWD controller's port in the RWD settings",
+            )
+    port = ports[0]
+    transport = transport_factory(port)
+    identity = transport.open()
+    if identity.model_code not in RWD_SUPPORTED_MODEL_CODES:
+        transport.close()
+        raise AcquisitionFault(
+            AcquisitionFaultCode.CONTROLLER_DISCONNECT,
+            f"the RWD controller on {port} reports model {identity.model_name}; DBF "
+            "drives only the bench-validated R821",
+        )
+    return transport, port, identity
 
 
 class _RWDSession:
@@ -330,6 +345,13 @@ class _RWDSession:
                 )
             transport.command(device_enable(False))
             self._event("rwd_sequencer_stopped", f"after {self._run_index + 1} run(s)")
+            diagnostics = getattr(self._cameras, "diagnostics", None)
+            if diagnostics is not None:
+                self._event(
+                    "rwd_camera_diagnostics",
+                    f"{diagnostics.delivered} frame(s) delivered, {diagnostics.incomplete} "
+                    f"incomplete, {diagnostics.queue_overflows} lost to a full host queue",
+                )
             self._close_open_invalid(self._session_now_s() + self._period_s)
             self._release_edges(final=True)
             if self._ignored_edges:
