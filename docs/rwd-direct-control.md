@@ -272,6 +272,23 @@ connects and opens the cameras first, so the wait ends close to the first exposu
   and no frames. The engine then deletes the spool and raises
   `AcquisitionCancelled`.
 
+**Sequential excitation.** With `recording.excitation = "sequential"`, the engine
+passes an `ExcitationCycle` to `packets()`. Lit windows start at session zero and
+repeat every on + off seconds.
+
+- **Pause:** at a window's end the rig disables the sequencer and drains the cameras.
+  It then runs the board dark with `dark_commands()`, so TTL inputs (and a TTL stop)
+  are still reported. Frame-less packets carry those edges to the engine. An
+  `excitation_paused` event gives the planned relight time.
+- **Resume:** the rig starts the relight early by the drain time. It disables the dark
+  run, drains its frames, sends the real settings, and starts a new run. That run is
+  placed on the session clock by the cameras' hardware clocks, like a restart.
+  An `excitation_resumed` event gives how far it landed from the schedule: +1 ms in
+  simulation, within one frame period by design.
+- **Timing:** windows stay on the schedule from session zero, and no invalid span is
+  written, because the gap is intentional. Sequences stay contiguous. A window that
+  would start at or after the duration ends the recording.
+
 The engine handles TTL stops for every source. The first recorded edge that matches
 `stop_ttl_line` and `stop_ttl_edge` adds a `recording_stop_trigger` event and stops
 the recording, as **Stop** does. A TTL stop therefore needs that line configured as

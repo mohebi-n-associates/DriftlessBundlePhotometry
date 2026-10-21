@@ -115,6 +115,13 @@ version, move its completed entries into a dated version section.
   `event_marks` table with their source (key, button, or ttl). Operator marks are
   timed on the host clock through the latest camera frame. TTL marks take the
   pulse's rising edge on the board clock. Settings files keep them.
+- Sequential excitation: recordings can light the LEDs for an on time and then keep
+  them dark for an off time (1 s to 24 h each), repeating, to limit photobleaching.
+  - **On RWD:** the board runs dark between windows, so TTL inputs and a TTL stop
+    still work. Each window relights on schedule, within a frame period in
+    simulation.
+  - **Records:** `excitation_paused` and `excitation_resumed` events mark the windows.
+    The gaps are intentional, so they are not marked invalid.
 - RWD recordings end with a camera-diagnostics event: frames delivered, incomplete
   frames, and frames lost to a full host queue.
 

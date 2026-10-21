@@ -23,7 +23,7 @@ from driftless_photometry.domain import (
 )
 from driftless_photometry.events import TTLPulseClassifier
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
-from driftless_photometry.hardware import RigSource, StartCondition
+from driftless_photometry.hardware import ExcitationCycle, RigSource, StartCondition
 from driftless_photometry.provenance import capture_runtime_provenance
 from driftless_photometry.roi import extract_circular_rois, rois_for_camera
 from driftless_photometry.state import AcquisitionState, AcquisitionStateMachine
@@ -385,11 +385,12 @@ class AcquisitionEngine:
                 raise RuntimeError(f"acquisition cannot start from state {self.state}")
             storage_capacity = check_storage_capacity(config, duration_s)
             start = StartCondition.for_recording(config)
+            cycle = ExcitationCycle.for_recording(config)
             # Ask for packets before reporting ARMED: a Stop from then on must be kept.
             packets = (
                 source.packets(duration_s)
-                if start is None
-                else source.packets(duration_s, start=start)
+                if start is None and cycle is None
+                else source.packets(duration_s, start=start, cycle=cycle)
             )
             self._transition(AcquisitionState.ARMED, on_state)
             spool = SessionSpool(

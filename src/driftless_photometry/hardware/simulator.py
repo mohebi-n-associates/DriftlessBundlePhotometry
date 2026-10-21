@@ -20,7 +20,7 @@ from driftless_photometry.domain import (
     SystemEvent,
     TTLEdge,
 )
-from driftless_photometry.hardware.base import RigPacket, StartCondition
+from driftless_photometry.hardware.base import ExcitationCycle, RigPacket, StartCondition
 from driftless_photometry.roi import circular_mask
 from driftless_photometry.timing import WavelengthSchedule
 
@@ -63,16 +63,21 @@ class SimulatedRig:
         self._stop.set()
 
     def packets(
-        self, duration_s: float, start: StartCondition | None = None
+        self,
+        duration_s: float,
+        start: StartCondition | None = None,
+        cycle: ExcitationCycle | None = None,
     ) -> Iterator[RigPacket]:
         if duration_s <= 0:
             raise ValueError("duration_s must be positive")
         # Clear now, not when the generator starts: a Stop that arrives before the
         # first packet is requested must still end the session.
         self._stop.clear()
-        return self._packets(duration_s, start)
+        return self._packets(duration_s, start, cycle)
 
-    def _packets(self, duration_s: float, start: StartCondition | None) -> Iterator[RigPacket]:
+    def _packets(
+        self, duration_s: float, start: StartCondition | None, cycle: ExcitationCycle | None
+    ) -> Iterator[RigPacket]:
         start_events: tuple[SystemEvent, ...] = ()
         if start is not None:
             # A simulated TTL input pulses every ``line`` seconds, so wait one period.
@@ -87,14 +92,39 @@ class SimulatedRig:
         started_monotonic = time.monotonic()
         previous_time = -1.0
         ttl_sequence = 0
-        for sequence in range(frame_count):
+        sequence = 0
+        was_lit = True
+        events = list(start_events)
+        for slot in range(frame_count):
             if self._stop.is_set():
                 break
-            timestamp_s = sequence / fps
+            timestamp_s = slot / fps
             if self._realtime:
                 wait = started_monotonic + timestamp_s - time.monotonic()
                 if wait > 0 and self._stop.wait(wait):
                     break
+            lit = cycle is None or timestamp_s % cycle.period_s < cycle.on_s
+            if lit != was_lit:
+                window_s = timestamp_s - timestamp_s % cycle.period_s  # type: ignore[union-attr]
+                events.append(
+                    SystemEvent(window_s, "excitation_resumed", "sequential excitation")
+                    if lit
+                    else SystemEvent(
+                        window_s + cycle.on_s,  # type: ignore[union-attr]
+                        "excitation_paused",
+                        f"sequential excitation: {cycle.describe()}",  # type: ignore[union-attr]
+                    )
+                )
+                was_lit = lit
+            if not lit:
+                edges, ttl_sequence = self._ttl_edges_between(
+                    previous_time, timestamp_s, ttl_sequence
+                )
+                previous_time = timestamp_s
+                if edges or events:
+                    yield RigPacket(frame=None, ttl_edges=edges, system_events=tuple(events))
+                    events.clear()
+                continue
             channel = self._schedule.channel_for_sequence(sequence)
             controller_tick_us = round(timestamp_s * 1_000_000)
             exposure = ExposureRecord(
@@ -106,7 +136,7 @@ class SimulatedRig:
             )
             image = self._render_frame(timestamp_s, channel.wavelength_nm)
             frame = FramePacket(
-                frame_id=sequence + 1,
+                frame_id=slot + 1,
                 image=image,
                 exposure=exposure,
                 host_received_s=time.monotonic() - started_monotonic,
@@ -117,8 +147,9 @@ class SimulatedRig:
                 ttl_sequence,
             )
             previous_time = timestamp_s
-            yield RigPacket(frame=frame, ttl_edges=edges, system_events=start_events)
-            start_events = ()
+            yield RigPacket(frame=frame, ttl_edges=edges, system_events=tuple(events))
+            events.clear()
+            sequence += 1
 
     def _render_frame(self, timestamp_s: float, wavelength: Wavelength) -> np.ndarray:
         camera = self._config.camera

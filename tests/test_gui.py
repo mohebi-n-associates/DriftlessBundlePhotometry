@@ -863,9 +863,19 @@ def test_gui_start_and_stop_options_round_trip_without_a_new_preview(qtbot, tmp_
         "stop": "ttl",
         "stop_ttl_line": 2,
         "stop_ttl_edge": "rising",
+        "excitation": "continuous",
+        "excitation_on_s": 60.0,
+        "excitation_off_s": 240.0,
     }
     assert window._preview_signature == window._configuration_signature(config)
 
+    assert window.excitation_on_spin.isHidden()
+    window.excitation_mode_combo.setCurrentIndex(1)
+    window.excitation_on_spin.setValue(30)
+    assert not window.excitation_off_spin.isHidden()
+    sequential = window._build_config().recording
+    assert (sequential.excitation, sequential.excitation_on_s) == ("sequential", 30.0)
+    window.excitation_mode_combo.setCurrentIndex(0)
     window.stop_mode_combo.setCurrentIndex(window.stop_mode_combo.findData("manual"))
     assert not window.duration_spin.isEnabled()
     assert window._build_config().recording_limit_s == 24 * 60 * 60

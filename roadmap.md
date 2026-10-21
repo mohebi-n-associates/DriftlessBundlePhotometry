@@ -299,10 +299,11 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
 7. **OFRS acquisition features DBF lacked — in progress (user-approved 2026-10-21)**
    - Done in simulation: the Devices panel; typed ROI diameters (40–544 px); the
      LED warm-up reminder; start and stop options (delay, TTL, manual); event
-     marking (keys, buttons, named TTL events by pulse width; spool v5).
-   - Next: sequential duty-cycle excitation; live ΔF/F with a 410 nm-fit F0; TTL output
-     programs and stimulation marking; a Thorlabs PM100/PM400 **Measure Power**
-     button.
+     marking (keys, buttons, named TTL events by pulse width; spool v5); sequential
+     duty-cycle excitation.
+   - Next: live ΔF/F with a 410 nm-fit F0; TTL output programs and stimulation
+     marking; a Thorlabs PM100/PM400 **Measure Power** button.
+   - Needs the bench: sequential excitation's pause and relight on the R821.
    - Out of scope by the user's choice: behavior video and OFRS's analysis module.
 
 ### Deliverables

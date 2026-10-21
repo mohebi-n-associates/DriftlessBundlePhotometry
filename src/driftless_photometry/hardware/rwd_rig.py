@@ -18,6 +18,7 @@ ends. The unit's power switch is the only hardware fail-safe.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -36,7 +37,7 @@ from driftless_photometry.domain import (
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 
 from .alvium import AlviumFrame, AlviumSettings, AlviumTriggeredCameras
-from .base import RigPacket, StartCondition
+from .base import ExcitationCycle, RigPacket, StartCondition
 from .rwd_controller_protocol import device_enable, output_config, output_enable
 from .rwd_timing import (
     RWDBrightnessCheck,
@@ -95,6 +96,13 @@ class RWDRigTiming:
 class _Held:
     frame: AlviumFrame
     assignment: RWDSlotAssignment
+
+
+@dataclass(slots=True)
+class _Pause:
+    resume_host_s: float
+    resume_s: float
+    discarded: int = 0
 
 
 @dataclass(slots=True)
@@ -163,17 +171,20 @@ class RWDRig:
         return gain
 
     def packets(
-        self, duration_s: float, start: StartCondition | None = None
+        self,
+        duration_s: float,
+        start: StartCondition | None = None,
+        cycle: ExcitationCycle | None = None,
     ) -> Iterator[RigPacket]:
         if duration_s <= 0:
             raise ValueError("duration_s must be positive")
         # Clear now, not when the generator starts: a Stop that arrives before the
         # first packet is requested must still end the session.
         self._stop.clear()
-        return self._session_packets(duration_s, start)
+        return self._session_packets(duration_s, start, cycle)
 
     def _session_packets(
-        self, duration_s: float, start: StartCondition | None
+        self, duration_s: float, start: StartCondition | None, cycle: ExcitationCycle | None
     ) -> Iterator[RigPacket]:
         transport = self._connect()
         cameras: RWDCameraSource | None = None
@@ -197,7 +208,7 @@ class RWDRig:
                 port=self.port or "",
                 pending_gain=self._take_pending_gain,
             )
-            yield from session.run(duration_s, start)
+            yield from session.run(duration_s, start, cycle)
         finally:
             try:
                 transport.close()
@@ -312,9 +323,23 @@ class _RWDSession:
         self._run_latest_received_s: float | None = None
         self._open_invalid: tuple[float, str] | None = None
         self._start_trigger: tuple[str, float] | None = None
+        # Sequential excitation
+        self._cycle: ExcitationCycle | None = None
+        self._window_end_s = math.inf
+        self._pause_due = False
+        self._pause: _Pause | None = None
+        self._resuming: tuple[float, int] | None = None
 
     # Main loop -------------------------------------------------------------------------
-    def run(self, duration_s: float, start: StartCondition | None = None) -> Iterator[RigPacket]:
+    def run(
+        self,
+        duration_s: float,
+        start: StartCondition | None = None,
+        cycle: ExcitationCycle | None = None,
+    ) -> Iterator[RigPacket]:
+        self._cycle = cycle
+        if cycle is not None:
+            self._window_end_s = cycle.on_s
         transport = self._transport
         identity = self._identity
         detail = f"port {self._port}"
@@ -352,6 +377,15 @@ class _RWDSession:
                     self._event("rwd_camera_gain_changed", f"{gain:g} dB on both cameras")
                 frame = self._cameras.get(self._timing.poll_interval_s)
                 self._poll_controller()
+                if self._pause is not None:
+                    if frame is not None:
+                        self._pause.discarded += 1
+                    if self._clock() >= self._pause.resume_host_s:
+                        self._resume_excitation()
+                    self._release_edges(final=False)
+                    if self._edges or self._events or self._invalid:
+                        yield self._packet(None)
+                    continue
                 if frame is not None:
                     self._accept(frame)
                 self._check_stall(frame_received=frame is not None)
@@ -360,6 +394,8 @@ class _RWDSession:
                         finished = True
                         break
                     yield packet
+                if self._pause_due and not finished:
+                    finished = not self._pause_excitation(duration_s)
                 self._release_edges(final=False)
             if self._stop.is_set() and not finished:
                 discarded = len(self._held)
@@ -460,6 +496,58 @@ class _RWDSession:
                 discarded += 1
                 quiet_deadline = self._clock() + self._timing.drain_quiet_s
         return discarded
+
+    # Sequential excitation -----------------------------------------------------------------
+    def _pause_excitation(self, duration_s: float) -> bool:
+        """End a lit window and run the board dark; False if no window is left.
+
+        The sequencer keeps running with every LED disabled at 0 %, so TTL inputs are
+        still reported (and a TTL stop still works) while nothing is lit.
+        """
+
+        cycle = self._cycle
+        assert cycle is not None
+        self._pause_due = False
+        paused_s = self._window_end_s
+        resume_s = paused_s + cycle.off_s
+        if resume_s >= duration_s - 1e-9:
+            return False
+        discarded = len(self._held)
+        self._held.clear()
+        self._transport.command(device_enable(False))
+        discarded += self._drain_frames()
+        for command in self._plan.dark_commands():
+            self._transport.command(command)
+        self._transport.command(device_enable(True))
+        self._tracker = None
+        if self._run_last_host_s is not None and self._last_emitted_s is not None:
+            # The last frame arrived one start delay after its trigger.
+            trigger_host_s = self._run_last_host_s - (self._baseline_start_delay_s or 0.0)
+            resume_host_s = trigger_host_s + (resume_s - self._last_emitted_s)
+        else:
+            resume_host_s = self._clock() + cycle.off_s
+        # Resuming drains the dark run's frames first, so begin that much early.
+        resume_host_s -= self._timing.drain_quiet_s + 0.015
+        self._pause = _Pause(resume_host_s, resume_s)
+        self._event(
+            "excitation_paused",
+            f"sequential excitation ({cycle.describe()}): LEDs dark until {resume_s:g} s; "
+            f"{discarded} frame(s) past the window were not recorded; TTL inputs are still "
+            "reported",
+            at_s=paused_s,
+        )
+        return True
+
+    def _resume_excitation(self) -> None:
+        pause = self._pause
+        assert pause is not None
+        self._transport.command(device_enable(False))
+        dark_frames = pause.discarded + self._drain_frames()
+        for command in self._plan.commands():
+            self._transport.command(command)
+        self._pause = None
+        self._resuming = (pause.resume_s, dark_frames)
+        self._start_run()
 
     # Sequencer runs ----------------------------------------------------------------------
     def _start_outputs(self) -> None:
@@ -588,6 +676,17 @@ class _RWDSession:
                 )
         self._run_start_s = run_start
         self._close_open_invalid(run_start)
+        if self._resuming is not None and self._cycle is not None:
+            planned_s, dark_frames = self._resuming
+            self._resuming = None
+            # Windows stay on the schedule from session zero, not on the late restart.
+            self._window_end_s = planned_s + self._cycle.on_s
+            self._event(
+                "excitation_resumed",
+                f"LEDs lit {(run_start - planned_s) * 1e3:+.0f} ms from the planned "
+                f"{planned_s:g} s; {dark_frames} camera frame(s) while dark were not recorded",
+                at_s=run_start,
+            )
         self._event(
             "rwd_sequencer_started",
             f"run {self._run_index}: LED cycle {self._cycle_text()} at "
@@ -623,6 +722,10 @@ class _RWDSession:
             session_s = self._run_start_s + self._next_slot * self._period_s
             if session_s >= duration_s - 1e-9:
                 yield None
+                return
+            if session_s >= self._window_end_s - 1e-9:
+                self._held[self._next_slot] = held
+                self._pause_due = True
                 return
             yield self._frame_packet(held, session_s)
             self._next_slot += 1
