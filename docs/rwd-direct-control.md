@@ -265,7 +265,7 @@ The shared engine records `RWDRig` packets like any other source:
   geometry, so 560 nm traces come from each fiber's camera-2 circle.
 - **Preview.** It checks frame IDs per camera and compares commanded power, rather
   than voltage, against the settings.
-- **Spool.** Spool schema v3 stores camera index, commanded power, wavelength source,
+- **Spool.** Spool schema v3 and later store camera index, commanded power, wavelength source,
   and camera timestamps for every frame.
 
 Each per-ROI NWB file then contains:
