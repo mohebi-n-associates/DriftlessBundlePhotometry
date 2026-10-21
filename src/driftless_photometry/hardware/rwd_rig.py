@@ -23,10 +23,10 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
-from driftless_photometry.config import RWD_PROFILE, SessionConfig, profile_for
+from driftless_photometry.config import RWD_PROFILE, SessionConfig, Wavelength, profile_for
 from driftless_photometry.domain import (
     EventMark,
     ExposureRecord,
@@ -146,6 +146,7 @@ class RWDRig:
         self._stop = threading.Event()
         self._gain_lock = threading.Lock()
         self._pending_gain_db: float | None = None
+        self._pending_power: dict[Wavelength, float] = {}
         self._output_triggers: list[tuple[int, str]] = []
         self.identity: RWDControllerIdentity | None = None
         self.port: str | None = None
@@ -182,6 +183,24 @@ class RWDRig:
         with self._gain_lock:
             triggers, self._output_triggers = self._output_triggers, []
         return triggers
+
+    def request_led_power(self, wavelength: Wavelength, percent: float) -> None:
+        """Ask the running session to change one enabled LED's power (thread-safe).
+
+        For preview and live view, while the operator sets LED powers. The session stops
+        the sequencer, sends the new settings, and starts a new run, as at the start of
+        a session; the gap between runs is marked invalid. Recordings keep one power.
+        """
+
+        if not 0 <= percent <= 100:
+            raise ValueError("LED power must be between 0 and 100 %")
+        with self._gain_lock:
+            self._pending_power[Wavelength(wavelength)] = float(percent)
+
+    def _take_pending_power(self) -> dict[Wavelength, float]:
+        with self._gain_lock:
+            power, self._pending_power = self._pending_power, {}
+        return power
 
     def _take_pending_gain(self) -> float | None:
         with self._gain_lock:
@@ -226,6 +245,7 @@ class RWDRig:
                 port=self.port or "",
                 pending_gain=self._take_pending_gain,
                 output_triggers=self._take_output_triggers,
+                pending_power=self._take_pending_power,
             )
             yield from session.run(duration_s, start, cycle)
         finally:
@@ -301,7 +321,9 @@ class _RWDSession:
         port: str,
         pending_gain: Callable[[], float | None] = lambda: None,
         output_triggers: Callable[[], list[tuple[int, str]]] = list,
+        pending_power: Callable[[], dict[Wavelength, float]] = dict,
     ) -> None:
+        self._pending_power = pending_power
         self._pending_gain = pending_gain
         self._output_triggers = output_triggers
         self._outputs = {
@@ -403,6 +425,9 @@ class _RWDSession:
                 if gain is not None:
                     self._cameras.set_gain(gain)
                     self._event("rwd_camera_gain_changed", f"{gain:g} dB on both cameras")
+                power = self._pending_power()
+                if power and self._pause is None:
+                    self._change_led_power(power)
                 frame = self._cameras.get(self._timing.poll_interval_s)
                 self._poll_controller()
                 self._service_outputs()
@@ -577,6 +602,32 @@ class _RWDSession:
             self._transport.command(command)
         self._pause = None
         self._resuming = (pause.resume_s, dark_frames)
+        self._start_run()
+
+    def _change_led_power(self, power: dict[Wavelength, float]) -> None:
+        updated = {
+            wavelength: power.get(wavelength, percent)
+            for wavelength, percent in self._plan.power_percent.items()
+        }
+        if updated == dict(self._plan.power_percent):
+            return
+        start_s = self._first_unemitted_s()
+        discarded = len(self._held)
+        self._held.clear()
+        self._transport.command(device_enable(False))
+        discarded += self._drain_frames()
+        self._plan = replace(self._plan, power_percent=updated)
+        self._brightness = RWDBrightnessCheck(self._plan)
+        for command in self._plan.commands():
+            self._transport.command(command)
+        if self._open_invalid is None:
+            self._open_invalid = (start_s, "LED power changed")
+        self._event(
+            "rwd_led_power_changed",
+            ", ".join(f"{int(w)} nm {p:g} %" for w, p in updated.items())
+            + f"; {discarded} frame(s) during the change were not recorded",
+            at_s=start_s,
+        )
         self._start_run()
 
     # Sequencer runs ----------------------------------------------------------------------

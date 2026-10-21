@@ -148,6 +148,12 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- **Run preview** now runs until **Stop preview** (10 minutes at most), so it can be
+  used to set LED powers and inspect the signal. On RWD the power sliders stay live
+  during preview and live view: each change restarts the board's LED cycle with the
+  new power, records an `rwd_led_power_changed` event, and marks the short gap invalid.
+  A preview validates recording only if it ended on the current settings.
+- With no saved settings, the application now starts on the RWD system.
 - The *Acquire* tab scrolls its settings column and its live traces separately, so
   the window keeps a fixed height. Each ROI's trace row is a fixed 230 px; more ROIs
   scroll within the trace area. LED excitation now sits above *TTL inputs and
