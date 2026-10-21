@@ -81,8 +81,25 @@ version, move its completed entries into a dated version section.
   On RWD it shows camera 1 (410/470 nm) and camera 2 (560 nm) side by side. Gain
   changes apply at once during live view. Frame-rate and exposure changes restart
   it. The settings are saved and recorded like every other setting.
+- The RWD hardware panel has a **Devices** list. It shows whether the controller
+  answers on its COM port, with model and firmware, and whether cameras `1` and `2`
+  are connected, with model and serial number. DBF checks when RWD mode is chosen and
+  again on **Check devices**. The check switches no LED on and leaves the board off.
+- Each ROI tab has a typed **Diameter** for its circle, and on RWD one per camera, as
+  well as dragging. RWD circles are kept between OFRS's 40 and 544 px.
+- DBF now tracks how long the RWD LEDs have been on and shows it under **LED warm-up**.
+  RWD recommends 5 minutes of warm-up before recording, and Live view, preview and
+  recording all count. **Record** asks before starting a recording with less than
+  5 minutes of warm-up. A gap of up to 3 minutes, such as the preview, keeps the
+  warm-up. The reminder can be switched off in the panel.
+- RWD recordings end with a camera-diagnostics event: frames delivered, incomplete
+  frames, and frames lost to a full host queue.
 
 ### Changed
+
+- The Alvium cameras now stream into 64 buffers instead of 16 (about half a second
+  each at 120 frames/s). With 16, camera 1 occasionally delivered an incomplete frame
+  at 120 frames/s, which cost a sequencer restart.
 
 - The recovery spool's queue now holds 30 s of trace-only frames (raw-frame recordings
   are capped at about 1 GB). A multi-second disk stall no longer ends a high-rate

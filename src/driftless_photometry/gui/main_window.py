@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from array import array
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -84,6 +85,7 @@ from .trace_display import (
     downsample_min_max,
     trailing_mean,
 )
+from .warmup import WARMUP_COOLDOWN_S, LEDWarmup, format_minutes
 from .worker import (
     AcquisitionWorker,
     DeviceChecker,
@@ -144,6 +146,8 @@ _RWD_SAFETY_WARNING = (
 )
 _RWD_AUTO_PORT = "Auto: the only FTDI port"
 _MAX_GAIN_DB = 48.0
+_RWD_ROI_DIAMETER_PX = (40.0, 544.0)
+"""OFRS's ROI diameter range on the 728 x 544 RWD cameras."""
 """Gain range of the Alvium 1800 U-040m and the Thorlabs CS505MU."""
 
 
@@ -188,6 +192,21 @@ class ROIMetadataEditor(QWidget):
         form.addRow("Sensor type", self.sensor_type_edit)
         form.addRow("Animal age", self.age_edit)
         form.addRow("Animal sex", self.sex_combo)
+        self.diameter_spins: dict[int, QDoubleSpinBox] = {}
+        for camera, label in ((1, "Diameter"), (2, "Diameter, camera 2")):
+            spin = QDoubleSpinBox()
+            spin.setDecimals(1)
+            spin.setSuffix(" px")
+            spin.setToolTip("Circle diameter; type a value or drag the circle's handle")
+            form.addRow(label, spin)
+            self.diameter_spins[camera] = spin
+        self._form = form
+
+    def set_camera2_visible(self, visible: bool) -> None:
+        self._form.setRowVisible(self.diameter_spins[2], visible)
+        self._form.labelForField(self.diameter_spins[1]).setText(
+            "Diameter, camera 1" if visible else "Diameter"
+        )
 
     def values(self) -> dict[str, str | bool]:
         return {
@@ -223,9 +242,13 @@ class MainWindow(QMainWindow):
         rig_factory: RigFactory = default_rig_factory,
         device_checker: DeviceChecker | None = None,
         auto_check_devices: bool = False,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__()
         self._rig_factory = rig_factory
+        self._warmup = LEDWarmup(clock=clock)
+        self._warmup_announced = False
+        self._operation_uses_leds = False
         if device_checker is None:
             from driftless_photometry.hardware.rwd_devices import check_rwd_devices
 
@@ -716,6 +739,28 @@ class MainWindow(QMainWindow):
         )
         self.check_devices_button.clicked.connect(self.start_device_check)
         layout.addWidget(self.check_devices_button)
+        warmup_title = QLabel("LED WARM-UP")
+        warmup_title.setObjectName("eyebrow")
+        layout.addWidget(warmup_title)
+        self.warmup_label = QLabel()
+        self.warmup_label.setObjectName("deviceStatus")
+        self.warmup_label.setWordWrap(True)
+        layout.addWidget(self.warmup_label)
+        self.warmup_check = QCheckBox(
+            f"Remind me before recording with less than "
+            f"{format_minutes(self._warmup.required_s)} of warm-up"
+        )
+        self.warmup_check.setChecked(True)
+        self.warmup_check.setToolTip(
+            "RWD recommends running the LEDs for 5 minutes before recording so their "
+            "output settles; Live view counts as warm-up"
+        )
+        layout.addWidget(self.warmup_check)
+        self._warmup_timer = QTimer(self)
+        self._warmup_timer.setInterval(1000)
+        self._warmup_timer.timeout.connect(self._update_warmup_label)
+        self._warmup_timer.start()
+        self._update_warmup_label()
         form = QFormLayout()
         port_row = QWidget()
         port_layout = QHBoxLayout(port_row)
@@ -1128,6 +1173,8 @@ class MainWindow(QMainWindow):
             image_group.setVisible(wavelength in profile.wavelengths)
         self._use_profile_camera(profile)
         self._sync_camera2_items()
+        self._enforce_diameter_limits()
+        self._sync_diameter_controls()
         two_cameras = profile.camera_count > 1
         self.calibration_panel_cam2.setVisible(two_cameras)
         self.calibration_panel_titles[1].setText(
@@ -1723,6 +1770,12 @@ class MainWindow(QMainWindow):
             ):
                 edit.textChanged.connect(self._invalidate_preview)
             editor.sex_combo.currentIndexChanged.connect(self._invalidate_preview)
+            for camera, spin in editor.diameter_spins.items():
+                spin.valueChanged.connect(
+                    lambda value, roi_index=index, cam=camera: self._on_diameter_entered(
+                        roi_index, cam, value
+                    )
+                )
             suffix = "" if editor.enabled_check.isChecked() else " (off)"
             self.roi_metadata_tabs.addTab(editor, f"ROI {index + 1}{suffix}")
         self.roi_metadata_tabs.setCurrentIndex(max(0, selected))
@@ -1804,6 +1857,8 @@ class MainWindow(QMainWindow):
             plot.setYRange(0, camera.height_px, padding=0.02)
         if self._active_profile.camera_count > 1:
             self._add_camera2_items(rois)
+        self._enforce_diameter_limits()
+        self._sync_diameter_controls()
         self._update_roi_summary()
 
     def _add_camera2_items(self, rois: tuple[ROIConfig, ...]) -> None:
@@ -1866,8 +1921,57 @@ class MainWindow(QMainWindow):
         return (low, high)
 
     def _on_roi_geometry_changed(self) -> None:
+        self._enforce_diameter_limits()
+        self._sync_diameter_controls()
         self._update_roi_summary()
         self._invalidate_preview()
+
+    def _diameter_limits(self) -> tuple[float, float]:
+        if self._active_profile is RWD_PROFILE:
+            return _RWD_ROI_DIAMETER_PX
+        camera = self._session_template.camera
+        return 4.0, float(min(camera.width_px, camera.height_px))
+
+    def _circles_for(self, camera: int) -> list[pg.CircleROI]:
+        return self._roi_items if camera == 1 else self._roi_items_cam2
+
+    def _sync_diameter_controls(self) -> None:
+        """Show each circle's diameter in its ROI tab (display only, no feedback loop)."""
+
+        low, high = self._diameter_limits()
+        two_cameras = bool(self._roi_items_cam2)
+        for index, editor in enumerate(getattr(self, "_roi_metadata_editors", ())):
+            editor.set_camera2_visible(two_cameras)
+            for camera, spin in editor.diameter_spins.items():
+                circles = self._circles_for(camera)
+                blocker = QSignalBlocker(spin)
+                spin.setRange(low, high)
+                if index < len(circles):
+                    spin.setValue(2 * self._circle_geometry(circles[index])[2])
+                del blocker
+
+    def _on_diameter_entered(self, index: int, camera: int, diameter: float) -> None:
+        circles = self._circles_for(camera)
+        if index >= len(circles):
+            return
+        circle = circles[index]
+        center_x, center_y, _radius = self._circle_geometry(circle)
+        radius = diameter / 2
+        circle.setPos([center_x - radius, center_y - radius], update=False, finish=False)
+        circle.setSize([2 * radius, 2 * radius], finish=True)
+
+    def _enforce_diameter_limits(self) -> None:
+        low, high = self._diameter_limits()
+        for camera in (1, 2):
+            for circle in self._circles_for(camera):
+                center_x, center_y, radius = self._circle_geometry(circle)
+                diameter = min(max(2 * radius, low), high)
+                if abs(diameter - 2 * radius) > 1e-6:
+                    radius = diameter / 2
+                    circle.setPos(
+                        [center_x - radius, center_y - radius], update=False, finish=False
+                    )
+                    circle.setSize([2 * radius, 2 * radius], finish=False)
 
     def _update_roi_summary(self) -> None:
         rows = []
@@ -2035,6 +2139,7 @@ class MainWindow(QMainWindow):
         self.last_preview = None
         self.last_error = None
         self._operation_kind = "preview"
+        self._operation_uses_leds = isinstance(config.source, RWDSourceConfig)
         self._pending_preview_signature = self._configuration_signature(config)
         self._prepare_trace_curves(config)
         self._prepare_wavelength_images(config)
@@ -2088,9 +2193,12 @@ class MainWindow(QMainWindow):
                 "Run a successful preview for the current settings before recording.",
             )
             return
+        if isinstance(config.source, RWDSourceConfig) and not self._confirm_warmup():
+            return
         self._preview_signature = None
         self._pending_preview_signature = None
         self._operation_kind = "recording"
+        self._operation_uses_leds = isinstance(config.source, RWDSourceConfig)
         self.last_result = None
         self.last_error = None
         self.connection_diagnostics_label.setText(
@@ -2145,6 +2253,7 @@ class MainWindow(QMainWindow):
             return
         self.last_error = None
         self._operation_kind = "live"
+        self._operation_uses_leds = isinstance(config.source, RWDSourceConfig)
         self._camera_frame_counts = {}
         self._prepare_wavelength_images(config)
         self.frame_counter.setText("0 live frames")
@@ -2180,7 +2289,56 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(1)
         thread.start()
 
+    def _confirm_warmup(self) -> bool:
+        """Ask before recording with cold LEDs; Live view is the way to warm them up."""
+
+        if not self.warmup_check.isChecked() or self._warmup.is_warm:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "LEDs not warmed up",
+            f"RWD recommends running the LEDs for "
+            f"{format_minutes(self._warmup.required_s)} before recording so their output "
+            f"settles; they have been on for {format_minutes(self._warmup.warm_s())}.\n\n"
+            "Run Live view to warm them up, with the fiber on its target or capped.\n\n"
+            "Record anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _leds_lit(self) -> None:
+        if self._operation_uses_leds and not self._warmup.leds_are_on:
+            self._warmup.leds_on()
+            self._update_warmup_label()
+
+    def _update_warmup_label(self) -> None:
+        warm = self._warmup.warm_s()
+        required = format_minutes(self._warmup.required_s)
+        if self._warmup.is_warm:
+            text, state = f"✓ LEDs warmed up (on for {format_minutes(warm)})", "ok"
+            if self._warmup.leds_are_on and not self._warmup_announced:
+                self._warmup_announced = True
+                self.statusBar().showMessage(
+                    "The LEDs have warmed up; run the preview, then record"
+                )
+        elif self._warmup.leds_are_on:
+            text, state = f"• Warming up: {format_minutes(warm)} of {required}", "unknown"
+            self._warmup_announced = False
+        elif warm > 0:
+            text, state = (
+                f"• Warm-up paused at {format_minutes(warm)} of {required}; it restarts "
+                f"after {format_minutes(WARMUP_COOLDOWN_S)} off",
+                "unknown",
+            )
+        else:
+            text, state = f"• LEDs cold; run Live view for {required} before recording", ("unknown")
+        if self.warmup_label.text() != text:
+            self.warmup_label.setText(text)
+            self._set_device_state(self.warmup_label, state)
+
     def _on_live_frame(self, frame: LiveFrame) -> None:
+        self._leds_lit()
         self._last_camera_images[frame.camera_index] = frame.image
         self.wavelength_image_items[frame.wavelength_nm].setImage(
             frame.image, autoLevels=False, levels=self._display_levels(frame.image)
@@ -2468,6 +2626,7 @@ class MainWindow(QMainWindow):
                 self._last_trace_render_s[wavelength_nm] = latest
 
     def _on_progress(self, progress: AcquisitionProgress) -> None:
+        self._leds_lit()
         sample = progress.sample
         wavelength = int(sample.wavelength_nm)
         self.wavelength_image_items[sample.wavelength_nm].setImage(
@@ -2588,6 +2747,9 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Acquisition failed", traceback_text)
 
     def _on_thread_finished(self) -> None:
+        self._warmup.leds_off()
+        self._operation_uses_leds = False
+        self._update_warmup_label()
         self._thread = None
         self._worker = None
         self._operation_kind = None
