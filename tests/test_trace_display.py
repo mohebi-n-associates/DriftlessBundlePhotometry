@@ -9,6 +9,7 @@ from driftless_photometry.gui.trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
     downsample_min_max,
+    fitted_control_f0,
     trailing_mean,
 )
 
@@ -112,3 +113,23 @@ def test_full_trace_plot_sends_only_pixel_bounded_extrema(qtbot, tmp_path: Path)
     assert len(drawn_times) <= MAX_DISPLAY_POINTS
     assert len(drawn_times) < count // 10
     assert np.max(drawn_values) == 500.0
+
+
+def test_fitted_control_f0_recovers_the_linear_relation() -> None:
+    control_times = np.arange(0.0, 10.0, 0.1)
+    control = 100.0 + 5.0 * np.sin(control_times)
+    signal_times = control_times + 0.05
+    signal = 2.0 * (100.0 + 5.0 * np.sin(signal_times)) + 30.0
+
+    f0 = fitted_control_f0(signal_times, signal, control_times, control, signal_times[10:20])
+
+    assert f0 is not None
+    np.testing.assert_allclose(f0, signal[10:20], rtol=2e-3)
+
+
+def test_fitted_control_f0_needs_a_varying_control() -> None:
+    times = np.arange(0.0, 1.0, 0.1)
+    flat = np.full(len(times), 50.0)
+
+    assert fitted_control_f0(times, flat + 1, times, flat, times) is None
+    assert fitted_control_f0(times[:2], flat[:2], times[:2], flat[:2], times) is None

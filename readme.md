@@ -35,7 +35,8 @@ target; the simulator and GUI demo are cross-platform.
   acquired or stored samples.
 - One live plot row per ROI with overlaid per-wavelength traces, independent
   wavelength visibility controls, and Absolute or display-only dF/F views with a
-  configurable per-ROI/per-wavelength median baseline window.
+  configurable per-ROI/per-wavelength median baseline window or an F0 fitted from
+  the 405/410 nm control.
 - Optional display-only trailing-mean smoothing uses elapsed seconds, works with
   asynchronously sampled channels, and never changes acquired or stored values.
 - Independent enable/disable controls for each ROI; disabled definitions remain in

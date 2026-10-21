@@ -116,3 +116,38 @@ def downsample_min_max(
     valid_indices = np.repeat(usable, 2) & (indices >= 0) & (indices < len(x))
     selected = indices[valid_indices]
     return x[selected].copy(), y[selected].copy()
+
+
+FIT_MAX_POINTS = 20_000
+"""Least-squares fits use at most this many evenly spaced samples, so long sessions stay
+responsive; the fit of a slowly varying control barely changes."""
+
+
+def fitted_control_f0(
+    signal_times: NDArray[np.float64],
+    signal_values: NDArray[np.floating],
+    control_times: NDArray[np.float64],
+    control_values: NDArray[np.floating],
+    at_times: NDArray[np.float64],
+) -> NDArray[np.float64] | None:
+    """F0 for dF/F from the isosbestic control trace (410 nm on RWD, 405 nm on Custom).
+
+    The control is interpolated onto the signal's sample times and fitted to the signal
+    by least squares, ``signal ~ slope * control + intercept``, over every sample both
+    traces cover. The fitted control at ``at_times`` is F0. Returns None until three
+    finite pairs exist, or while the control does not vary.
+    """
+
+    if len(control_times) < 3 or len(signal_times) < 3:
+        return None
+    covered = (signal_times >= control_times[0]) & (signal_times <= control_times[-1])
+    stride = max(1, int(np.count_nonzero(covered)) // FIT_MAX_POINTS)
+    times = signal_times[covered][::stride]
+    signal = np.asarray(signal_values, dtype=np.float64)[covered][::stride]
+    control = np.interp(times, control_times, np.asarray(control_values, dtype=np.float64))
+    finite = np.isfinite(control) & np.isfinite(signal)
+    if np.count_nonzero(finite) < 3 or np.ptp(control[finite]) <= 0:
+        return None
+    slope, intercept = np.polyfit(control[finite], signal[finite], 1)
+    fitted = np.interp(at_times, control_times, np.asarray(control_values, dtype=np.float64))
+    return slope * fitted + intercept

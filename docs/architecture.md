@@ -118,7 +118,10 @@ writer, existed in 0.2.0–0.2.1 and was removed in favor of direct control.
 - Live traces use one independently scaled row per ROI and overlay the enabled
   wavelengths. Visibility and Absolute/dF/F controls are display state; each dF/F
   baseline is calculated independently per ROI and wavelength and is not persisted
-  as raw data.
+  as raw data. The *control fit* mode takes each signal's F0 from the isosbestic
+  control (410 nm on RWD, 405 nm on Custom): the control is interpolated onto the
+  signal's sample times and fitted by least squares over the recording so far, using
+  at most 20 000 samples (`fitted_control_f0`).
 - ROI rows receive one explicit shared numeric x-range rather than relying on
   geometry-dependent plot linking. The trace canvas routes wheel input to the parent
   page; dominant-axis drag boxes zoom x or y only, and double-click restores the
