@@ -679,3 +679,25 @@ and the TTL source on Input 1. The operator was away; the script kept Windows aw
   - The spool queue is now sized in seconds of data: 30 s for trace-only recordings,
     and a 1 GB cap with raw frames retained. The manifest is rewritten at most once a
     second.
+- **2.5 h at 120 Hz, third attempt (seconds-sized queue, 16 camera buffers):** the
+  recording completed. 1 077 447 frames (359 216 / 359 117 / 359 114 per LED) landed on
+  the 8.333 ms grid with contiguous sequences and correct camera routing.
+  - 103 restarts covered 21.6 s (0.24 %) with invalid spans. 100 followed a single
+    camera-1 frame-ID skip of 1–2 frames; 3 followed a camera-2 first frame that did
+    not line up after a restart.
+  - The restarts came in bursts: 8 in the first 10 minutes, none in the next 80, then
+    38, 6, 4, 9, and 38 per 10 minutes. The late bursts match when the same PC ran
+    DBF's test suites. Host load starved the 16 camera stream buffers. Recordings now
+    use 64, and a `rwd_camera_diagnostics` event counts incomplete frames.
+  - The spool queue peaked at 69 frames (of 3600) and the slowest write took 578 ms.
+    Process memory stayed at 220–225 MB while recording.
+  - The cameras ran −24.50 and −24.06 ppm against the board, steady to 0.1 ppm; slot
+    residuals stayed under 83 and 159 µs. The host clock ran −31.7 ppm.
+  - All 5728 TTL edges arrived, alternating, in 291 bursts 30 990–30 991 ms apart.
+  - The NWB file is 379 MB. Writing and validating it took about 40 minutes and
+    peaked at 1.4 GB of memory.
+  - Mean frame brightness rose throughout the run: 410 nm from 2.7 to 19.4 counts and
+    560 nm from 3.5 to 112, with a step about 90 minutes in. The LEDs stayed at 5 %,
+    so this is most likely ambient light reaching the fiber or cameras: daylight after
+    sunrise, then room lights. The overnight 20 Hz run, in the dark, showed no rise.
+    Shield the fiber and target from room light for real recordings.
