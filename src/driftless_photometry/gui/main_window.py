@@ -735,15 +735,6 @@ class MainWindow(QMainWindow):
         self.stop_button.setMinimumHeight(38)
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_recording)
-        self.live_button = QPushButton("Live view")
-        self.live_button.setObjectName("preview")
-        self.live_button.setMinimumHeight(38)
-        self.live_button.setToolTip(
-            "Stream the cameras with the current excitation settings to focus and place "
-            "fiber circles; nothing is recorded. The LEDs stay on until you press Stop."
-        )
-        self.live_button.clicked.connect(self.start_live_view)
-        action_row.addWidget(self.live_button, stretch=1)
         action_row.addWidget(self.preview_button, stretch=1)
         action_row.addWidget(self.start_button, stretch=1)
         action_row.addWidget(self.stop_button, stretch=1)
@@ -1590,6 +1581,17 @@ class MainWindow(QMainWindow):
         self.camera_calibration_group = camera_group
         camera_layout = QVBoxLayout(camera_group)
         camera_row = QHBoxLayout()
+        self.live_button = QPushButton("Live view")
+        self.live_button.setObjectName("preview")
+        self.live_button.setMinimumHeight(38)
+        self.live_button.setMinimumWidth(150)
+        self.live_button.setToolTip(
+            "Stream the cameras with the current excitation settings to focus and place "
+            "fiber circles; nothing is recorded. The LEDs stay on until you press Stop "
+            "live view, and it stops by itself after 10 minutes."
+        )
+        self.live_button.clicked.connect(self._toggle_live_view)
+        camera_row.addWidget(self.live_button)
         self.auto_contrast_check = QCheckBox("Auto contrast")
         self.auto_contrast_check.setChecked(True)
         self.auto_contrast_check.setToolTip(
@@ -2848,6 +2850,12 @@ class MainWindow(QMainWindow):
         self._set_busy_controls(True)
         thread.start()
 
+    def _toggle_live_view(self) -> None:
+        if self._operation_kind == "live" and self._worker is not None:
+            self.stop_recording()
+        else:
+            self.start_live_view()
+
     def start_live_view(self) -> None:
         if self._thread is not None:
             return
@@ -3457,10 +3465,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "check_devices_button"):
             self.check_devices_button.setEnabled(not busy and not checking)
         busy = busy or checking
-        self.live_button.setEnabled(not busy)
+        live = busy and self._operation_kind == "live"
+        if hasattr(self, "live_button"):
+            # While live view runs, the same button stops it.
+            self.live_button.setEnabled(not busy or live)
+            self.live_button.setText("Stop live view" if live else "Live view")
         self.preview_button.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self._preview_signature is not None)
-        live = busy and self._operation_kind == "live"
         if hasattr(self, "camera_settings_group"):
             self.camera_settings_group.setEnabled(not busy or live)
         self.stop_button.setEnabled(busy)
