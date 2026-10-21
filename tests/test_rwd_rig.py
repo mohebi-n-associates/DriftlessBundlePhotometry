@@ -534,3 +534,68 @@ def test_rwd_rig_sequential_excitation_records_lit_windows_and_dark_ttl(tmp_path
     assert edges[0].timestamp_s == pytest.approx(bench.session_s(connected + 2.0), abs=0.005)
     assert not invalid_of(packets)
     bench.assert_all_off()
+
+
+def _outputs_config(tmp_path: Path, *outputs: RWDTTLOutputConfig) -> SessionConfig:
+    payload = _config(tmp_path, (W410, W470)).model_dump()
+    payload["source"] = RWDSourceConfig(ttl_outputs=outputs).model_dump()
+    return SessionConfig.model_validate(payload)
+
+
+def _output_switches(board, port: int) -> list[bool]:
+    return [
+        bool(message.data[1])
+        for message in board.commands(RWDFunction.OUTPUT_ENABLE)
+        if message.data[0] == port
+    ]
+
+
+def test_rwd_rig_runs_a_timed_output_program_and_marks_each_train(tmp_path: Path) -> None:
+    program = RWDTTLOutputConfig(
+        port=2,
+        frequency_hz=10.0,
+        pulse_width_ms=20,
+        label="laser",
+        delay_s=0.2,
+        train_s=0.3,
+        gap_s=0.2,
+        cycles=2,
+    )
+    bench = Bench(_outputs_config(tmp_path, program))
+
+    packets = bench.run(2.0)
+
+    # Connect forces everything off; then on, off, on, off; close forces off again.
+    assert _output_switches(bench.board, 2) == [False, True, False, True, False, False]
+    marks = [mark for packet in packets for mark in packet.event_marks]
+    assert [mark.name for mark in marks] == ["laser", "laser"]
+    assert [mark.source for mark in marks] == ["output", "output"]
+    assert [mark.timestamp_s for mark in marks] == pytest.approx([0.2, 0.7], abs=0.02)
+    assert [mark.duration_s for mark in marks] == pytest.approx([0.3, 0.3])
+    assert "10 Hz, 20 ms pulses for 0.3 s" in marks[0].detail
+    events = {event.event: event.detail for event in events_of(packets)}
+    assert events["rwd_ttl_outputs_started"].endswith("a 1.2 s program from the start")
+    bench.assert_all_off()
+
+
+def test_rwd_rig_starts_manual_programs_once_at_a_time(tmp_path: Path) -> None:
+    manual = RWDTTLOutputConfig(
+        port=4, frequency_hz=20.0, pulse_width_ms=10, trigger="manual", train_s=0.5
+    )
+    bench = Bench(_outputs_config(tmp_path, manual))
+    packets = []
+    for packet in bench.rig.packets(2.0):
+        packets.append(packet)
+        if len(frames_of(packets)) == 10:
+            bench.rig.trigger_output(4)
+            bench.rig.trigger_output(4)  # still running: ignored
+            bench.rig.trigger_output(1)  # no program on output 1
+
+    assert _output_switches(bench.board, 4) == [False, True, False, False]
+    marks = [mark for packet in packets for mark in packet.event_marks]
+    assert len(marks) == 1 and marks[0].timestamp_s == pytest.approx(0.5, abs=0.06)
+    events = [event for event in events_of(packets)]
+    names = [event.event for event in events]
+    assert names.count("ttl_output_triggered") == 1
+    assert names.count("ttl_output_trigger_ignored") == 2
+    bench.assert_all_off()

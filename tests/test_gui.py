@@ -224,6 +224,54 @@ def test_gui_round_trips_rwd_port_and_ttl_outputs(qtbot, tmp_path: Path) -> None
     assert window._build_config().source == RWDSourceConfig()
 
 
+def test_gui_edits_tests_and_fires_ttl_output_programs(qtbot, tmp_path: Path, monkeypatch) -> None:
+    from driftless_photometry.gui.output_program import OutputProgramDialog
+
+    tested = []
+
+    def tester(config, port):
+        tested.append((port, config.source.ttl_outputs))
+        return f"Output {port} drove pulses"
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, output_tester=tester)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+
+    dialog = OutputProgramDialog(
+        window._rwd_output_programs[2],
+        fibers=[("fiber_01", "Fiber 1")],
+        wavelengths=[Wavelength.GREEN_470],
+    )
+    dialog.label_edit.setText("laser")
+    dialog.trigger_combo.setCurrentIndex(dialog.trigger_combo.findData("manual"))
+    assert not dialog.continuous_check.isEnabled()
+    dialog.train_spin.setValue(2.0)
+    dialog.cycles_spin.setValue(3)
+    dialog.gap_spin.setValue(1.0)
+    dialog._add_step(None)
+    program = dialog.output()
+    assert (program.trigger, program.cycles, len(program.steps)) == ("manual", 3, 1)
+    dialog.trigger_combo.setCurrentIndex(dialog.trigger_combo.findData("dff_threshold"))
+    assert not dialog.dff_group.isHidden()
+    dialog.dff_threshold_spin.setValue(8.0)
+    assert dialog.output().dff_trigger.threshold_percent == 8.0
+
+    window.apply_output_program(program)
+    assert "laser: 10 Hz, 10 ms · manual · 10 s program" in window.rwd_output_summaries[2].text()
+    assert window._build_config().source.ttl_outputs == (program,)
+    assert list(window.output_fire_buttons) == [2]
+    assert not window.output_fire_buttons[2].isEnabled()
+
+    window.start_output_test(2)
+    qtbot.waitUntil(lambda: window._device_thread is None, timeout=5_000)
+    assert tested == [(2, (program,))]
+    assert window.last_output_test == "Output 2 drove pulses"
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+    assert window.output_fire_buttons == {}
+
+
 def test_gui_places_camera2_circles_separately(qtbot, tmp_path: Path) -> None:
     window = MainWindow(output_directory=tmp_path, default_fibers=2)
     qtbot.addWidget(window)

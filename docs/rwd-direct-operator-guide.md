@@ -69,8 +69,21 @@ before starting DBF, because only one program can use the controller's port.
 4. **RWD hardware panel:**
    - **Controller port:** *Auto* works when the controller is the only FTDI device.
      Otherwise choose its COM port. Use *Refresh* after plugging it in.
-   - **TTL outputs:** tick an output to drive a pulse train on it during the
-     recording, with its frequency and pulse width.
+   - **TTL outputs:** tick an output to drive it during the recording. **Edit…**
+     sets its program:
+     - the pulse frequency and width;
+     - what starts it: the recording's start, its **Fire** button (shown next to the
+       markers while recording), or a live dF/F threshold on one ROI and wavelength
+       (F0 is the median of the first seconds, with a wait between triggers);
+     - a delay, and either one train until the recording ends or timed trains, each
+       followed by a gap, repeated for a number of cycles;
+     - further steps with their own pulses, and repeats of the whole program.
+
+     Each train is recorded as an *output* event mark with its length, for example
+     to mark optogenetic stimulation, and is shaded on the live traces. DBF times
+     trains from the computer, to within a few milliseconds. For board-clock times,
+     loop the output back to a TTL input. **Test** drives the output for 1 s with the
+     LEDs off, after asking, so a connected laser fires too.
 5. **TTL inputs and events** (left panel):
    - **TTL inputs:** tick the BNC inputs you use, label them, and choose which edges
      to record. All four record both edges by default.

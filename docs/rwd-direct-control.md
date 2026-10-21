@@ -289,6 +289,20 @@ repeat every on + off seconds.
   written, because the gap is intentional. Sequences stay contiguous. A window that
   would start at or after the duration ends the recording.
 
+**TTL output programs.** The board only configures an output's pulse train and
+switches it on or off. `hardware/rwd_outputs.py` expands each output's program into
+train start and stop times on the host clock: delay, trains and gaps, cycles, steps,
+and repeats. The session loop sends the due commands every iteration, including while
+draining or paused. Programs that start with the recording begin at the first enable
+command. Manual and dF/F-triggered programs start when `RWDRig.trigger_output` is
+called, and a program still running ignores new triggers (`ttl_output_trigger_ignored`).
+The engine's `DffThresholdWatcher` watches one ROI's dF/F against the median of its
+first seconds. It fires on a crossing, then waits out the refractory time and the
+program's length. Each train start becomes an `output` event mark, placed on the
+session clock through the latest frame like operator marks. Outputs keep running
+through sequencer restarts and dark pauses; whether the board pauses them is still
+an open bench question.
+
 The engine handles TTL stops for every source. The first recorded edge that matches
 `stop_ttl_line` and `stop_ttl_edge` adds a `recording_stop_trigger` event and stops
 the recording, as **Stop** does. A TTL stop therefore needs that line configured as

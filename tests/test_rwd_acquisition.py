@@ -133,3 +133,45 @@ def test_rwd_spool_round_trips_camera_and_provenance_columns(tmp_path: Path) -> 
 
     recovered = recover_session_spool(spool_path)
     assert recovered.nwb.frame_count == 6
+
+
+def test_rwd_dff_threshold_fires_its_output_program_and_marks_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from driftless_photometry.config import DffTriggerConfig, RWDTTLOutputConfig, SessionConfig
+    from driftless_photometry.events import DffThresholdWatcher
+
+    payload = rwd_config(tmp_path, (W410, W470)).model_dump()
+    output = RWDTTLOutputConfig(
+        port=2,
+        frequency_hz=20.0,
+        pulse_width_ms=10,
+        label="opto",
+        train_s=0.25,
+        trigger="dff_threshold",
+        dff_trigger=DffTriggerConfig(fiber_id="fiber_01"),
+    )
+    payload["source"] = RWDSourceConfig(ttl_outputs=(output,)).model_dump()
+    config = SessionConfig.model_validate(payload)
+    calls = []
+
+    def observe(self, sample, camera_index):
+        calls.append(sample.timestamp_s)
+        return "dF/F crossed" if len(calls) == 6 else None
+
+    monkeypatch.setattr(DffThresholdWatcher, "observe", observe)
+    bench = Bench(config)
+
+    result = AcquisitionEngine().run(config, bench.rig, duration_s=1.5)
+
+    with NWBHDF5IO(result.reports[0].path, mode="r", load_namespaces=True) as io:
+        nwbfile = io.read()
+        marks = nwbfile.events["event_marks"].to_dataframe()
+        events = nwbfile.events["system_events"].to_dataframe()
+    trigger = events[events["event"] == "ttl_output_dff_trigger"]
+    assert trigger["timestamp"].tolist() == pytest.approx([calls[5]])
+    assert "ttl_output_triggered" in events["event"].tolist()
+    assert marks["event_name"].tolist() == ["opto"]
+    assert marks["duration"].tolist() == pytest.approx([0.25])
+    assert marks["timestamp"].iloc[0] == pytest.approx(calls[5], abs=0.1)
+    bench.assert_all_off()
