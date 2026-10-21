@@ -2,7 +2,7 @@
 
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 
-from .base import RigPacket, RigSource
+from .base import RigPacket, RigSource, StartCondition
 from .controller_protocol import (
     PROTOCOL_VERSION,
     ControllerLifecycleGuard,
@@ -80,6 +80,7 @@ __all__ = [
     "SerialControllerTransport",
     "SimulatedRWDBoard",
     "SimulatedRig",
+    "StartCondition",
     "ThorlabsSDKStatus",
     "ThorlabsSDKUnavailable",
     "candidate_rwd_ports",

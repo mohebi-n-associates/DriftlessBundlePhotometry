@@ -1,3 +1,4 @@
+import threading
 from collections import Counter
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from driftless_photometry.config import (
     demo_config,
 )
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
+from driftless_photometry.hardware import StartCondition
 from driftless_photometry.hardware.rwd_controller_protocol import (
     RWDFunction,
     RWDLed,
@@ -438,3 +440,64 @@ def test_rwd_rig_reports_camera_delivery_counts_at_the_end(tmp_path: Path) -> No
 
     events = {event.event: event.detail for event in events_of(packets)}
     assert events["rwd_camera_diagnostics"].endswith("1 incomplete, 0 lost to a full host queue")
+
+
+def test_rwd_rig_waits_for_a_delayed_start_with_the_leds_off(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, (W410, W470)))
+    began = bench.clock.now_s
+
+    packets = list(bench.rig.packets(1.0, start=StartCondition(delay_s=30.0)))
+
+    assert len(bench.board.runs) == 1
+    assert bench.board.runs[0].start_s - began >= 30.0
+    events = {event.event: event.detail for event in events_of(packets)}
+    assert events["recording_start_trigger"] == "started after a 30 s delay"
+    assert len(frames_of(packets)) == 20
+    bench.assert_all_off()
+
+
+def test_rwd_rig_arms_dark_and_starts_on_the_chosen_ttl_edge(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, (W410, W470, W560)))
+    board = bench.board
+    now = bench.clock.now_s
+    board.schedule_input_edge(1, True, now + 4.0)  # wrong line
+    board.schedule_input_edge(2, False, now + 5.0)  # wrong edge
+    board.schedule_input_edge(2, True, now + 6.0)  # the start edge
+
+    packets = list(bench.rig.packets(1.0, start=StartCondition(ttl_line=2, ttl_edge="rising")))
+
+    armed, recorded = board.runs
+    assert not any(armed.led_enabled.values()) and not any(armed.led_value.values())
+    assert armed.stop_s is not None and armed.stop_s >= now + 6.0
+    assert all(recorded.led_enabled.values())
+    assert recorded.start_s > armed.stop_s
+    frames = frames_of(packets)
+    assert len(frames) == 20
+    delivered = bench.cameras.delivered_items
+    recorded_ids = {(str(frame.exposure.camera_index), frame.frame_id) for frame in frames}
+    assert recorded_ids <= {(str(i.camera), i.frame_id) for i in delivered if i.run_index == 1}
+    armed_frames = sum(item.run_index == 0 for item in delivered)
+    events = {event.event: event.detail for event in events_of(packets)}
+    detail = events["recording_start_trigger"]
+    assert detail.startswith(
+        f"TTL rising edge on input 2 at board tick {board.tick_ms(now + 6.0)} ms"
+    )
+    assert "2 other TTL edge(s) were not recorded" in detail
+    assert f"{armed_frames} camera frame(s)" in detail
+    assert "rwd_sequencer_restart" not in events
+    bench.assert_all_off()
+
+
+def test_rwd_rig_stopped_while_armed_switches_off_and_records_nothing(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, (W410, W470)))
+    timer = threading.Timer(0.2, bench.rig.stop)
+    timer.start()
+
+    packets = list(bench.rig.packets(1.0, start=StartCondition(ttl_line=1)))
+
+    timer.join()
+    assert frames_of(packets) == []
+    events = {event.event: event.detail for event in events_of(packets)}
+    assert "a rising edge on TTL input 1" in events["recording_start_cancelled"]
+    assert len(bench.board.runs) == 1
+    bench.assert_all_off()

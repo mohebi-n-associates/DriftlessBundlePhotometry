@@ -53,6 +53,7 @@ from driftless_photometry.config import (
     CameraConfig,
     ChannelConfig,
     CustomSourceConfig,
+    RecordingControlConfig,
     ROIConfig,
     RWDSourceConfig,
     RWDTTLOutputConfig,
@@ -64,6 +65,7 @@ from driftless_photometry.config import (
     profile_for,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
+from driftless_photometry.hardware import StartCondition
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
 from driftless_photometry.settings import (
     SETTINGS_SUFFIX,
@@ -506,8 +508,12 @@ class MainWindow(QMainWindow):
         session_form.addRow("Lab", self.lab_edit)
         session_form.addRow("Institution", self.institution_edit)
         session_form.addRow("Output root", output_row)
+        session_form.addRow("Start", self._build_start_row())
+        session_form.addRow("Stop", self._build_stop_row())
         session_form.addRow("Duration", self.duration_spin)
+        self._duration_label = session_form.labelForField(self.duration_spin)
         controls_layout.addWidget(session_group)
+        self._apply_recording_modes()
 
         self._channel_controls: dict[
             str, tuple[dict[Wavelength, QCheckBox], dict[Wavelength, QSlider], QGroupBox]
@@ -1546,9 +1552,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _configuration_signature(config: SessionConfig) -> str:
+        # Previews always start at once, so the start/stop options need no new preview.
         payload = config.model_dump(
             mode="json",
-            exclude={"session_id", "session_start_time", "display"},
+            exclude={"session_id", "session_start_time", "display", "recording"},
         )
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
@@ -1563,6 +1570,102 @@ class MainWindow(QMainWindow):
                 "Preview required - settings changed; run preview before recording",
                 "required",
             )
+
+    def _build_start_row(self) -> QWidget:
+        self.start_mode_combo = QComboBox()
+        for label, mode in (
+            ("Immediately", "immediate"),
+            ("After a delay", "delayed"),
+            ("On a TTL input", "ttl"),
+        ):
+            self.start_mode_combo.addItem(label, mode)
+        self.start_mode_combo.setToolTip(
+            "When Record starts the recording. DBF connects first and keeps the LEDs off "
+            "while it waits; Stop cancels the wait"
+        )
+        self.start_delay_spin = QDoubleSpinBox()
+        self.start_delay_spin.setRange(0.1, 86_400.0)
+        self.start_delay_spin.setDecimals(1)
+        self.start_delay_spin.setSuffix(" s")
+        self.start_delay_spin.setValue(10.0)
+        self.start_ttl_line_combo = _ttl_line_combo()
+        self.start_ttl_edge_combo = _ttl_edge_combo()
+        return self._mode_row(
+            self.start_mode_combo,
+            self.start_delay_spin,
+            self.start_ttl_line_combo,
+            self.start_ttl_edge_combo,
+        )
+
+    def _build_stop_row(self) -> QWidget:
+        self.stop_mode_combo = QComboBox()
+        for label, mode in (
+            ("After the duration", "duration"),
+            ("When I press Stop", "manual"),
+            ("On a TTL input", "ttl"),
+        ):
+            self.stop_mode_combo.addItem(label, mode)
+        self.stop_mode_combo.setToolTip(
+            "When the recording ends. Stop always works; a TTL stop still ends at the "
+            "maximum length, and a manual one after 24 hours"
+        )
+        self.stop_ttl_line_combo = _ttl_line_combo()
+        self.stop_ttl_edge_combo = _ttl_edge_combo()
+        return self._mode_row(
+            self.stop_mode_combo, self.stop_ttl_line_combo, self.stop_ttl_edge_combo
+        )
+
+    def _mode_row(self, mode_combo: QComboBox, *details: QWidget) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(mode_combo, stretch=1)
+        for widget in details:
+            layout.addWidget(widget)
+        mode_combo.currentIndexChanged.connect(self._apply_recording_modes)
+        return row
+
+    def _apply_recording_modes(self, *_args: object) -> None:
+        start = self.start_mode_combo.currentData()
+        self.start_delay_spin.setVisible(start == "delayed")
+        self.start_ttl_line_combo.setVisible(start == "ttl")
+        self.start_ttl_edge_combo.setVisible(start == "ttl")
+        stop = self.stop_mode_combo.currentData()
+        self.stop_ttl_line_combo.setVisible(stop == "ttl")
+        self.stop_ttl_edge_combo.setVisible(stop == "ttl")
+        self.duration_spin.setEnabled(stop != "manual")
+        self._duration_label.setText("Maximum length" if stop == "ttl" else "Duration")
+        self.duration_spin.setToolTip(
+            "Runs until you press Stop, for at most 24 hours"
+            if stop == "manual"
+            else "The recording ends here even if the stop TTL never arrives"
+            if stop == "ttl"
+            else "How long the recording runs"
+        )
+
+    def _recording_from_controls(self) -> RecordingControlConfig:
+        return RecordingControlConfig(
+            start=self.start_mode_combo.currentData(),
+            start_delay_s=self.start_delay_spin.value(),
+            start_ttl_line=self.start_ttl_line_combo.currentData(),
+            start_ttl_edge=self.start_ttl_edge_combo.currentData(),
+            stop=self.stop_mode_combo.currentData(),
+            stop_ttl_line=self.stop_ttl_line_combo.currentData(),
+            stop_ttl_edge=self.stop_ttl_edge_combo.currentData(),
+        )
+
+    def _load_recording_controls(self, recording: RecordingControlConfig) -> None:
+        for combo, value in (
+            (self.start_mode_combo, recording.start),
+            (self.start_ttl_line_combo, recording.start_ttl_line),
+            (self.start_ttl_edge_combo, recording.start_ttl_edge),
+            (self.stop_mode_combo, recording.stop),
+            (self.stop_ttl_line_combo, recording.stop_ttl_line),
+            (self.stop_ttl_edge_combo, recording.stop_ttl_edge),
+        ):
+            combo.setCurrentIndex(combo.findData(value))
+        self.start_delay_spin.setValue(recording.start_delay_s)
+        self._apply_recording_modes()
 
     def _browse_output(self) -> None:
         selected = QFileDialog.getExistingDirectory(
@@ -1683,6 +1786,7 @@ class MainWindow(QMainWindow):
         self.source_combo.setCurrentIndex(self.source_combo.findData(source_kind))
         del source_blocker
         self.duration_spin.setValue(config.recording_duration_s)
+        self._load_recording_controls(config.recording)
         self.experimenter_edit.setText(config.experimenter)
         self.session_description_edit.setText(config.session_description)
         self.lab_edit.setText(config.lab or "")
@@ -2125,6 +2229,7 @@ class MainWindow(QMainWindow):
             lab=self.lab_edit.text().strip() or None,
             institution=self.institution_edit.text().strip() or None,
             display=display,
+            recording=self._recording_from_controls(),
         )
         return SessionConfig.model_validate(payload)
 
@@ -2224,7 +2329,7 @@ class MainWindow(QMainWindow):
 
         self._camera_frame_counts = {}
         thread = QThread(self)
-        worker = AcquisitionWorker(config, config.recording_duration_s, self._rig_factory)
+        worker = AcquisitionWorker(config, config.recording_limit_s, self._rig_factory)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)
@@ -2232,14 +2337,16 @@ class MainWindow(QMainWindow):
         worker.state_changed.connect(self._on_state)
         worker.completed.connect(self._on_completed)
         worker.failed.connect(self._on_failed)
+        worker.cancelled.connect(self._on_cancelled)
         worker.completed.connect(thread.quit)
         worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
         thread.finished.connect(self._on_thread_finished)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
-        self._progress_duration_s = config.recording_duration_s
+        self._progress_duration_s = config.recording_limit_s
         self._set_busy_controls(True)
         thread.start()
 
@@ -2659,7 +2766,12 @@ class MainWindow(QMainWindow):
             )
         progress_value = round(fraction * 1000)
         self.progress_bar.setValue(progress_value)
-        self.progress_bar.setFormat(f"{fraction:.0%}")
+        if self._operation_kind == "recording" and self._active_config.recording.stop != (
+            "duration"
+        ):
+            self.progress_bar.setFormat(f"{format_minutes(sample.timestamp_s)} recorded")
+        else:
+            self.progress_bar.setFormat(f"{fraction:.0%}")
 
     def _on_preview_completed(self, result: PreviewResult) -> None:
         self.last_preview = result
@@ -2698,7 +2810,15 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Preview failed", traceback_text)
 
     def _on_state(self, state: str) -> None:
-        if state == "recording":
+        config = self._active_config
+        start = StartCondition.for_recording(config) if config is not None else None
+        if state == "armed" and start is not None:
+            self._set_system_status("WAITING", "preview")
+            lights = " with the LEDs off" if isinstance(config.source, RWDSourceConfig) else ""
+            waiting = f"Waiting for {start.describe()}{lights}; press Stop to cancel"
+            self.live_status.setText(waiting)
+            self.statusBar().showMessage(waiting)
+        elif state == "recording":
             self._set_system_status("RECORDING", "recording")
         elif state == "draining":
             self._set_system_status("SAVING…", "saving")
@@ -2734,6 +2854,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Saved {file_count} validated ROI NWB files in {result.report.path.parent}"
         )
+
+    def _on_cancelled(self, message: str) -> None:
+        self.last_error = None
+        self.live_status.setText("Recording cancelled before it started; nothing was recorded")
+        self._set_system_status("READY", "ready")
+        self.statusBar().showMessage(message[:1].upper() + message[1:])
 
     def _on_failed(self, traceback_text: str) -> None:
         self.last_error = traceback_text
@@ -2785,3 +2911,17 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         event.accept()
+
+
+def _ttl_line_combo() -> QComboBox:
+    combo = QComboBox()
+    for line in range(1, 5):
+        combo.addItem(f"Input {line}", line)
+    return combo
+
+
+def _ttl_edge_combo() -> QComboBox:
+    combo = QComboBox()
+    combo.addItem("rising edge", "rising")
+    combo.addItem("falling edge", "falling")
+    return combo

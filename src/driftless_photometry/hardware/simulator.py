@@ -14,8 +14,13 @@ from driftless_photometry.config import (
     Wavelength,
     profile_for,
 )
-from driftless_photometry.domain import ExposureRecord, FramePacket, TTLEdge
-from driftless_photometry.hardware.base import RigPacket
+from driftless_photometry.domain import (
+    ExposureRecord,
+    FramePacket,
+    SystemEvent,
+    TTLEdge,
+)
+from driftless_photometry.hardware.base import RigPacket, StartCondition
 from driftless_photometry.roi import circular_mask
 from driftless_photometry.timing import WavelengthSchedule
 
@@ -57,10 +62,26 @@ class SimulatedRig:
     def stop(self) -> None:
         self._stop.set()
 
-    def packets(self, duration_s: float) -> Iterator[RigPacket]:
+    def packets(
+        self, duration_s: float, start: StartCondition | None = None
+    ) -> Iterator[RigPacket]:
         if duration_s <= 0:
             raise ValueError("duration_s must be positive")
+        # Clear now, not when the generator starts: a Stop that arrives before the
+        # first packet is requested must still end the session.
         self._stop.clear()
+        return self._packets(duration_s, start)
+
+    def _packets(self, duration_s: float, start: StartCondition | None) -> Iterator[RigPacket]:
+        start_events: tuple[SystemEvent, ...] = ()
+        if start is not None:
+            # A simulated TTL input pulses every ``line`` seconds, so wait one period.
+            wait_s = start.delay_s if start.ttl_line is None else float(start.ttl_line)
+            if self._realtime and self._stop.wait(wait_s):
+                return
+            start_events = (
+                SystemEvent(0.0, "recording_start_trigger", f"simulated {start.describe()}"),
+            )
         fps = self._config.camera.requested_fps
         frame_count = max(1, round(duration_s * fps))
         started_monotonic = time.monotonic()
@@ -96,7 +117,8 @@ class SimulatedRig:
                 ttl_sequence,
             )
             previous_time = timestamp_s
-            yield RigPacket(frame=frame, ttl_edges=edges)
+            yield RigPacket(frame=frame, ttl_edges=edges, system_events=start_events)
+            start_events = ()
 
     def _render_frame(self, timestamp_s: float, wavelength: Wavelength) -> np.ndarray:
         camera = self._config.camera
