@@ -40,8 +40,10 @@ from PySide6.QtWidgets import (
 
 from driftless_photometry import __version__
 from driftless_photometry.acquisition import (
+    LIVE_VIEW_LIMIT_S,
     AcquisitionProgress,
     AcquisitionRunResult,
+    LiveFrame,
     PreviewResult,
 )
 from driftless_photometry.config import (
@@ -82,7 +84,13 @@ from .trace_display import (
     downsample_min_max,
     trailing_mean,
 )
-from .worker import AcquisitionWorker, PreviewWorker, RigFactory, default_rig_factory
+from .worker import (
+    AcquisitionWorker,
+    LiveViewWorker,
+    PreviewWorker,
+    RigFactory,
+    default_rig_factory,
+)
 
 _TRACE_REFRESH_INTERVAL_S = 0.1
 
@@ -615,6 +623,15 @@ class MainWindow(QMainWindow):
         self.stop_button.setMinimumHeight(38)
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_recording)
+        self.live_button = QPushButton("Live view")
+        self.live_button.setObjectName("preview")
+        self.live_button.setMinimumHeight(38)
+        self.live_button.setToolTip(
+            "Stream the cameras with the current excitation settings to focus and place "
+            "fiber circles; nothing is recorded. The LEDs stay on until you press Stop."
+        )
+        self.live_button.clicked.connect(self.start_live_view)
+        action_row.addWidget(self.live_button, stretch=1)
         action_row.addWidget(self.preview_button, stretch=1)
         action_row.addWidget(self.start_button, stretch=1)
         action_row.addWidget(self.stop_button, stretch=1)
@@ -1059,7 +1076,24 @@ class MainWindow(QMainWindow):
         )
         self.calibration_camera_combo.currentIndexChanged.connect(self._show_calibration_camera)
         self.calibration_camera_combo.setVisible(False)
-        camera_layout.addWidget(self.calibration_camera_combo)
+        camera_row = QHBoxLayout()
+        camera_row.addWidget(self.calibration_camera_combo, stretch=1)
+        self.auto_contrast_check = QCheckBox("Auto contrast")
+        self.auto_contrast_check.setChecked(True)
+        self.auto_contrast_check.setToolTip(
+            "Stretch the display between the image's dim and bright pixels. Display only: "
+            "recorded frames and NWB reference images keep their fixed scaling."
+        )
+        self.auto_contrast_check.toggled.connect(self._show_calibration_camera)
+        camera_row.addWidget(self.auto_contrast_check)
+        camera_layout.addLayout(camera_row)
+        self.live_view_hint = QLabel(
+            "Press Live view to stream the cameras while you focus and place each fiber's "
+            "circle; on RWD, place the dashed circles with Camera 2 selected."
+        )
+        self.live_view_hint.setObjectName("hint")
+        self.live_view_hint.setWordWrap(True)
+        camera_layout.addWidget(self.live_view_hint)
         self.calibration_plot = pg.PlotWidget()
         self.calibration_plot.setAspectLocked(True)
         self.calibration_plot.invertY(True)
@@ -1567,9 +1601,21 @@ class MainWindow(QMainWindow):
             item.setVisible(camera == 2)
         image = self._last_camera_images.get(camera)
         if image is not None:
-            self._image_item.setImage(
-                image, autoLevels=False, levels=(0, self._image_display_maximum)
-            )
+            self._image_item.setImage(image, autoLevels=False, levels=self._display_levels(image))
+
+    def _display_levels(self, image: np.ndarray) -> tuple[float, float]:
+        """Display levels: fixed full scale, or a robust stretch when auto contrast is on."""
+
+        if (
+            not getattr(self, "auto_contrast_check", None)
+            or not self.auto_contrast_check.isChecked()
+        ):
+            return (0.0, float(self._image_display_maximum))
+        sample = image[::4, ::4]
+        low, high = (float(value) for value in np.percentile(sample, (0.5, 99.9)))
+        if high <= low:
+            high = low + 1.0
+        return (low, high)
 
     def _on_roi_geometry_changed(self) -> None:
         self._update_roi_summary()
@@ -1843,9 +1889,86 @@ class MainWindow(QMainWindow):
         self._set_busy_controls(True)
         thread.start()
 
+    def start_live_view(self) -> None:
+        if self._thread is not None:
+            return
+        try:
+            config = self._build_config()
+        except Exception as error:
+            QMessageBox.critical(self, "Invalid configuration", str(error))
+            return
+        self.last_error = None
+        self._operation_kind = "live"
+        self._camera_frame_counts = {}
+        self._prepare_wavelength_images(config)
+        self.frame_counter.setText("0 live frames")
+        self.live_status.setText(
+            "Live view - connecting to the RWD controller and cameras..."
+            if isinstance(config.source, RWDSourceConfig)
+            else "Live view - starting the simulator..."
+        )
+        self._set_system_status("LIVE VIEW", "preview")
+        self.statusBar().showMessage(
+            f"Live view - nothing is recorded; it stops by itself after "
+            f"{LIVE_VIEW_LIMIT_S / 60:g} minutes"
+        )
+        thread = QThread(self)
+        try:
+            worker = LiveViewWorker(config, self._rig_factory)
+        except Exception as error:
+            self._on_live_failed(str(error))
+            return
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.frame.connect(self._on_live_frame)
+        worker.completed.connect(self._on_live_completed)
+        worker.failed.connect(self._on_live_failed)
+        worker.completed.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_thread_finished)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._thread = thread
+        self._worker = worker
+        self._set_busy_controls(True)
+        self.tabs.setCurrentIndex(1)
+        thread.start()
+
+    def _on_live_frame(self, frame: LiveFrame) -> None:
+        self._last_camera_images[frame.camera_index] = frame.image
+        self.wavelength_image_items[frame.wavelength_nm].setImage(
+            frame.image, autoLevels=False, levels=self._display_levels(frame.image)
+        )
+        self.wavelength_frame_labels[frame.wavelength_nm].setText(
+            f"Live · camera {frame.camera_index} · {frame.timestamp_s:.1f} s"
+        )
+        if frame.camera_index == self._calibration_camera:
+            self._image_item.setImage(
+                frame.image, autoLevels=False, levels=self._display_levels(frame.image)
+            )
+        self.frame_counter.setText(f"{frame.frame_count:,} live frames")
+        self.live_status.setText(
+            f"Live view - camera {frame.camera_index}, {int(frame.wavelength_nm)} nm"
+        )
+
+    def _on_live_completed(self, frame_count: int) -> None:
+        self.live_status.setText(f"Live view stopped after {frame_count:,} frames")
+        self._set_system_status("READY", "ready")
+        self.statusBar().showMessage("Live view stopped; nothing was recorded")
+
+    def _on_live_failed(self, traceback_text: str) -> None:
+        self.last_error = traceback_text
+        self.live_status.setText("Live view failed")
+        self._set_system_status("ERROR", "error")
+        self.statusBar().showMessage("Live view failed; nothing was recorded")
+        if not self._close_pending:
+            QMessageBox.critical(self, "Live view failed", traceback_text)
+
     def stop_recording(self) -> None:
         if self._worker is not None:
-            operation = "preview" if self._operation_kind == "preview" else "recording"
+            operation = {"preview": "preview", "live": "live view"}.get(
+                self._operation_kind or "", "recording"
+            )
             self.live_status.setText(f"Stopping {operation} after the current frame...")
             self.statusBar().showMessage(f"Stopping {operation} after the current frame...")
             self.stop_button.setEnabled(False)
@@ -2107,7 +2230,7 @@ class MainWindow(QMainWindow):
         self.wavelength_image_items[sample.wavelength_nm].setImage(
             progress.image,
             autoLevels=False,
-            levels=(0, self._image_display_maximum),
+            levels=self._display_levels(progress.image),
         )
         self.wavelength_frame_labels[sample.wavelength_nm].setText(
             f"Frame {progress.frame_count:,} · {sample.timestamp_s:.3f} s"
@@ -2124,7 +2247,7 @@ class MainWindow(QMainWindow):
             self._image_item.setImage(
                 progress.image,
                 autoLevels=False,
-                levels=(0, self._image_display_maximum),
+                levels=self._display_levels(progress.image),
             )
         fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
         operation = "Preview" if self._operation_kind == "preview" else "Recording"
@@ -2237,6 +2360,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.close)
 
     def _set_busy_controls(self, busy: bool) -> None:
+        self.live_button.setEnabled(not busy)
         self.preview_button.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self._preview_signature is not None)
         if hasattr(self, "calibration_camera_combo"):

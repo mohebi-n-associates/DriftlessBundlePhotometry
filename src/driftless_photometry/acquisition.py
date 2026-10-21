@@ -68,6 +68,70 @@ class PreviewResult:
     maximum_saturation_fraction: float
 
 
+LIVE_VIEW_LIMIT_S = 600.0
+"""Live view stops by itself after this long, so the LEDs are never left running."""
+
+
+@dataclass(frozen=True, slots=True)
+class LiveFrame:
+    """One camera frame shown by live view; nothing about it is recorded."""
+
+    frame_count: int
+    camera_index: int
+    wavelength_nm: Wavelength
+    timestamp_s: float
+    image: np.ndarray
+
+
+def run_live_view(
+    config: SessionConfig,
+    source: RigSource,
+    *,
+    on_frame: Callable[[LiveFrame], None],
+    duration_s: float = LIVE_VIEW_LIMIT_S,
+    max_rate_hz: float = 15.0,
+) -> int:
+    """Stream frames for focusing and ROI placement until stopped; return the frame count.
+
+    Nothing is validated or written. Each camera and wavelength is handed to
+    ``on_frame`` at most ``max_rate_hz`` times per second, so the display keeps up at
+    any acquisition rate.
+    """
+
+    if duration_s <= 0 or max_rate_hz <= 0:
+        raise ValueError("live-view duration and display rate must be positive")
+    shape = (config.camera.height_px, config.camera.width_px)
+    minimum_gap_s = 1.0 / max_rate_hz
+    last_shown: dict[tuple[int, Wavelength], float] = {}
+    frame_count = 0
+    try:
+        for rig_packet in source.packets(duration_s):
+            packet = rig_packet.frame
+            if packet is None:
+                continue
+            if tuple(packet.image.shape) != shape:
+                raise RuntimeError("live-view camera frame shape does not match configuration")
+            frame_count += 1
+            exposure = packet.exposure
+            key = (exposure.camera_index, exposure.wavelength_nm)
+            previous = last_shown.get(key)
+            if previous is not None and packet.host_received_s - previous < minimum_gap_s:
+                continue
+            last_shown[key] = packet.host_received_s
+            on_frame(
+                LiveFrame(
+                    frame_count=frame_count,
+                    camera_index=exposure.camera_index,
+                    wavelength_nm=exposure.wavelength_nm,
+                    timestamp_s=exposure.timestamp_s,
+                    image=packet.image,
+                )
+            )
+    finally:
+        source.stop()
+    return frame_count
+
+
 def preview_duration_s(config: SessionConfig) -> float:
     """Return a short duration that should exercise every enabled wavelength twice."""
 

@@ -11,6 +11,7 @@ from driftless_photometry.acquisition import (
     AcquisitionEngine,
     AcquisitionProgress,
     preview_duration_s,
+    run_live_view,
     run_preview,
 )
 from driftless_photometry.config import RWDSourceConfig, SessionConfig
@@ -106,5 +107,34 @@ class PreviewWorker(QObject):
 
     def request_stop(self) -> None:
         """Thread-safe preview stop request."""
+
+        self._source.stop()
+
+
+class LiveViewWorker(QObject):
+    """Stream camera frames for focusing and ROI placement; records nothing."""
+
+    frame = Signal(object)
+    completed = Signal(int)
+    failed = Signal(str)
+
+    def __init__(
+        self, config: SessionConfig, rig_factory: RigFactory = default_rig_factory
+    ) -> None:
+        super().__init__()
+        self._config = config
+        self._source = rig_factory(config)
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            count = run_live_view(self._config, self._source, on_frame=self.frame.emit)
+        except BaseException:
+            self.failed.emit(traceback.format_exc())
+        else:
+            self.completed.emit(count)
+
+    def request_stop(self) -> None:
+        """Thread-safe live-view stop request."""
 
         self._source.stop()

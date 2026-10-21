@@ -70,16 +70,22 @@ before starting DBF, because only one program can use the controller's port.
 The 560 nm light is imaged by the second camera, so every fiber needs a circle on each
 camera.
 
-1. Run **Preview** once with the fiber bundle in place. It switches the LEDs on for
-   about half a second and fills the camera views.
-2. Open *Camera & fiber ROIs*. Choose **Camera 1 — 410/470 nm** and drag each fiber's
-   circle (solid outline) over its fiber.
-3. Choose **Camera 2 — 560 nm** and place each fiber's dashed circle over the same
+1. Press **Live view**. DBF connects, switches the LEDs on with the current excitation
+   settings, and opens *Camera & fiber ROIs* with the cameras streaming. Nothing is
+   recorded. The LEDs stay on until you press **Stop**; live view stops by itself
+   after 10 minutes.
+2. Keep **Auto contrast** ticked while focusing. It stretches the display between
+   the image's dim and bright pixels, which matters at low LED power. It changes only
+   the display, never the recorded data.
+3. With **Camera 1 — 410/470 nm** selected, drag each fiber's circle (solid outline)
+   over its fiber, and drag its handle to resize it.
+4. Select **Camera 2 — 560 nm** and place each fiber's dashed circle over the same
    fiber on that camera. Camera 2 is mirrored to match camera 1, but the fibers will
    not sit at exactly the same pixels.
-4. Fill in each ROI's animal and region details. Each ROI becomes its own NWB file.
-5. Run **Preview** again. Any change to the settings or circles needs a new preview
-   before **Record** is enabled.
+5. Press **Stop**, then fill in each ROI's animal and region details. Each ROI becomes
+   its own NWB file.
+6. Run **Preview**. Any change to the settings or circles needs a new preview before
+   **Record** is enabled.
 
 ## Record
 
