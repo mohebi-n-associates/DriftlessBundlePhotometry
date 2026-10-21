@@ -35,8 +35,12 @@ from driftless_photometry.provenance import (
 from .frames import FrameStream
 from .nwb import _safe_filename
 
-_SPOOL_SCHEMA_VERSION = 3
-_SUPPORTED_SPOOL_SCHEMA_VERSIONS = {1, 2, _SPOOL_SCHEMA_VERSION}
+_SPOOL_SCHEMA_VERSION = 4
+_SUPPORTED_SPOOL_SCHEMA_VERSIONS = {1, 2, 3, _SPOOL_SCHEMA_VERSION}
+_CHUNK_INDEX = "chunks.jsonl"
+"""Schema v4+: one line per committed chunk, appended and fsynced. Earlier schemas kept
+the list in the manifest, which made each commit rewrite every earlier entry and fell
+behind at 120 frames/s after about 9000 chunks (bench, 2026-10-21)."""
 _WAVELENGTH_SOURCE_CODES = {"controller": 0, "phase_derived": 1}
 _WAVELENGTH_SOURCES = {code: name for name, code in _WAVELENGTH_SOURCE_CODES.items()}
 
@@ -140,10 +144,10 @@ class SessionSpool:
             "complete": False,
             "raw_capture": config.camera.raw_capture,
             "frame_count": 0,
+            "chunk_count": 0,
             "ttl_edge_count": 0,
             "invalid_time_count": 0,
             "system_event_count": 0,
-            "chunks": [],
             "calibration_image": None,
             "wavelength_images": {},
         }
@@ -212,7 +216,7 @@ class SessionSpool:
                 queue_capacity=self._queue_capacity,
                 peak_queue_depth=self._peak_queue_depth,
                 committed_frames=int(self._manifest["frame_count"]),
-                committed_chunks=len(self._manifest["chunks"]),
+                committed_chunks=int(self._manifest["chunk_count"]),
                 last_write_latency_s=self._last_write_latency_s,
                 maximum_write_latency_s=self._maximum_write_latency_s,
             )
@@ -356,7 +360,7 @@ class SessionSpool:
             self._maximum_write_latency_s = max(self._maximum_write_latency_s, elapsed)
 
     def _commit_chunk(self, items: list[_FrameWork]) -> None:
-        chunk_index = len(self._manifest["chunks"])
+        chunk_index = int(self._manifest["chunk_count"])
         chunk_name = f"chunk_{chunk_index:06d}.npz"
         chunk_path = self.path / "chunks" / chunk_name
         temporary = chunk_path.with_suffix(".npz.tmp")
@@ -404,9 +408,12 @@ class SessionSpool:
             os.fsync(stream.fileno())
         os.replace(temporary, chunk_path)
         checksum = _sha256(chunk_path)
-        self._manifest["chunks"].append(
-            {"file": f"chunks/{chunk_name}", "count": len(items), "sha256": checksum}
-        )
+        entry = {"file": f"chunks/{chunk_name}", "count": len(items), "sha256": checksum}
+        with (self.path / _CHUNK_INDEX).open("a", encoding="utf-8") as index:
+            index.write(json.dumps(entry, separators=(",", ":")) + "\n")
+            index.flush()
+            os.fsync(index.fileno())
+        self._manifest["chunk_count"] = chunk_index + 1
         self._manifest["frame_count"] = int(self._manifest["frame_count"]) + len(items)
         if self._manifest["calibration_image"] is None:
             calibration = items[0].image
@@ -474,7 +481,7 @@ def load_session_spool(path: Path) -> LoadedSpool:
         int(channel.wavelength_nm): float(channel.voltage_v or 0.0)
         for channel in config.enabled_channels
     }
-    for entry in manifest["chunks"]:
+    for entry in _chunk_entries(path, manifest, schema_version):
         chunk_path = path / entry["file"]
         if _sha256(chunk_path) != entry["sha256"]:
             raise SpoolError(f"spool chunk checksum mismatch: {chunk_path.name}")
@@ -560,25 +567,16 @@ def load_session_spool(path: Path) -> LoadedSpool:
                     global_saved_index += 1
                 previous_timestamp = sample.timestamp_s
 
-    ttl_path = path / "ttl_edges.jsonl"
-    if ttl_path.exists():
-        for line in ttl_path.read_text(encoding="utf-8").splitlines():
-            if line:
-                data.ttl_edges.append(TTLEdge(**json.loads(line)))
-
-    invalid_path = path / "invalid_times.jsonl"
-    explicit_invalid_count = 0
-    if invalid_path.exists():
-        for line in invalid_path.read_text(encoding="utf-8").splitlines():
-            if line:
-                data.invalid_times.append(InvalidTimeInterval(**json.loads(line)))
-                explicit_invalid_count += 1
-
-    system_path = path / "system_events.jsonl"
-    if system_path.exists():
-        for line in system_path.read_text(encoding="utf-8").splitlines():
-            if line:
-                data.system_events.append(SystemEvent(**json.loads(line)))
+    complete = bool(manifest["complete"])
+    data.ttl_edges.extend(
+        TTLEdge(**record) for record in _log_records(path / "ttl_edges.jsonl", complete)
+    )
+    invalid_records = _log_records(path / "invalid_times.jsonl", complete)
+    data.invalid_times.extend(InvalidTimeInterval(**record) for record in invalid_records)
+    explicit_invalid_count = len(invalid_records)
+    data.system_events.extend(
+        SystemEvent(**record) for record in _log_records(path / "system_events.jsonl", complete)
+    )
 
     if schema_version >= 2:
         provenance_document = json.loads(
@@ -639,16 +637,30 @@ def load_session_spool(path: Path) -> LoadedSpool:
             first_frame=first_frame,
             last_frame=last_frame,
         )
-    if len(data.frame_ids) != manifest["frame_count"]:
+    if schema_version >= 4:
+        # A crash between the index append and the manifest rewrite leaves the index one
+        # chunk ahead; the checksummed index is authoritative.
+        if len(data.frame_ids) < manifest["frame_count"]:
+            raise SpoolError("chunk index is missing frames the manifest recorded")
+    elif len(data.frame_ids) != manifest["frame_count"]:
         raise SpoolError("manifest frame count does not match committed chunks")
-    if len(data.ttl_edges) != manifest["ttl_edge_count"]:
-        raise SpoolError("manifest TTL count does not match edge log")
-    expected_invalid_count = int(manifest.get("invalid_time_count", 0))
-    if explicit_invalid_count != expected_invalid_count:
-        raise SpoolError("manifest invalid-time count does not match interval log")
-    expected_system_count = int(manifest.get("system_event_count", 0))
-    if len(data.system_events) != expected_system_count:
-        raise SpoolError("manifest system-event count does not match event log")
+    # A complete spool must match its manifest exactly. An interrupted one may hold
+    # log lines written after the last manifest update, but never fewer.
+    for observed, expected, what in (
+        (len(data.ttl_edges), int(manifest["ttl_edge_count"]), "TTL count does not match edge log"),
+        (
+            explicit_invalid_count,
+            int(manifest.get("invalid_time_count", 0)),
+            "invalid-time count does not match interval log",
+        ),
+        (
+            len(data.system_events),
+            int(manifest.get("system_event_count", 0)),
+            "system-event count does not match event log",
+        ),
+    ):
+        if observed < expected or (complete and observed != expected):
+            raise SpoolError(f"manifest {what}")
     return LoadedSpool(
         path=path,
         config=config,
@@ -659,6 +671,41 @@ def load_session_spool(path: Path) -> LoadedSpool:
         complete=bool(manifest["complete"]),
         schema_version=schema_version,
     )
+
+
+def _log_records(path: Path, complete: bool) -> list[dict]:
+    """Read a JSON-lines log; an interrupted spool may end in one torn line."""
+
+    if not path.exists():
+        return []
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    records = []
+    for number, line in enumerate(lines):
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            if not complete and number == len(lines) - 1:
+                break
+            raise SpoolError(f"{path.name} line {number + 1} is corrupt") from None
+    return records
+
+
+def _chunk_entries(path: Path, manifest: dict, schema_version: int) -> list[dict]:
+    if schema_version < 4:
+        return list(manifest["chunks"])
+    index_path = path / _CHUNK_INDEX
+    if not index_path.exists():
+        return []
+    entries = []
+    lines = index_path.read_text(encoding="utf-8").splitlines()
+    for number, line in enumerate(lines):
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            if number == len(lines) - 1:
+                break  # a torn final line from a crash mid-append
+            raise SpoolError(f"chunk index line {number + 1} is corrupt") from None
+    return entries
 
 
 def remove_session_spool(path: Path) -> None:

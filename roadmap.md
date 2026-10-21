@@ -291,7 +291,9 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
        camera's exposure-active output wired to a board input;
      - the restart path on hardware;
      - whether TTL outputs pause during a restart;
-     - long recordings.
+     - where the board's timer step changes between 30 and 120 Hz;
+     - a clean multi-hour run at 120 Hz with spool v4. A 4 h run at 20 Hz passed
+       on 2026-10-21.
 
 ### Deliverables
 

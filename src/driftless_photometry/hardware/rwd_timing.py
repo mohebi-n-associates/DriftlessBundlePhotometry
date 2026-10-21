@@ -193,7 +193,7 @@ class RWDSegmentTracker:
         *,
         enabled_host_s: float,
         tolerance_fraction: float = 0.25,
-        period_tolerance: float = 5e-4,
+        period_tolerance: float = 2e-4,
         frames_for_period_check: int = 20,
     ) -> None:
         if not 0 < tolerance_fraction < 0.5:

@@ -322,17 +322,30 @@ def led_enable(led: RWDLed, enabled: bool) -> RWDCommand:
     return RWDCommand(RWDFunction.LED_ENABLE, bytes([led, int(enabled), 0, 0]))
 
 
-def trigger_period_s(frame_rate_hz: int) -> float:
-    """The board's actual trigger period: 1/fps truncated to whole 10 us steps.
+RWD_FINE_PERIOD_BELOW_US = 10_000
+"""Periods shorter than this use 1 us steps; longer ones 10 us (provisional, see below)."""
 
-    Measured on an R821 (firmware 2.0.0): 15 Hz triggers every 66.660 ms and 30 Hz every
-    33.330 ms, while 20 and 50 Hz are exact. Timing exposures at exactly 1/fps would
-    drift against the board clock by up to 0.25 % at non-divisor rates.
+
+def trigger_period_s(frame_rate_hz: int) -> float:
+    """The board's actual trigger period: 1/fps truncated to the board's timer step.
+
+    Measured on an R821 (firmware 2.0.0) from camera timestamps:
+
+    - 15 Hz: 66.660 ms; 30 Hz: 33.330 ms (10 us steps);
+    - 120 Hz: 8.333 ms (1 us steps);
+    - 20 and 50 Hz: exact.
+
+    Where between 30 and 120 Hz the step changes is not measured yet. 10 ms is assumed.
+    Timing exposures at exactly 1/fps would drift against the board clock by up to
+    0.25 %; ``RWDSegmentTracker`` faults when the cameras disagree with this rule.
     """
 
     if frame_rate_hz <= 0:
         raise ValueError("frame rate must be positive")
-    return (100_000 // frame_rate_hz) * 1e-5
+    period_us = 1_000_000 // frame_rate_hz
+    if period_us >= RWD_FINE_PERIOD_BELOW_US:
+        period_us -= period_us % 10
+    return period_us * 1e-6
 
 
 def max_exposure_ms(frame_rate_hz: int) -> float:

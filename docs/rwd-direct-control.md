@@ -124,7 +124,7 @@ settings are unchanged. `profile_for(source)` picks the profile.
 | Intensity | `voltage_v`, 0–5 V | `power_percent`, 0–100 % |
 | Cameras | 1 | 2 (410/470 nm on camera 1, 560 nm on camera 2) |
 | Interleaved sets | any | one LED, 410+470, 470+560, or all three (no 410+560) |
-| Frame rate | any | whole hertz, 10–250 Hz (total trigger rate); the board's period is 1/fps truncated to 10 µs |
+| Frame rate | any | whole hertz, 10–250 Hz (total trigger rate); the board truncates 1/fps to 10 µs steps (1 µs below 10 ms) |
 | Exposure | any | 500 µs to (1000 // fps) ms − 2.63 ms |
 | Sensor | any | full 728 × 544 Alvium 1800 U-040m |
 | TTL outputs | — | 4 |
@@ -186,9 +186,12 @@ camera's first slot in the cycle. Each later frame must have the next frame ID, 
 its hardware timestamp must land on the camera's next slot. The tracker fits each
 camera's clock period, so crystal differences of tens of ppm never accumulate.
 
-Session time is the board's trigger grid. Slot `k` of run 0 is at `k × period`, where
-the period is 1/fps truncated to whole 10 µs steps (bench: 66.660 ms at 15 Hz, 33.330
-ms at 30 Hz), and session zero is run 0's first trigger. A later run starts at the session time
+Session time is the board's trigger grid. Slot `k` of run 0 is at `k × period`, and
+session zero is run 0's first trigger. The period is 1/fps truncated to the board's
+timer step (`trigger_period_s`). Bench: 66.660 ms at 15 Hz and 33.330 ms at 30 Hz
+(10 µs steps), 8.333 ms at 120 Hz (1 µs steps). Where the step changes between 30
+and 120 Hz is not measured; 10 ms is assumed. The trigger-period check faults when
+the cameras disagree with the rule by more than 0.02 %. A later run starts at the session time
 measured on its first camera's hardware clock since that camera's last recorded
 frame. Exposures carry:
 
@@ -574,3 +577,35 @@ frame rate, with the operator watching. The LEDs were off after every run.
 - **Start delay:** from the enable command to the first frame, 10.6–11.5 ms at 20, 30,
   and 50 Hz with a 10 ms exposure. That leaves about 1 ms for board start and camera
   readout.
+
+**2026-10-21 unattended long recordings.** Same setup: one fiber, all three LEDs at 5 %,
+and the TTL source on Input 1. The operator was away; the script kept Windows awake.
+
+- **4 h at 20 Hz:** 288 000 of 288 000 frames (96 000 per LED).
+  - Every step was exactly 50 ms, with no camera frame-ID gaps, restarts, or invalid
+    spans.
+  - All 8616 TTL edges arrived, in 465 bursts 30 990–30 991 ms apart.
+  - Process memory stayed at 219–229 MB while recording.
+  - The NWB file is 84 MB and took about 11 minutes to write and validate.
+  - Both cameras ran 24.4 and 24.2 ppm slow against the board, steady to 0.04 ppm
+    across the four hours. The host clock ran 32 ppm slow (459 ms over 4 h). The
+    host-offset diagnostic includes that drift; it is not a timing error.
+- **2.5 h at 120 Hz, first attempt:** DBF fell behind after about 20 minutes.
+  - Each spool commit rewrote a manifest listing every earlier chunk. At 7.5 commits
+    per second the writer's latency grew to about 1 s.
+  - The writer queue filled, acquisition blocked on it, and the camera buffer (512
+    frames) overflowed.
+  - Each overflow was a camera frame-ID gap, which correctly stopped the run, discarded
+    the backlog, marked an invalid span, and restarted. That happened 396 times: 579 969
+    of about 1.08 million frames were recorded, and 4183 s were marked invalid.
+  - The start-delay check also fired falsely six times, because its half-period
+    tolerance (4.2 ms) is below host scatter.
+  - The cameras disagreed with the assumed 8.33 ms period by 360 ppm. The real 120 Hz
+    period is 8.333 ms.
+- **Fixes:**
+  - Spool schema v4 appends each chunk to `chunks.jsonl` and keeps the manifest under
+    1 kB. 9000 commits now hold about 25 ms each, 39 per second.
+  - Spool chunks hold a quarter second of frames at high rates.
+  - Interrupted spools accept log lines written after the last manifest update.
+  - The start-delay check runs only up to 50 Hz.
+  - The period rule uses 1 µs steps below 10 ms, and the period check is tighter.
