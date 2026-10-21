@@ -599,3 +599,28 @@ def test_rwd_rig_starts_manual_programs_once_at_a_time(tmp_path: Path) -> None:
     assert names.count("ttl_output_triggered") == 1
     assert names.count("ttl_output_trigger_ignored") == 2
     bench.assert_all_off()
+
+
+def test_rwd_rig_changes_led_power_mid_session_with_a_marked_gap(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, (W410, W470)))
+    packets = []
+    for packet in bench.rig.packets(2.0):
+        packets.append(packet)
+        if len(frames_of(packets)) == 10:
+            bench.rig.request_led_power(W470, 20.0)
+            bench.rig.request_led_power(W410, 5.0)  # unchanged
+
+    frames = frames_of(packets)
+    powers = [
+        (f.exposure.commanded_power_percent, f.exposure.timestamp_s)
+        for f in frames
+        if f.exposure.wavelength_nm == W470
+    ]
+    assert powers[0][0] == 12.5 and powers[-1][0] == 20.0
+    assert [run.led_value[RWDLed.LED_470] for run in bench.board.runs] == [1250, 2000]
+    events = {event.event: event.detail for event in events_of(packets)}
+    assert events["rwd_led_power_changed"].startswith("410 nm 5 %, 470 nm 20 %")
+    (gap,) = invalid_of(packets)
+    assert gap.reason == "RWD sequencer restart: LED power changed"
+    assert all(not gap.start_time_s <= t < gap.stop_time_s for _p, t in powers)
+    bench.assert_all_off()

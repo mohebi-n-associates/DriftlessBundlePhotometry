@@ -100,11 +100,17 @@ class PreviewWorker(QObject):
     failed = Signal(str)
 
     def __init__(
-        self, config: SessionConfig, rig_factory: RigFactory = default_rig_factory
+        self,
+        config: SessionConfig,
+        rig_factory: RigFactory = default_rig_factory,
+        *,
+        duration_s: float | None = None,
+        allow_power_changes: bool = False,
     ) -> None:
         super().__init__()
         self._config = config
-        self.duration_s = preview_duration_s(config)
+        self.duration_s = preview_duration_s(config) if duration_s is None else duration_s
+        self._allow_power_changes = allow_power_changes
         self._source = rig_factory(config)
 
     @Slot()
@@ -115,6 +121,7 @@ class PreviewWorker(QObject):
                 self._source,
                 duration_s=self.duration_s,
                 on_progress=self.progress.emit,
+                allow_power_changes=self._allow_power_changes,
             )
         except BaseException:
             self.failed.emit(traceback.format_exc())
@@ -125,6 +132,11 @@ class PreviewWorker(QObject):
         """Thread-safe preview stop request."""
 
         self._source.stop()
+
+    def request_led_power(self, wavelength, percent: float) -> None:
+        request = getattr(self._source, "request_led_power", None)
+        if request is not None:
+            request(wavelength, percent)
 
 
 class LiveViewWorker(QObject):
@@ -154,6 +166,11 @@ class LiveViewWorker(QObject):
         """Thread-safe live-view stop request."""
 
         self._source.stop()
+
+    def request_led_power(self, wavelength, percent: float) -> None:
+        request = getattr(self._source, "request_led_power", None)
+        if request is not None:
+            request(wavelength, percent)
 
     def request_gain(self, gain_db: float) -> None:
         """Change camera gain while streaming, if the source supports it."""

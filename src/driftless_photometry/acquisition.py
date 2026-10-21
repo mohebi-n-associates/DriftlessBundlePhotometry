@@ -73,6 +73,9 @@ class PreviewResult:
     duration_s: float
     wavelength_frame_counts: tuple[tuple[Wavelength, int], ...]
     maximum_saturation_fraction: float
+    final_power_percent: tuple[tuple[Wavelength, float], ...] = ()
+    """The last commanded power per wavelength, which may differ from the configuration
+    when the operator changed it during the preview."""
 
 
 def spool_chunk_size_for(config: SessionConfig) -> int:
@@ -109,6 +112,8 @@ def spool_queue_size_for(config: SessionConfig) -> int:
 
 LIVE_VIEW_LIMIT_S = 600.0
 """Live view stops by itself after this long, so the LEDs are never left running."""
+PREVIEW_LIMIT_S = 600.0
+"""An open-ended preview (run until Stop) also stops by itself after this long."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,8 +188,13 @@ def run_preview(
     *,
     duration_s: float | None = None,
     on_progress: ProgressCallback | None = None,
+    allow_power_changes: bool = False,
 ) -> PreviewResult:
-    """Exercise and validate acquisition inputs without creating scientific output."""
+    """Exercise and validate acquisition inputs without creating scientific output.
+
+    With ``allow_power_changes`` the commanded power may change during the preview (the
+    operator setting LED powers); the result reports the last power per wavelength.
+    """
 
     planned_duration_s = preview_duration_s(config) if duration_s is None else duration_s
     if planned_duration_s <= 0:
@@ -197,6 +207,7 @@ def run_preview(
     last_controller_tick = -1
     last_timestamp = -np.inf
     maximum_saturation = 0.0
+    final_power: dict[Wavelength, float] = {}
     try:
         for rig_packet in source.packets(planned_duration_s):
             packet = rig_packet.frame
@@ -226,7 +237,9 @@ def run_preview(
                     f"preview received disabled or unknown wavelength "
                     f"{int(exposure.wavelength_nm)} nm"
                 )
-            if not _commanded_intensity_matches(exposure, channel):
+            if exposure.commanded_power_percent is not None:
+                final_power[exposure.wavelength_nm] = exposure.commanded_power_percent
+            if not allow_power_changes and not _commanded_intensity_matches(exposure, channel):
                 raise RuntimeError(
                     f"preview {int(exposure.wavelength_nm)} nm commanded intensity does not "
                     "match configuration"
@@ -281,6 +294,7 @@ def run_preview(
         duration_s=planned_duration_s,
         wavelength_frame_counts=tuple(wavelength_counts.items()),
         maximum_saturation_fraction=maximum_saturation,
+        final_power_percent=tuple(final_power.items()),
     )
 
 

@@ -24,7 +24,21 @@ from driftless_photometry.diagnostics import (
     FinalizationStage,
 )
 from driftless_photometry.gui.main_window import MainWindow
+from driftless_photometry.hardware.rwd_controller_protocol import RWDLed
 from driftless_photometry.settings import save_default_settings
+
+
+def run_preview_until_checked(window, qtbot, *, timeout: int = 15_000) -> None:
+    """Start the open-ended preview, let every wavelength show twice, then stop it."""
+
+    window.start_preview()
+    wanted = 2 * len(window._build_config().enabled_channels) + 2
+    qtbot.waitUntil(
+        lambda: sum(window._camera_frame_counts.values()) >= wanted or window._thread is None,
+        timeout=timeout,
+    )
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=timeout)
 
 
 def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Path) -> None:
@@ -39,6 +53,9 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
     assert not window.start_button.isEnabled()
     assert window.preview_button.isEnabled()
     qtbot.mouseClick(window.preview_button, Qt.MouseButton.LeftButton)
+    assert window.preview_button.text() == "Stop preview"
+    qtbot.waitUntil(lambda: sum(window._camera_frame_counts.values()) >= 8, timeout=5_000)
+    qtbot.mouseClick(window.preview_button, Qt.MouseButton.LeftButton)  # stops it
     qtbot.waitUntil(
         lambda: (
             (window.last_preview is not None or window.last_error is not None)
@@ -46,6 +63,7 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
         ),
         timeout=5_000,
     )
+    assert window.preview_button.text() == "Run preview"
     assert window.last_error is None
     assert window.last_preview is not None
     assert window.start_button.isEnabled()
@@ -313,8 +331,7 @@ def test_gui_previews_and_records_rwd_hardware(qtbot, tmp_path: Path) -> None:
     window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
     window.duration_spin.setValue(1.0)
 
-    window.start_preview()
-    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    run_preview_until_checked(window, qtbot)
     assert window.last_error is None, window.last_error
     assert window.last_preview is not None
     assert window.start_button.isEnabled()
@@ -941,8 +958,7 @@ def test_gui_start_and_stop_options_round_trip_without_a_new_preview(qtbot, tmp_
 def test_gui_cancels_a_recording_still_waiting_to_start(qtbot, tmp_path: Path) -> None:
     window = MainWindow(output_directory=tmp_path, default_fibers=1, default_duration_s=1.0)
     qtbot.addWidget(window)
-    window.start_preview()
-    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    run_preview_until_checked(window, qtbot)
     window.start_mode_combo.setCurrentIndex(window.start_mode_combo.findData("delayed"))
     window.start_delay_spin.setValue(60.0)
     assert window.start_button.isEnabled()
@@ -974,8 +990,7 @@ def test_gui_records_markers_and_named_ttl_events_and_draws_them(qtbot, tmp_path
     name.setText("Lever")
     assert list(window.marker_buttons) == ["1"]
     assert not window.marker_buttons["1"].isEnabled()
-    window.start_preview()
-    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    run_preview_until_checked(window, qtbot)
 
     window.start_recording()
     qtbot.waitUntil(lambda: window._trace_latest_s is not None, timeout=10_000)
@@ -1116,3 +1131,54 @@ def test_gui_scrolls_settings_and_traces_separately(qtbot, tmp_path: Path) -> No
     assert window.gain_spin.value() == 12.5
     window.gain_spin.setValue(3.0)
     assert window.gain_slider.value() == 30
+
+
+def test_gui_preview_runs_until_stopped_and_takes_led_power_changes(qtbot, tmp_path: Path) -> None:
+    benches = []
+
+    def rig_factory(config):
+        bench = Bench(config)
+        benches.append(bench)
+        return bench.rig
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, rig_factory=rig_factory)
+    qtbot.addWidget(window)
+    window.show()
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    slider = window.channel_voltages[Wavelength.GREEN_470]
+
+    window.start_preview()
+    qtbot.waitUntil(lambda: sum(window._camera_frame_counts.values()) >= 10, timeout=15_000)
+    assert window._thread is not None  # still running: no fixed length
+    assert slider.isEnabled() and not window.channel_checks[Wavelength.GREEN_470].isEnabled()
+    slider.setValue(200)  # 20 %
+    # The simulated rig floods the event queue, which can starve the 250 ms debounce,
+    # so send at once once it is armed.
+    assert window._power_timer.isActive()
+    window._power_timer.stop()
+    window._send_led_powers()
+    qtbot.waitUntil(
+        lambda: any(run.led_value[RWDLed.LED_470] == 2000 for run in benches[-1].board.runs),
+        timeout=10_000,
+    )
+    seen = sum(window._camera_frame_counts.values())
+    qtbot.waitUntil(lambda: sum(window._camera_frame_counts.values()) >= seen + 6, timeout=15_000)
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+
+    assert window.last_error is None, window.last_error
+    assert dict(window.last_preview.final_power_percent)[Wavelength.GREEN_470] == 20.0
+    assert window.start_button.isEnabled()  # it ended on the current powers
+    assert window.channel_checks[Wavelength.GREEN_470].isEnabled()
+    benches[-1].assert_all_off()
+
+    slider.setValue(300)
+    assert not window.start_button.isEnabled()
+
+
+def test_gui_starts_on_rwd_when_the_application_default_is_rwd(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, default_system="rwd")
+    qtbot.addWidget(window)
+
+    assert window.source_combo.currentData() == "rwd"
+    assert isinstance(window._build_config().source, RWDSourceConfig)

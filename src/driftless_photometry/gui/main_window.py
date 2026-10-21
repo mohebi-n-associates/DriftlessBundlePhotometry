@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 from driftless_photometry import __version__
 from driftless_photometry.acquisition import (
     LIVE_VIEW_LIMIT_S,
+    PREVIEW_LIMIT_S,
     AcquisitionProgress,
     AcquisitionRunResult,
     LiveFrame,
@@ -258,6 +259,7 @@ class MainWindow(QMainWindow):
         output_tester: Callable[[SessionConfig, int], str] | None = None,
         power_meter_factory: Callable[[], object] | None = None,
         power_measurer: Callable[[SessionConfig, object], tuple] | None = None,
+        default_system: str = "custom",
     ) -> None:
         super().__init__()
         self._rig_factory = rig_factory
@@ -348,6 +350,8 @@ class MainWindow(QMainWindow):
             recording_duration_s=default_duration_s,
         )
         self._custom_camera = self._session_template.camera
+        self._default_system = default_system
+        self._preview_started_config: SessionConfig | None = None
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -728,7 +732,7 @@ class MainWindow(QMainWindow):
         self.preview_button = QPushButton("Run preview")
         self.preview_button.setObjectName("preview")
         self.preview_button.setMinimumHeight(38)
-        self.preview_button.clicked.connect(self.start_preview)
+        self.preview_button.clicked.connect(self._toggle_preview)
         self.start_button = QPushButton("Start recording")
         self.start_button.setObjectName("record")
         self.start_button.setMinimumHeight(38)
@@ -755,12 +759,17 @@ class MainWindow(QMainWindow):
             self.rwd_group,
             browse,
         ]
+        self._power_timer = QTimer(self)
+        self._power_timer.setSingleShot(True)
+        self._power_timer.setInterval(250)
+        self._power_timer.timeout.connect(self._send_led_powers)
         for checks, sliders, _group in self._channel_controls.values():
             for check in checks.values():
                 check.toggled.connect(self._update_overview)
                 check.toggled.connect(self._invalidate_preview)
             for slider in sliders.values():
                 slider.valueChanged.connect(self._invalidate_preview)
+                slider.valueChanged.connect(self._on_power_slider_changed)
         for edit in (
             self.experimenter_edit,
             self.session_description_edit,
@@ -2279,6 +2288,10 @@ class MainWindow(QMainWindow):
         try:
             config, warnings = load_default_settings_with_warnings()
             if config is None:
+                # No saved settings: start on the application's default system.
+                index = self.source_combo.findData(self._default_system)
+                if index >= 0:
+                    self.source_combo.setCurrentIndex(index)
                 return
             self._apply_configuration(config)
         except (OSError, ValueError) as error:
@@ -2772,7 +2785,8 @@ class MainWindow(QMainWindow):
         self.frame_counter.setText("0 preview frames")
         self.live_status.setText("Running acquisition preflight...")
         self._set_preview_status(
-            "Preview running - checking timing, wavelengths, camera frames, and ROI signals",
+            "Preview running - set LED powers and inspect the signal, then press Stop "
+            f"preview; it stops by itself after {PREVIEW_LIMIT_S / 60:g} minutes",
             "running",
         )
         self._set_system_status("PREVIEW", "preview")
@@ -2781,11 +2795,17 @@ class MainWindow(QMainWindow):
         self._camera_frame_counts = {}
         thread = QThread(self)
         try:
-            worker = PreviewWorker(config, self._rig_factory)
+            worker = PreviewWorker(
+                config,
+                self._rig_factory,
+                duration_s=PREVIEW_LIMIT_S,
+                allow_power_changes=True,
+            )
         except Exception as error:
             self._on_preview_failed(str(error))
             return
         self._progress_duration_s = worker.duration_s
+        self._preview_started_config = config
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)
@@ -2868,6 +2888,12 @@ class MainWindow(QMainWindow):
         self._progress_duration_s = config.recording_limit_s
         self._set_busy_controls(True)
         thread.start()
+
+    def _toggle_preview(self) -> None:
+        if self._operation_kind == "preview" and self._worker is not None:
+            self.stop_recording()
+        else:
+            self.start_preview()
 
     def _toggle_live_view(self) -> None:
         if self._operation_kind == "live" and self._worker is not None:
@@ -3326,6 +3352,9 @@ class MainWindow(QMainWindow):
         if camera_count == 1 or camera_count % 5 == 0:
             self._show_calibration_frame(progress.camera_index, progress.image)
         fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
+        open_ended = self._operation_kind == "preview" or (
+            self._operation_kind == "recording" and self._active_config.recording.stop != "duration"
+        )
         operation = "Preview" if self._operation_kind == "preview" else "Recording"
         self.frame_counter.setText(f"{progress.frame_count:,} {operation.lower()} frames")
         self.live_status.setText(f"{operation} - {wavelength} nm exposure")
@@ -3339,17 +3368,42 @@ class MainWindow(QMainWindow):
             )
         progress_value = round(fraction * 1000)
         self.progress_bar.setValue(progress_value)
-        if self._operation_kind == "recording" and self._active_config.recording.stop != (
-            "duration"
-        ):
-            self.progress_bar.setFormat(f"{format_minutes(sample.timestamp_s)} recorded")
+        if open_ended:
+            verb = "previewed" if self._operation_kind == "preview" else "recorded"
+            self.progress_bar.setFormat(f"{format_minutes(sample.timestamp_s)} {verb}")
         else:
             self.progress_bar.setFormat(f"{fraction:.0%}")
 
     def _on_preview_completed(self, result: PreviewResult) -> None:
         self.last_preview = result
-        self._preview_signature = self._pending_preview_signature
         self._pending_preview_signature = None
+        # Powers may have changed during the preview; it validates the current settings
+        # only if it ended on exactly their powers.
+        try:
+            current = self._build_config()
+        except Exception:
+            current = None
+        powers_match = current is not None and all(
+            abs(
+                dict(result.final_power_percent).get(channel.wavelength_nm, -1.0)
+                - float(channel.power_percent)
+            )
+            < 1e-9
+            for channel in current.enabled_channels
+            if channel.power_percent is not None
+        )
+        started = self._preview_started_config
+        unchanged_otherwise = (
+            current is not None
+            and started is not None
+            and self._signature_without_power(current) == self._signature_without_power(started)
+        )
+        self._preview_signature = (
+            self._configuration_signature(current) if powers_match and unchanged_otherwise else None
+        )
+        if self._preview_signature is None:
+            self._on_preview_superseded(result)
+            return
         self._refresh_all_trace_curves()
         self.progress_bar.setValue(1000)
         self.progress_bar.setFormat("100%")
@@ -3367,6 +3421,43 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Preview passed for the current settings; recording is now enabled"
         )
+
+    def _on_preview_superseded(self, result: PreviewResult) -> None:
+        self._refresh_all_trace_curves()
+        self.live_status.setText("Preview stopped - settings changed, so run it again")
+        self._set_preview_status(
+            f"Preview stopped after {result.frame_count} frames, but settings changed "
+            "since it started; run it again before recording",
+            "required",
+        )
+        self._set_system_status("READY", "ready")
+
+    def _signature_without_power(self, config: SessionConfig) -> str:
+        channels = tuple(
+            channel.model_copy(update={"power_percent": None, "voltage_v": None})
+            for channel in config.channels
+        )
+        return self._configuration_signature(config.model_copy(update={"channels": channels}))
+
+    def _on_power_slider_changed(self, *_args: object) -> None:
+        """During preview or live view on RWD, send the new LED powers to the board."""
+
+        if self._operation_kind not in {"preview", "live"} or self._worker is None:
+            return
+        if not self._is_rwd_mode():
+            return
+        self._power_timer.start()
+
+    def _send_led_powers(self) -> None:
+        worker = self._worker
+        request = getattr(worker, "request_led_power", None)
+        if request is None or self._operation_kind not in {"preview", "live"}:
+            return
+        checks, sliders, _group = self._channel_controls[RWD_PROFILE.kind]
+        for wavelength, slider in sliders.items():
+            if checks[wavelength].isChecked():
+                request(wavelength, slider.value() / 10)
+        self.statusBar().showMessage("LED power sent; the board restarts its LED cycle")
 
     def _on_preview_failed(self, traceback_text: str) -> None:
         self.last_error = traceback_text
@@ -3485,17 +3576,31 @@ class MainWindow(QMainWindow):
             self.check_devices_button.setEnabled(not busy and not checking)
         busy = busy or checking
         live = busy and self._operation_kind == "live"
+        previewing = busy and self._operation_kind == "preview"
         if hasattr(self, "live_button"):
             # While live view runs, the same button stops it.
             self.live_button.setEnabled(not busy or live)
             self.live_button.setText("Stop live view" if live else "Live view")
-        self.preview_button.setEnabled(not busy)
+        self.preview_button.setEnabled(not busy or previewing)
+        self.preview_button.setText("Stop preview" if previewing else "Run preview")
         self.start_button.setEnabled(not busy and self._preview_signature is not None)
         if hasattr(self, "camera_settings_group"):
             self.camera_settings_group.setEnabled(not busy or live)
         self.stop_button.setEnabled(busy)
         for widget in self._settings_widgets:
             widget.setEnabled(not busy)
+        if (live or previewing) and self._is_rwd_mode():
+            # LED powers stay adjustable; which LEDs are on needs a new session.
+            checks, sliders, group = self._channel_controls[RWD_PROFILE.kind]
+            group.setEnabled(True)
+            for check in checks.values():
+                check.setEnabled(False)
+            for slider in sliders.values():
+                slider.setEnabled(True)
+        else:
+            for checks, _sliders, _group in self._channel_controls.values():
+                for check in checks.values():
+                    check.setEnabled(True)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._device_thread is not None:
