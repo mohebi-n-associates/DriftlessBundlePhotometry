@@ -979,3 +979,32 @@ def test_gui_event_settings_round_trip(qtbot, tmp_path: Path) -> None:
         config.ttl_events,
     )
     assert list(window.marker_buttons) == ["2"]
+
+
+def test_gui_dff_control_fit_takes_f0_from_the_fitted_control(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=1))
+    times = np.arange(0.0, 10.0, 0.1)
+    control = 100.0 + 5.0 * np.sin(times)
+    window._trace_times[(405, 0)] = array("d", times)
+    window._trace_values[(405, 0)] = array("f", control)
+    signal_times = times + 0.03
+    # Signal = 3 x control + 20, plus a 10 % transient over the last second.
+    signal = 3.0 * (100.0 + 5.0 * np.sin(signal_times)) + 20.0
+    signal[-10:] *= 1.1
+    window._trace_times[(470, 0)] = array("d", signal_times)
+    window._trace_values[(470, 0)] = array("f", signal)
+    window._trace_first_s = 0.0
+    window._trace_latest_s = float(signal_times[-1])
+    window._set_trace_horizon(None)
+
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff_fit"))
+
+    assert "control fitted" in window.trace_baseline_hint.text()
+    _, displayed = window._curves[(470, 0)].getData()
+    assert np.nanmax(np.abs(displayed[:50])) < 2.0
+    assert np.nanmedian(displayed[-10:]) > 7.0
+    _, control_dff = window._curves[(405, 0)].getData()
+    assert np.isfinite(control_dff).all()
+    assert window._build_config().display.mode == "dff_fit"

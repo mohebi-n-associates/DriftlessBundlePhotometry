@@ -92,6 +92,7 @@ from .trace_display import (
     MAX_DISPLAY_POINTS,
     compact_duration,
     downsample_min_max,
+    fitted_control_f0,
     trailing_mean,
 )
 from .warmup import WARMUP_COOLDOWN_S, LEDWarmup, format_minutes
@@ -622,6 +623,14 @@ class MainWindow(QMainWindow):
         self.trace_mode_combo = QComboBox()
         self.trace_mode_combo.addItem("Absolute", "absolute")
         self.trace_mode_combo.addItem("dF/F", "dff")
+        self.trace_mode_combo.addItem("dF/F, control fit", "dff_fit")
+        self.trace_mode_combo.setItemData(
+            2,
+            "F0 is the 410 nm (RWD) or 405 nm (Custom) control trace, fitted to each "
+            "signal by least squares over the whole recording so far. The control "
+            "itself uses the median baseline. Display only.",
+            Qt.ItemDataRole.ToolTipRole,
+        )
         self.trace_mode_combo.currentIndexChanged.connect(self._apply_trace_mode)
         trace_options.addWidget(self.trace_mode_combo)
         trace_options.addWidget(QLabel("Baseline"))
@@ -1267,7 +1276,7 @@ class MainWindow(QMainWindow):
             title = f"ROI {row + 1} - {roi.label} / {roi.animal_id}"
             plot.setTitle(title, color="#e8f7fa", size="10pt")
             plot.showGrid(x=True, y=True, alpha=0.22)
-            if display_mode == "dff":
+            if display_mode in _DFF_MODES:
                 plot.setLabel("left", "dF/F", units="%")
             else:
                 plot.setLabel("left", "Fluorescence", units="counts")
@@ -2827,9 +2836,15 @@ class MainWindow(QMainWindow):
             curve.setVisible(self.trace_wavelength_checks[wavelength].isChecked())
 
     def _apply_trace_mode(self, *_args: object) -> None:
-        is_dff = self.trace_mode_combo.currentData() == "dff"
+        mode = self.trace_mode_combo.currentData()
+        is_dff = mode in _DFF_MODES
         self.trace_baseline_spin.setEnabled(is_dff)
         self.trace_baseline_hint.setEnabled(is_dff)
+        self.trace_baseline_hint.setText(
+            "F0: control fitted to each signal; control: median"
+            if mode == "dff_fit"
+            else "median F0 per ROI and wavelength"
+        )
         for plot in self.trace_plots.values():
             if is_dff:
                 plot.setLabel("left", "dF/F", units="%")
@@ -2901,7 +2916,18 @@ class MainWindow(QMainWindow):
                 values = smoothed[first_index - smoothing_start :]
             else:
                 values = all_values[first_index:stop_index]
-            if self.trace_mode_combo.currentData() == "dff":
+            mode = self.trace_mode_combo.currentData()
+            control = self._trace_control_wavelength()
+            fitted_f0 = None
+            if mode == "dff_fit" and control is not None and wavelength != control:
+                fitted_f0 = self._fitted_f0(control, index, times, all_values, selected_times)
+                if fitted_f0 is None:
+                    values = np.full(len(values), np.nan, dtype=np.float64)
+                else:
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        values = (values.astype(np.float64) - fitted_f0) / fitted_f0 * 100.0
+                    values[~np.isfinite(values)] = np.nan
+            elif mode in _DFF_MODES:
                 baseline_stop_s = times[0] + self.trace_baseline_spin.value()
                 baseline_stop = max(1, int(np.searchsorted(times, baseline_stop_s, side="right")))
                 baseline_values = (
@@ -2931,6 +2957,34 @@ class MainWindow(QMainWindow):
                 connect="finite",
             )
         self._set_all_trace_x_ranges(start_s, stop_s)
+
+    def _trace_control_wavelength(self) -> int | None:
+        """The isosbestic control being displayed: 410 nm on RWD, 405 nm on Custom."""
+
+        for control in (int(Wavelength.CONTROL_410), int(Wavelength.CONTROL_405)):
+            if control in self._active_trace_wavelengths:
+                return control
+        return None
+
+    def _fitted_f0(
+        self,
+        control: int,
+        index: int,
+        times: np.ndarray,
+        values: np.ndarray,
+        at_times: np.ndarray,
+    ) -> np.ndarray | None:
+        key = (control, index)
+        control_times = self._trace_times.get(key)
+        if not control_times:
+            return None
+        return fitted_control_f0(
+            times,
+            values,
+            np.frombuffer(control_times, dtype=np.float64),
+            np.frombuffer(self._trace_values[key], dtype=np.float32),
+            at_times,
+        )
 
     def _refresh_all_trace_curves(self) -> None:
         for wavelength in self._active_trace_wavelengths:
@@ -3211,3 +3265,5 @@ def _ttl_edge_combo() -> QComboBox:
 _MARKER_ROWS = 4
 """Marker rows shown in setup; settings files may define markers for keys up to 9."""
 _TTL_EVENT_ROWS = 4
+
+_DFF_MODES = frozenset({"dff", "dff_fit"})

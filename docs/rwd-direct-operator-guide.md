@@ -140,6 +140,12 @@ Choose when the recording starts and stops in the *Recording* group:
 
 None of these choices needs a new preview.
 
+While recording, the trace display's **Y axis** can show *Absolute* counts, *dF/F*
+against a median baseline, or *dF/F, control fit*. The control fit takes each 470 and
+560 nm trace's F0 from the 410 nm trace, fitted to it by least squares over the
+recording so far, which removes shared artifacts such as bleaching and motion. The
+410 nm trace itself shows its median-baseline dF/F. All three change only the display.
+
 Press **Record**. DBF connects, sends the settings, starts the LED sequence, and
 records until the stop condition or **Stop**. It then saves and validates one NWB
 file per ROI. Connecting and opening the cameras takes about 7 seconds. The NWB

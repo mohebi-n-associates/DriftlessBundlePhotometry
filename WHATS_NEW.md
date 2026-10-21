@@ -122,6 +122,10 @@ version, move its completed entries into a dated version section.
     simulation.
   - **Records:** `excitation_paused` and `excitation_resumed` events mark the windows.
     The gaps are intentional, so they are not marked invalid.
+- The live traces have a third Y axis mode, **dF/F, control fit**. Each signal's F0
+  is the isosbestic control (410 nm on RWD, 405 nm on Custom) fitted to that signal
+  by least squares over the recording so far. It changes only the display, and the
+  settings keep it.
 - RWD recordings end with a camera-diagnostics event: frames delivered, incomplete
   frames, and frames lost to a full host queue.
 
