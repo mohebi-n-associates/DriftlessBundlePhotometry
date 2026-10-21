@@ -256,6 +256,8 @@ class MainWindow(QMainWindow):
         auto_check_devices: bool = False,
         clock: Callable[[], float] = time.monotonic,
         output_tester: Callable[[SessionConfig, int], str] | None = None,
+        power_meter_factory: Callable[[], object] | None = None,
+        power_measurer: Callable[[SessionConfig, object], tuple] | None = None,
     ) -> None:
         super().__init__()
         self._rig_factory = rig_factory
@@ -264,6 +266,17 @@ class MainWindow(QMainWindow):
 
             output_tester = drive_rwd_output_test
         self._output_tester = output_tester
+        if power_meter_factory is None:
+            from driftless_photometry.hardware.power_meter import ThorlabsPowerMeter
+
+            power_meter_factory = ThorlabsPowerMeter
+        if power_measurer is None:
+            from driftless_photometry.hardware.rwd_devices import measure_rwd_led_power
+
+            power_measurer = measure_rwd_led_power
+        self._power_meter_factory = power_meter_factory
+        self._power_measurer = power_measurer
+        self.last_power_readings: tuple = ()
         self.last_output_test: str | None = None
         self._rwd_output_programs = {
             port: RWDTTLOutputConfig(port=port, frequency_hz=10.0, pulse_width_ms=10)
@@ -793,6 +806,20 @@ class MainWindow(QMainWindow):
         )
         self.check_devices_button.clicked.connect(self.start_device_check)
         layout.addWidget(self.check_devices_button)
+        power_title = QLabel("LED POWER")
+        power_title.setObjectName("eyebrow")
+        layout.addWidget(power_title)
+        self.measure_power_button = QPushButton("Measure power")
+        self.measure_power_button.setToolTip(
+            "Light each enabled LED alone at its set power and read a Thorlabs PM100 or "
+            "PM400 meter; point the fiber at the meter's sensor first"
+        )
+        self.measure_power_button.clicked.connect(self.start_power_measurement)
+        layout.addWidget(self.measure_power_button)
+        self.power_label = QLabel("Not measured yet")
+        self.power_label.setObjectName("hint")
+        self.power_label.setWordWrap(True)
+        layout.addWidget(self.power_label)
         warmup_title = QLabel("LED WARM-UP")
         warmup_title.setObjectName("eyebrow")
         layout.addWidget(warmup_title)
@@ -1061,6 +1088,74 @@ class MainWindow(QMainWindow):
         self._set_busy_controls(False)
         self.statusBar().showMessage(f"Testing TTL output {port}…")
         thread.start()
+
+    def start_power_measurement(self) -> None:
+        if self._thread is not None or self._device_thread is not None:
+            return
+        try:
+            config = self._build_config()
+        except Exception as error:
+            QMessageBox.critical(self, "Invalid configuration", str(error))
+            return
+        if not isinstance(config.source, RWDSourceConfig):
+            return
+        leds = ", ".join(f"{int(channel.wavelength_nm)} nm" for channel in config.enabled_channels)
+        answer = QMessageBox.question(
+            self,
+            "Measure LED power",
+            f"DBF will light {leds} one at a time, for about 2 s each, at their set power, "
+            "and read the power meter.\n\nPoint the fiber tip at the meter's sensor. No "
+            "animal may be connected, and nobody may look into the fiber.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        def measure() -> tuple:
+            meter = self._power_meter_factory()
+            try:
+                return self._power_measurer(config, meter)
+            finally:
+                meter.close()
+
+        thread = QThread(self)
+        worker = BoardTaskWorker(measure)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_power_measured)
+        worker.failed.connect(self._on_power_measurement_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_device_thread_finished)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._device_thread = thread
+        self._device_worker = worker
+        self._set_busy_controls(False)
+        self._warmup.leds_on()
+        self.power_label.setText("Measuring…")
+        self.statusBar().showMessage("Measuring LED power - the LEDs light one at a time")
+        thread.start()
+
+    def _on_power_measured(self, readings: tuple) -> None:
+        self._warmup.leds_off()
+        self.last_power_readings = readings
+        self.power_label.setText(
+            "\n".join(
+                f"{reading.wavelength_nm} nm at {reading.set_percent:g} %: "
+                f"{reading.power_mw:.3f} mW (± {reading.spread_mw:.3f})"
+                for reading in readings
+            )
+            + "\nContinuous power at the fiber tip; interleaved recordings average less."
+        )
+        self.statusBar().showMessage("LED power measured; every LED is off again")
+
+    def _on_power_measurement_failed(self, traceback_text: str) -> None:
+        self._warmup.leds_off()
+        self.power_label.setText("Measurement failed")
+        if not self._close_pending:
+            QMessageBox.critical(self, "Power measurement failed", traceback_text)
 
     def _on_output_tested(self, summary: str) -> None:
         self.last_output_test = summary
@@ -3357,6 +3452,8 @@ class MainWindow(QMainWindow):
         checking = getattr(self, "_device_thread", None) is not None
         for button in getattr(self, "rwd_output_test_buttons", {}).values():
             button.setEnabled(not busy and not checking)
+        if hasattr(self, "measure_power_button"):
+            self.measure_power_button.setEnabled(not busy and not checking)
         if hasattr(self, "check_devices_button"):
             self.check_devices_button.setEnabled(not busy and not checking)
         busy = busy or checking

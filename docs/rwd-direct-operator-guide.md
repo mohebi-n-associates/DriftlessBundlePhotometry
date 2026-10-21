@@ -37,6 +37,9 @@ cable is unplugged.
 4. **Optional:** in Device Manager, open the controller's USB Serial Port, then
    Port Settings → Advanced, and set the Latency Timer to 1 ms. The default is 16 ms.
    This should tighten how precisely TTL edges are placed against the exposures.
+5. **Optional, for Measure power:** a Thorlabs PM100 or PM400 meter needs a VISA
+   runtime, such as NI-VISA or Thorlabs' Optical Power Monitor driver, and
+   `python -m pip install "driftless-bundle-photometry[power-meter]"`.
 
 Start DBF after installing Vimba X, from a new window or the installed shortcut, so it
 can find the camera drivers. OFRS and its licence dongle are not needed. Close OFRS
@@ -125,6 +128,18 @@ camera.
    its own NWB file.
 6. Run **Preview**. Any change to the settings or circles needs a new preview before
    **Record** is enabled.
+
+## Measure LED power
+
+With a Thorlabs PM100 or PM400 connected, point the fiber tip at the meter's sensor
+and press **Measure power** in the RWD panel. No animal may be connected, and nobody
+may look into the fiber. After you confirm, DBF lights each enabled LED alone, on
+continuously at its set power, for about 2 s. It sets the meter's wavelength
+correction to that LED, averages 10 readings, and switches the LED off. The panel lists
+each LED's power in mW. In an interleaved recording each LED is lit only during its
+own exposures, so its average power is lower. Close Thorlabs' Optical Power Monitor
+first, because it holds the meter open. This has not yet been run with a physical
+meter.
 
 ## Record
 

@@ -1056,3 +1056,38 @@ def test_gui_dff_control_fit_takes_f0_from_the_fitted_control(qtbot, tmp_path: P
     _, control_dff = window._curves[(405, 0)].getData()
     assert np.isfinite(control_dff).all()
     assert window._build_config().display.mode == "dff_fit"
+
+
+def test_gui_measures_led_power_after_asking(qtbot, tmp_path: Path, monkeypatch) -> None:
+    from driftless_photometry.hardware.rwd_devices import LEDPowerReading
+
+    events = []
+
+    class Meter:
+        def close(self):
+            events.append("closed")
+
+    def measurer(config, meter):
+        events.append([int(c.wavelength_nm) for c in config.enabled_channels])
+        return (LEDPowerReading(470, 5.0, 0.123, 0.001, 10),)
+
+    answers = iter([QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes])
+    monkeypatch.setattr(QMessageBox, "question", lambda *args: next(answers))
+    window = MainWindow(
+        output_directory=tmp_path,
+        default_fibers=1,
+        power_meter_factory=Meter,
+        power_measurer=measurer,
+    )
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+
+    window.start_power_measurement()  # "No"
+    assert window._device_thread is None and not events
+    window.start_power_measurement()
+    qtbot.waitUntil(lambda: window._device_thread is None, timeout=5_000)
+
+    assert events == [[410, 470, 560], "closed"]
+    assert "470 nm at 5 %: 0.123 mW" in window.power_label.text()
+    assert window.last_power_readings[0].power_mw == 0.123
+    assert window._warmup.warm_s() >= 0 and not window._warmup.leds_are_on
