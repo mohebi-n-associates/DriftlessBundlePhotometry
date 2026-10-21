@@ -11,8 +11,9 @@ from driftless_photometry.acquisition import (
     preview_duration_s,
     run_live_view,
     run_preview,
+    spool_chunk_size_for,
 )
-from driftless_photometry.config import demo_config
+from driftless_photometry.config import SessionConfig, demo_config
 from driftless_photometry.diagnostics import FinalizationStage
 from driftless_photometry.domain import InvalidTimeInterval, SystemEvent, TTLEdge
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
@@ -471,3 +472,12 @@ def test_live_view_stops_when_its_source_is_stopped(tmp_path: Path) -> None:
 
     assert count == 1
     assert len(shown) == 1
+
+
+@pytest.mark.parametrize(("fps", "chunk"), [(20.0, 16), (64.0, 16), (120.0, 30), (250.0, 62)])
+def test_spool_chunks_hold_about_a_quarter_second(tmp_path: Path, fps, chunk) -> None:
+    payload = demo_config(tmp_path, fiber_count=1).model_dump()
+    payload["camera"]["requested_fps"] = fps
+    config = SessionConfig.model_validate(payload)
+
+    assert spool_chunk_size_for(config) == chunk

@@ -68,6 +68,17 @@ class PreviewResult:
     maximum_saturation_fraction: float
 
 
+def spool_chunk_size_for(config: SessionConfig) -> int:
+    """Frames per spool commit: at least 16, and about a quarter second at high rates.
+
+    Each commit costs about three fsyncs, so fixed 16-frame chunks commit 7.5 times per
+    second at 120 frames/s; quarter-second chunks keep the rate near 4/s at any speed
+    while a crash loses at most the uncommitted quarter second.
+    """
+
+    return max(16, round(config.camera.requested_fps / 4))
+
+
 LIVE_VIEW_LIMIT_S = 600.0
 """Live view stops by itself after this long, so the LEDs are never left running."""
 
@@ -265,7 +276,7 @@ FinalizationCallback = Callable[[FinalizationProgress], None]
 class AcquisitionEngine:
     """Coordinate matched frames, extraction, spool, and NWB finalization."""
 
-    def __init__(self, *, spool_chunk_size: int = 16, spool_queue_size: int = 64) -> None:
+    def __init__(self, *, spool_chunk_size: int | None = None, spool_queue_size: int = 64) -> None:
         self._state = AcquisitionStateMachine()
         self._spool_chunk_size = spool_chunk_size
         self._spool_queue_size = spool_queue_size
@@ -317,7 +328,7 @@ class AcquisitionEngine:
             self._transition(AcquisitionState.ARMED, on_state)
             spool = SessionSpool(
                 config,
-                chunk_size=self._spool_chunk_size,
+                chunk_size=self._spool_chunk_size or spool_chunk_size_for(config),
                 queue_size=self._spool_queue_size,
                 runtime_provenance=capture_runtime_provenance(
                     adapter_name=str(

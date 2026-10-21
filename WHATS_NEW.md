@@ -84,6 +84,17 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- Recovery spools moved to schema v4. Committed chunks are listed in an append-only
+  index, so each commit costs the same however long the recording runs. Under the
+  old manifest list a 120 frames/s recording fell behind after about 20 minutes.
+  Chunks hold about a quarter second of frames at high rates. An interrupted spool now
+  recovers even when its event logs end with lines written after its last manifest
+  update. Spools from schemas 1–3 still load.
+- RWD timing at high frame rates:
+  - the board's 120 Hz period (8.333 ms) is modelled correctly;
+  - the trigger-period check is tighter;
+  - the restart start-delay check is skipped above 50 Hz, where host timing scatter
+    made it fire falsely.
 - RWD timing and robustness fixes from DBF's own runs on an R821:
   - Exposures at frame rates that do not divide 100 000 µs (for example 15 or 30 Hz)
     are now timed on the board's real trigger period, 1/fps truncated to 10 µs.

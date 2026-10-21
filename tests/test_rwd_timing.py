@@ -286,7 +286,8 @@ def test_brightness_check_stays_quiet_when_it_cannot_tell(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    ("fps", "period_ms"), [(10, 100.0), (15, 66.66), (20, 50.0), (30, 33.33), (250, 4.0)]
+    ("fps", "period_ms"),
+    [(10, 100.0), (15, 66.66), (20, 50.0), (30, 33.33), (120, 8.333), (250, 4.0)],
 )
 def test_plan_uses_the_boards_measured_trigger_period(tmp_path: Path, fps, period_ms) -> None:
     plan = RWDExcitationPlan.from_config(

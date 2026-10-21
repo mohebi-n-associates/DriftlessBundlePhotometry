@@ -406,3 +406,25 @@ def test_rwd_rig_times_non_divisor_rates_on_the_boards_period(tmp_path: Path) ->
     times = [frame.exposure.timestamp_s for frame in frames]
     np.testing.assert_allclose(np.diff(times), 0.03333, atol=1e-12)
     assert len(frames) == 61
+
+
+def test_rwd_rig_does_not_restart_on_host_scatter_at_120_hz(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, requested_fps=120.0, exposure_us=5000))
+
+    def setup(cams):
+        cams.missed.add(("2", 0, 50))  # forces run 1
+        # Run 1's first frames arrive 6 ms late: more than half a 8.3 ms period.
+        cams.late[("1", 1, 0)] = 0.006
+        cams.late[("1", 1, 1)] = 0.006
+        cams.late[("2", 1, 2)] = 0.006
+
+    bench.pending_setup = setup
+
+    packets = bench.run(2.0)
+
+    restarts = [e for e in events_of(packets) if e.event == "rwd_sequencer_restart"]
+    assert len(restarts) == 1
+    assert "missed exposure" in restarts[0].detail
+    np.testing.assert_allclose(
+        np.diff([f.exposure.timestamp_s for f in frames_of(packets)[:40]]), 0.008333, atol=1e-9
+    )

@@ -86,6 +86,9 @@ class RWDRigTiming:
     """Consecutive restarts allowed without one attributed frame."""
     start_delay_tolerance_fraction: float = 0.5
     """Allowed change, in trigger periods, of the enable-to-first-frame delay."""
+    start_delay_check_min_period_s: float = 0.02
+    """Below this period (above 50 Hz) host arrival scatter rivals half a period, so the
+    start-delay check is skipped; at 120 Hz it fired falsely 6 times in 2.5 h (bench)."""
 
 
 @dataclass(slots=True)
@@ -461,7 +464,7 @@ class _RWDSession:
                     f"enable command to first frame {delay * 1e3:.2f} ms, including one "
                     "exposure and the camera readout",
                 )
-            else:
+            elif self._period_s >= self._timing.start_delay_check_min_period_s:
                 change = delay - self._baseline_start_delay_s
                 limit = self._timing.start_delay_tolerance_fraction * self._period_s
                 if abs(change) > limit:

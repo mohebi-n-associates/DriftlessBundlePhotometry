@@ -124,7 +124,7 @@ def test_rwd_spool_round_trips_camera_and_provenance_columns(tmp_path: Path) -> 
     (spool_path,) = tmp_path.glob("*.photometry-spool")
     loaded = load_session_spool(spool_path)
     data = loaded.data
-    assert loaded.schema_version == 3
+    assert loaded.schema_version == 4
     assert data.frame_camera_indices == [1, 1, 2] * 2
     assert data.frame_wavelength_sources == ["phase_derived"] * 6
     assert data.frame_commanded_power_percent == [5.0, 12.5, 5.0] * 2
