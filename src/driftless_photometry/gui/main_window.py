@@ -141,6 +141,8 @@ _RWD_SAFETY_WARNING = (
     "into it."
 )
 _RWD_AUTO_PORT = "Auto: the only FTDI port"
+_MAX_GAIN_DB = 48.0
+"""Gain range of the Alvium 1800 U-040m and the Thorlabs CS505MU."""
 
 
 class SummaryCard(QWidget):
@@ -241,7 +243,8 @@ class MainWindow(QMainWindow):
         self._progress_duration_s = default_duration_s
         self._roi_items: list[pg.CircleROI] = []
         self._roi_items_cam2: list[pg.CircleROI] = []
-        self._calibration_camera = 1
+        self._restart_live_view = False
+        self._camera_controls_ready = False
         self._camera_frame_counts: dict[int, int] = {}
         self._last_camera_images: dict[int, np.ndarray] = {}
         self._curves: dict[tuple[int, int], pg.PlotDataItem] = {}
@@ -257,6 +260,8 @@ class MainWindow(QMainWindow):
         self._trace_latest_s: float | None = None
         self._last_trace_render_s: dict[int, float] = {}
         self._image_item = pg.ImageItem()
+        self._image_item_cam2 = pg.ImageItem()
+        self._calibration_images = {1: self._image_item, 2: self._image_item_cam2}
         self._image_display_maximum = (1 << 12) - 1
         self.last_result: AcquisitionRunResult | None = None
         self.last_preview: PreviewResult | None = None
@@ -298,6 +303,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Ready — simulator mode; no physical camera or controller connected"
         )
+        self._configure_camera_controls(CUSTOM_PROFILE)
+        self._load_camera_controls(self._session_template.camera)
+        self._camera_controls_ready = True
         self._rebuild_roi_items()
         self._load_default_settings_at_startup()
         self._apply_source_mode()
@@ -870,7 +878,10 @@ class MainWindow(QMainWindow):
         return self._channel_readouts[self._active_profile.kind]
 
     def _use_profile_camera(self, profile: SystemProfile) -> None:
-        camera = self._session_template.camera
+        # Keep the edited values before the new system's ranges can clamp them.
+        camera = self._camera_from_controls()
+        self._session_template = self._session_template.model_copy(update={"camera": camera})
+        self._configure_camera_controls(profile)
         if profile.sensor_size_px is not None:
             if (camera.width_px, camera.height_px) == profile.sensor_size_px:
                 return
@@ -888,11 +899,119 @@ class MainWindow(QMainWindow):
             and roi.radius_px <= roi.center_y_px <= replacement.height_px - roi.radius_px
             for roi in rois
         )
+        self._load_camera_controls(replacement)
         if rois and fits:
             self._set_roi_items(rois, replacement)
         elif rois:
             # Circles from the other sensor do not fit; lay fibers out again for this one.
             self._rebuild_roi_items()
+
+    def _build_camera_settings_group(self) -> QGroupBox:
+        group = QGroupBox("Camera settings")
+        self.camera_settings_group = group
+        form = QFormLayout(group)
+        self.fps_spin = QSpinBox()
+        self.fps_spin.setSuffix(" Hz")
+        self.fps_spin.setToolTip("Total trigger rate, shared by the enabled LEDs")
+        self.exposure_spin = QDoubleSpinBox()
+        self.exposure_spin.setDecimals(2)
+        self.exposure_spin.setSingleStep(0.5)
+        self.exposure_spin.setSuffix(" ms")
+        self.exposure_max_button = QPushButton("Max")
+        self.exposure_max_button.setToolTip("Use the longest exposure this frame rate allows")
+        self.exposure_max_button.clicked.connect(
+            lambda: self.exposure_spin.setValue(self.exposure_spin.maximum())
+        )
+        exposure_row = QWidget()
+        exposure_layout = QHBoxLayout(exposure_row)
+        exposure_layout.setContentsMargins(0, 0, 0, 0)
+        exposure_layout.addWidget(self.exposure_spin, stretch=1)
+        exposure_layout.addWidget(self.exposure_max_button)
+        self.gain_spin = QDoubleSpinBox()
+        self.gain_spin.setRange(0.0, _MAX_GAIN_DB)
+        self.gain_spin.setDecimals(1)
+        self.gain_spin.setSingleStep(1.0)
+        self.gain_spin.setSuffix(" dB")
+        self.gain_spin.setToolTip(
+            "Camera gain. Raise it to find and focus the fiber face; record at 0 dB, "
+            "since gain does not improve the signal-to-noise ratio."
+        )
+        form.addRow("Frame rate", self.fps_spin)
+        form.addRow("Exposure", exposure_row)
+        form.addRow("Gain", self.gain_spin)
+        self.camera_settings_hint = QLabel()
+        self.camera_settings_hint.setObjectName("hint")
+        self.camera_settings_hint.setWordWrap(True)
+        form.addRow(self.camera_settings_hint)
+        self.fps_spin.valueChanged.connect(self._on_camera_timing_changed)
+        self.exposure_spin.valueChanged.connect(self._on_camera_timing_changed)
+        self.gain_spin.valueChanged.connect(self._on_gain_changed)
+        return group
+
+    def _configure_camera_controls(self, profile: SystemProfile) -> None:
+        if not hasattr(self, "fps_spin"):
+            return
+        blockers = [QSignalBlocker(w) for w in (self.fps_spin, self.exposure_spin)]
+        low, high = profile.frame_rate_range_hz or (1.0, 500.0)
+        self.fps_spin.setRange(int(low), int(high))
+        minimum_us = profile.minimum_exposure_us or 10.0
+        self.exposure_spin.setMinimum(minimum_us / 1000)
+        del blockers
+        self._update_exposure_limits()
+
+    def _load_camera_controls(self, camera: CameraConfig) -> None:
+        if not hasattr(self, "fps_spin"):
+            return
+        blockers = [QSignalBlocker(w) for w in (self.fps_spin, self.exposure_spin, self.gain_spin)]
+        self.fps_spin.setValue(round(camera.requested_fps))
+        self._update_exposure_limits()
+        self.exposure_spin.setValue(camera.exposure_us / 1000)
+        self.gain_spin.setValue(camera.gain)
+        del blockers
+        self._update_exposure_limits()
+
+    def _update_exposure_limits(self) -> None:
+        profile = self._active_profile
+        fps = self.fps_spin.value()
+        ceiling_us = profile.maximum_exposure_us(fps)
+        maximum_ms = 1000.0 if ceiling_us is None else ceiling_us / 1000
+        self.exposure_spin.setMaximum(maximum_ms)
+        if ceiling_us is None:
+            text = f"One frame every {1000 / fps:.2f} ms."
+        else:
+            text = (
+                f"At {fps} Hz the exposure can be {self.exposure_spin.minimum():g} to "
+                f"{maximum_ms:.2f} ms; the RWD manual recommends the maximum."
+            )
+        self.camera_settings_hint.setText(
+            text + " Raise the gain to find and focus the fiber face, then record at 0 dB."
+        )
+
+    def _camera_from_controls(self) -> CameraConfig:
+        camera = self._session_template.camera
+        update: dict[str, object] = {}
+        if hasattr(self, "raw_checkbox"):
+            update["raw_capture"] = self.raw_checkbox.isChecked()
+        if self._camera_controls_ready:
+            update.update(
+                requested_fps=float(self.fps_spin.value()),
+                exposure_us=max(1, round(self.exposure_spin.value() * 1000)),
+                gain=float(self.gain_spin.value()),
+            )
+        return camera.model_copy(update=update)
+
+    def _on_camera_timing_changed(self, *_args: object) -> None:
+        self._update_exposure_limits()
+        self._invalidate_preview()
+        if self._operation_kind == "live" and self._worker is not None:
+            # The board and cameras take timing only at the start of a session.
+            self._restart_live_view = True
+            self.stop_recording()
+
+    def _on_gain_changed(self, value: float) -> None:
+        self._invalidate_preview()
+        if self._operation_kind == "live" and isinstance(self._worker, LiveViewWorker):
+            self._worker.request_gain(value)
 
     def _is_rwd_mode(self) -> bool:
         return hasattr(self, "source_combo") and self.source_combo.currentData() == "rwd"
@@ -909,9 +1028,11 @@ class MainWindow(QMainWindow):
             image_group.setVisible(wavelength in profile.wavelengths)
         self._use_profile_camera(profile)
         self._sync_camera2_items()
-        self.calibration_camera_combo.setVisible(profile.camera_count > 1)
-        if profile.camera_count < 2:
-            self.calibration_camera_combo.setCurrentIndex(0)
+        two_cameras = profile.camera_count > 1
+        self.calibration_panel_cam2.setVisible(two_cameras)
+        self.calibration_panel_titles[1].setText(
+            "CAMERA 1 — 410/470 NM" if two_cameras else "CAMERA"
+        )
         self._active_trace_wavelengths = tuple(int(w) for w in profile.wavelengths)
         for wavelength_nm, check in self.trace_wavelength_checks.items():
             check.setVisible(wavelength_nm in self._active_trace_wavelengths)
@@ -1031,9 +1152,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
+        left = QWidget()
+        left.setMinimumWidth(390)
+        left.setMaximumWidth(470)
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.addWidget(self._build_camera_settings_group())
         fibers_group = QGroupBox("Fiber array")
-        fibers_group.setMinimumWidth(390)
-        fibers_group.setMaximumWidth(470)
+        left_layout.addWidget(fibers_group, stretch=1)
         fibers_layout = QVBoxLayout(fibers_group)
         fibers_form = QFormLayout()
         self.fiber_count_spin = QSpinBox()
@@ -1063,45 +1189,57 @@ class MainWindow(QMainWindow):
         self.roi_summary.setWordWrap(True)
         fibers_layout.addWidget(self.roi_summary)
         fibers_layout.addStretch(1)
-        layout.addWidget(fibers_group)
+        layout.addWidget(left)
 
         camera_group = QGroupBox("Camera calibration — full frame")
         self.camera_calibration_group = camera_group
         camera_layout = QVBoxLayout(camera_group)
-        self.calibration_camera_combo = QComboBox()
-        self.calibration_camera_combo.addItem("Camera 1 — 410/470 nm", 1)
-        self.calibration_camera_combo.addItem("Camera 2 — 560 nm", 2)
-        self.calibration_camera_combo.setToolTip(
-            "RWD images 560 nm on its second camera; place each fiber's circle on both"
-        )
-        self.calibration_camera_combo.currentIndexChanged.connect(self._show_calibration_camera)
-        self.calibration_camera_combo.setVisible(False)
         camera_row = QHBoxLayout()
-        camera_row.addWidget(self.calibration_camera_combo, stretch=1)
         self.auto_contrast_check = QCheckBox("Auto contrast")
         self.auto_contrast_check.setChecked(True)
         self.auto_contrast_check.setToolTip(
             "Stretch the display between the image's dim and bright pixels. Display only: "
             "recorded frames and NWB reference images keep their fixed scaling."
         )
-        self.auto_contrast_check.toggled.connect(self._show_calibration_camera)
-        camera_row.addWidget(self.auto_contrast_check)
-        camera_layout.addLayout(camera_row)
+        self.auto_contrast_check.toggled.connect(self._refresh_calibration_images)
         self.live_view_hint = QLabel(
             "Press Live view to stream the cameras while you focus and place each fiber's "
-            "circle; on RWD, place the dashed circles with Camera 2 selected."
+            "circle. On RWD, the solid circles are on camera 1 and the dashed circles on "
+            "camera 2."
         )
         self.live_view_hint.setObjectName("hint")
         self.live_view_hint.setWordWrap(True)
-        camera_layout.addWidget(self.live_view_hint)
-        self.calibration_plot = pg.PlotWidget()
-        self.calibration_plot.setAspectLocked(True)
-        self.calibration_plot.invertY(True)
-        self.calibration_plot.showGrid(x=True, y=True, alpha=0.18)
-        self.calibration_plot.setLabel("bottom", "Camera x", units="px")
-        self.calibration_plot.setLabel("left", "Camera y", units="px")
-        self.calibration_plot.addItem(self._image_item)
-        camera_layout.addWidget(self.calibration_plot)
+        camera_row.addWidget(self.live_view_hint, stretch=1)
+        camera_row.addWidget(self.auto_contrast_check)
+        camera_layout.addLayout(camera_row)
+        panels = QHBoxLayout()
+        self.calibration_panel_titles: dict[int, QLabel] = {}
+        self.calibration_panels: dict[int, QWidget] = {}
+        plots: dict[int, pg.PlotWidget] = {}
+        for camera, title in ((1, "CAMERA"), (2, "CAMERA 2 — 560 NM")):
+            panel = QWidget()
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(0, 0, 0, 0)
+            heading = QLabel(title)
+            heading.setObjectName("eyebrow")
+            panel_layout.addWidget(heading)
+            plot = pg.PlotWidget()
+            plot.setAspectLocked(True)
+            plot.invertY(True)
+            plot.showGrid(x=True, y=True, alpha=0.18)
+            plot.setLabel("bottom", "Camera x", units="px")
+            plot.setLabel("left", "Camera y", units="px")
+            plot.addItem(self._calibration_images[camera])
+            panel_layout.addWidget(plot, stretch=1)
+            panels.addWidget(panel, stretch=1)
+            self.calibration_panel_titles[camera] = heading
+            self.calibration_panels[camera] = panel
+            plots[camera] = plot
+        self.calibration_plot = plots[1]
+        self.calibration_plot_cam2 = plots[2]
+        self.calibration_panel_cam2 = self.calibration_panels[2]
+        self.calibration_panel_cam2.setVisible(False)
+        camera_layout.addLayout(panels, stretch=1)
         layout.addWidget(camera_group, stretch=1)
         self._settings_widgets.append(fibers_group)
         self._rebuild_roi_metadata(fiber_count)
@@ -1402,6 +1540,8 @@ class MainWindow(QMainWindow):
             self._custom_camera = config.camera
         if isinstance(config.source, RWDSourceConfig):
             self._apply_rwd_source(config.source)
+        self._configure_camera_controls(profile)
+        self._load_camera_controls(config.camera)
         checks, sliders, _group = self._channel_controls[profile.kind]
         scale = self._intensity_scale(profile)
         configured_channels = {channel.wavelength_nm: channel for channel in config.channels}
@@ -1521,17 +1661,21 @@ class MainWindow(QMainWindow):
         rois: tuple[ROIConfig, ...],
         camera: CameraConfig,
     ) -> None:
-        for item in (*self._roi_items, *self._roi_items_cam2):
+        for item in self._roi_items:
             self.calibration_plot.removeItem(item)
+        for item in self._roi_items_cam2:
+            self.calibration_plot_cam2.removeItem(item)
         self._roi_items.clear()
         self._roi_items_cam2.clear()
+        self._last_camera_images.clear()
         self._configure_trace_plots(tuple(roi for roi in rois if roi.enabled))
         blank = np.zeros((camera.height_px, camera.width_px), dtype=np.uint16)
-        self._image_item.setImage(
-            blank,
-            autoLevels=False,
-            levels=(0, (1 << camera.bit_depth) - 1),
-        )
+        for image_item in self._calibration_images.values():
+            image_item.setImage(
+                blank,
+                autoLevels=False,
+                levels=(0, (1 << camera.bit_depth) - 1),
+            )
         for index, roi in enumerate(rois):
             circle = pg.CircleROI(
                 [roi.center_x_px - roi.radius_px, roi.center_y_px - roi.radius_px],
@@ -1547,11 +1691,11 @@ class MainWindow(QMainWindow):
             circle.sigRegionChangeFinished.connect(self._on_roi_geometry_changed)
             self.calibration_plot.addItem(circle)
             self._roi_items.append(circle)
-        self.calibration_plot.setXRange(0, camera.width_px, padding=0.02)
-        self.calibration_plot.setYRange(0, camera.height_px, padding=0.02)
+        for plot in (self.calibration_plot, self.calibration_plot_cam2):
+            plot.setXRange(0, camera.width_px, padding=0.02)
+            plot.setYRange(0, camera.height_px, padding=0.02)
         if self._active_profile.camera_count > 1:
             self._add_camera2_items(rois)
-        self._show_calibration_camera()
         self._update_roi_summary()
 
     def _add_camera2_items(self, rois: tuple[ROIConfig, ...]) -> None:
@@ -1574,7 +1718,7 @@ class MainWindow(QMainWindow):
             circle.setZValue(10)
             circle.setOpacity(1.0 if roi.enabled else 0.25)
             circle.sigRegionChangeFinished.connect(self._on_roi_geometry_changed)
-            self.calibration_plot.addItem(circle)
+            self.calibration_plot_cam2.addItem(circle)
             self._roi_items_cam2.append(circle)
 
     def _sync_camera2_items(self) -> None:
@@ -1588,20 +1732,16 @@ class MainWindow(QMainWindow):
         rois = self._roi_configs_from_controls()
         self._set_roi_items(rois, self._session_template.camera)
 
-    def _show_calibration_camera(self, *_args: object) -> None:
-        if not hasattr(self, "calibration_camera_combo"):
-            return
-        camera = int(self.calibration_camera_combo.currentData() or 1)
-        if camera == 2 and not self._roi_items_cam2:
-            camera = 1
-        self._calibration_camera = camera
-        for item in self._roi_items:
-            item.setVisible(camera == 1)
-        for item in self._roi_items_cam2:
-            item.setVisible(camera == 2)
-        image = self._last_camera_images.get(camera)
-        if image is not None:
-            self._image_item.setImage(image, autoLevels=False, levels=self._display_levels(image))
+    def _refresh_calibration_images(self, *_args: object) -> None:
+        for camera, image_item in self._calibration_images.items():
+            image = self._last_camera_images.get(camera)
+            if image is not None:
+                image_item.setImage(image, autoLevels=False, levels=self._display_levels(image))
+
+    def _show_calibration_frame(self, camera: int, image: np.ndarray) -> None:
+        image_item = self._calibration_images.get(camera)
+        if image_item is not None:
+            image_item.setImage(image, autoLevels=False, levels=self._display_levels(image))
 
     def _display_levels(self, image: np.ndarray) -> tuple[float, float]:
         """Display levels: fixed full scale, or a robust stretch when auto contrast is on."""
@@ -1767,9 +1907,7 @@ class MainWindow(QMainWindow):
             recording_duration_s=self.duration_spin.value(),
             session_start_time=started,
             source=source,
-            camera=self._session_template.camera.model_copy(
-                update={"raw_capture": self.raw_checkbox.isChecked()}
-            ),
+            camera=self._camera_from_controls(),
             channels=channels,
             rois=rois,
             lab=self.lab_edit.text().strip() or None,
@@ -1942,10 +2080,7 @@ class MainWindow(QMainWindow):
         self.wavelength_frame_labels[frame.wavelength_nm].setText(
             f"Live · camera {frame.camera_index} · {frame.timestamp_s:.1f} s"
         )
-        if frame.camera_index == self._calibration_camera:
-            self._image_item.setImage(
-                frame.image, autoLevels=False, levels=self._display_levels(frame.image)
-            )
+        self._show_calibration_frame(frame.camera_index, frame.image)
         self.frame_counter.setText(f"{frame.frame_count:,} live frames")
         self.live_status.setText(
             f"Live view - camera {frame.camera_index}, {int(frame.wavelength_nm)} nm"
@@ -2241,14 +2376,8 @@ class MainWindow(QMainWindow):
         camera_count = self._camera_frame_counts.get(progress.camera_index, 0) + 1
         self._camera_frame_counts[progress.camera_index] = camera_count
         self._last_camera_images[progress.camera_index] = progress.image
-        if progress.camera_index == self._calibration_camera and (
-            camera_count == 1 or camera_count % 5 == 0
-        ):
-            self._image_item.setImage(
-                progress.image,
-                autoLevels=False,
-                levels=self._display_levels(progress.image),
-            )
+        if camera_count == 1 or camera_count % 5 == 0:
+            self._show_calibration_frame(progress.camera_index, progress.image)
         fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
         operation = "Preview" if self._operation_kind == "preview" else "Recording"
         self.frame_counter.setText(f"{progress.frame_count:,} {operation.lower()} frames")
@@ -2355,6 +2484,9 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._operation_kind = None
         self._set_busy_controls(False)
+        if self._restart_live_view and not self._close_pending:
+            self._restart_live_view = False
+            QTimer.singleShot(0, self.start_live_view)
         if self._close_pending:
             self._close_pending = False
             QTimer.singleShot(0, self.close)
@@ -2363,8 +2495,9 @@ class MainWindow(QMainWindow):
         self.live_button.setEnabled(not busy)
         self.preview_button.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self._preview_signature is not None)
-        if hasattr(self, "calibration_camera_combo"):
-            self.calibration_camera_combo.setEnabled(True)
+        live = busy and self._operation_kind == "live"
+        if hasattr(self, "camera_settings_group"):
+            self.camera_settings_group.setEnabled(not busy or live)
         self.stop_button.setEnabled(busy)
         for widget in self._settings_widgets:
             widget.setEnabled(not busy)

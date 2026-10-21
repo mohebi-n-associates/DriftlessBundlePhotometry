@@ -73,6 +73,14 @@ version, move its completed entries into a dated version section.
   Stop or by itself after 10 minutes, and on RWD switches the board off afterwards.
   Camera views gain an **Auto contrast** option, on by default, which stretches only
   the display. Recorded frames and NWB reference images keep their fixed scaling.
+- *Camera & fiber ROIs* now has camera settings:
+  - frame rate, limited to the RWD board's 10–250 Hz;
+  - exposure, with **Max** for the longest the frame rate allows;
+  - camera gain in dB.
+
+  On RWD it shows camera 1 (410/470 nm) and camera 2 (560 nm) side by side. Gain
+  changes apply at once during live view. Frame-rate and exposure changes restart
+  it. The settings are saved and recorded like every other setting.
 
 ### Changed
 

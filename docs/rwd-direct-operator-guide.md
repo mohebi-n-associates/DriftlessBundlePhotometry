@@ -54,10 +54,14 @@ before starting DBF, because only one program can use the controller's port.
 1. Start DBF (`dbf --demo`) and choose **RWD** under *Acquisition system*.
 2. **Excitation:** enable the LEDs you need and set each one's power in percent. The
    board can run one LED, 410+470, 470+560, or all three; it has no 410+560 mode.
-3. **Camera:** the frame rate is the total rate shared by the enabled LEDs. It must
-   be a whole number between 10 and 250 Hz. With three LEDs at 30 Hz, each LED gets
-   10 frames per second. The exposure may be at most (1000 ÷ frame rate, rounded down)
-   ms minus 2.63 ms, and at least 0.5 ms.
+3. **Camera settings** (on *Camera & fiber ROIs*):
+   - **Frame rate:** the total rate shared by the enabled LEDs. It must be a whole
+     number between 10 and 250 Hz. With three LEDs at 30 Hz, each LED gets 10 frames
+     per second.
+   - **Exposure:** at most (1000 ÷ frame rate, rounded down) ms minus 2.63 ms, and at
+     least 0.5 ms. **Max** sets the longest exposure, which RWD recommends.
+   - **Gain:** the cameras' gain in dB (0–48). Raise it to find and focus the fiber
+     face, then record at 0 dB; gain does not improve the signal-to-noise ratio.
 4. **RWD hardware panel:**
    - **Controller port:** *Auto* works when the controller is the only FTDI device.
      Otherwise choose its COM port. Use *Refresh* after plugging it in.
@@ -77,11 +81,14 @@ camera.
 2. Keep **Auto contrast** ticked while focusing. It stretches the display between
    the image's dim and bright pixels, which matters at low LED power. It changes only
    the display, never the recorded data.
-3. With **Camera 1 — 410/470 nm** selected, drag each fiber's circle (solid outline)
-   over its fiber, and drag its handle to resize it.
-4. Select **Camera 2 — 560 nm** and place each fiber's dashed circle over the same
-   fiber on that camera. Camera 2 is mirrored to match camera 1, but the fibers will
-   not sit at exactly the same pixels.
+3. The two cameras are shown side by side. Drag each fiber's solid circle over its
+   fiber on **Camera 1 — 410/470 nm**, and drag its handle to resize it.
+4. On **Camera 2 — 560 nm**, place each fiber's dashed circle over the same fiber.
+   Camera 2 is mirrored to match camera 1, but the fibers will not sit at exactly the
+   same pixels.
+
+   During live view, gain changes take effect at once. Frame-rate or exposure changes
+   restart live view, because the controller takes them only at the start.
 5. Press **Stop**, then fill in each ROI's animal and region details. Each ROI becomes
    its own NWB file.
 6. Run **Preview**. Any change to the settings or circles needs a new preview before

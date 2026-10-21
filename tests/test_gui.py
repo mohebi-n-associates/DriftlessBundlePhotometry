@@ -191,14 +191,16 @@ def test_gui_offers_only_custom_and_rwd_systems(qtbot, tmp_path: Path) -> None:
     assert window.rwd_safety_label.isVisible()
     assert window.tabs.isTabVisible(2)
     assert not window.camera_calibration_group.isHidden()
-    assert not window.calibration_camera_combo.isHidden()
+    assert not window.calibration_panel_cam2.isHidden()
+    assert window.calibration_panel_titles[1].text() == "CAMERA 1 — 410/470 NM"
 
     window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
 
     assert not window.rwd_group.isVisible()
     assert window.preview_button.isEnabled()
     assert window.backend_badge.text() == "Simulator"
-    assert window.calibration_camera_combo.isHidden()
+    assert window.calibration_panel_cam2.isHidden()
+    assert window.calibration_panel_titles[1].text() == "CAMERA"
 
 
 def test_gui_round_trips_rwd_port_and_ttl_outputs(qtbot, tmp_path: Path) -> None:
@@ -230,10 +232,10 @@ def test_gui_places_camera2_circles_separately(qtbot, tmp_path: Path) -> None:
     assert len(window._roi_items_cam2) == 2
     before = window._build_config().rois[0]
 
-    window.calibration_camera_combo.setCurrentIndex(1)
-    assert window._calibration_camera == 2
-    assert window._roi_items_cam2[0].isVisible()
-    assert not window._roi_items[0].isVisible()
+    plot1 = window.calibration_plot.getPlotItem().items
+    plot2 = window.calibration_plot_cam2.getPlotItem().items
+    assert all(item in plot1 and item not in plot2 for item in window._roi_items)
+    assert all(item in plot2 and item not in plot1 for item in window._roi_items_cam2)
     window._roi_items_cam2[0].setPos(
         [before.center_x_px - before.radius_px + 40, before.center_y_px - before.radius_px]
     )
@@ -246,7 +248,7 @@ def test_gui_places_camera2_circles_separately(qtbot, tmp_path: Path) -> None:
 
     window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
     assert window._roi_items_cam2 == []
-    assert window._calibration_camera == 1
+    assert not window.calibration_plot_cam2.getPlotItem().items[1:]
 
 
 def test_gui_previews_and_records_rwd_hardware(qtbot, tmp_path: Path) -> None:
@@ -278,10 +280,8 @@ def test_gui_previews_and_records_rwd_hardware(qtbot, tmp_path: Path) -> None:
     benches[-1].assert_all_off()
     for wavelength in RWD_PROFILE.wavelengths:
         assert window.wavelength_frame_labels[wavelength].text().startswith("Frame ")
-    window.calibration_camera_combo.setCurrentIndex(1)
-    np.testing.assert_array_equal(window._image_item.image, window._last_camera_images[2])
-    window.calibration_camera_combo.setCurrentIndex(0)
     np.testing.assert_array_equal(window._image_item.image, window._last_camera_images[1])
+    np.testing.assert_array_equal(window._image_item_cam2.image, window._last_camera_images[2])
 
 
 def test_gui_display_smoothing_is_time_based_and_does_not_change_raw_buffer(
@@ -619,8 +619,8 @@ def test_gui_live_view_streams_both_cameras_and_stops_the_hardware(qtbot, tmp_pa
     assert "Live view stopped" in window.live_status.text()
     assert not list(tmp_path.glob("*.nwb"))
     assert not list(tmp_path.glob("*.photometry-spool"))
-    window.calibration_camera_combo.setCurrentIndex(1)
-    np.testing.assert_array_equal(window._image_item.image, window._last_camera_images[2])
+    np.testing.assert_array_equal(window._image_item_cam2.image, window._last_camera_images[2])
+    np.testing.assert_array_equal(window._image_item.image, window._last_camera_images[1])
 
 
 def test_gui_auto_contrast_is_display_only(qtbot, tmp_path: Path) -> None:
@@ -635,3 +635,67 @@ def test_gui_auto_contrast_is_display_only(qtbot, tmp_path: Path) -> None:
     window.auto_contrast_check.setChecked(False)
     assert window._display_levels(image) == (0.0, 4095.0)
     assert image.max() == 200
+
+
+def test_gui_camera_controls_follow_the_system_and_round_trip(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    custom = window._session_template.camera
+    assert window.fps_spin.value() == round(custom.requested_fps)
+    assert window.exposure_spin.value() == pytest.approx(custom.exposure_us / 1000)
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    assert (window.fps_spin.minimum(), window.fps_spin.maximum()) == (10, 250)
+    assert window.fps_spin.value() == 20
+    assert window.exposure_spin.maximum() == pytest.approx(47.37)
+    assert window.exposure_spin.minimum() == pytest.approx(0.5)
+    window.fps_spin.setValue(50)
+    assert window.exposure_spin.maximum() == pytest.approx(17.37)
+    window.exposure_max_button.click()
+    window.gain_spin.setValue(12.5)
+    assert "17.37 ms" in window.camera_settings_hint.text()
+
+    config = window._build_config()
+    assert config.camera.requested_fps == 50.0
+    assert config.camera.exposure_us == 17_370
+    assert config.camera.gain == 12.5
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+    assert window.fps_spin.value() == round(custom.requested_fps)
+    window._apply_configuration(config)
+    assert (window.fps_spin.value(), window.gain_spin.value()) == (50, 12.5)
+    assert window._build_config().camera == config.camera
+
+
+def test_gui_live_view_applies_gain_live_and_restarts_for_timing(qtbot, tmp_path: Path) -> None:
+    benches = []
+
+    def rig_factory(config):
+        bench = Bench(config)
+        benches.append(bench)
+        return bench.rig
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, rig_factory=rig_factory)
+    qtbot.addWidget(window)
+    window.show()
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    window.start_live_view()
+    qtbot.waitUntil(lambda: bool(window._last_camera_images), timeout=15_000)
+    assert window.camera_settings_group.isEnabled()
+
+    window.gain_spin.setValue(20.0)
+    qtbot.waitUntil(
+        lambda: benches[-1].cameras is not None and benches[-1].cameras.gain_db == 20.0,
+        timeout=15_000,
+    )
+    assert len(benches) == 1
+
+    window.fps_spin.setValue(25)
+    qtbot.waitUntil(lambda: len(benches) == 2 and window._thread is not None, timeout=15_000)
+    benches[0].assert_all_off()
+    qtbot.waitUntil(lambda: bool(benches[1].board.runs), timeout=15_000)
+    assert benches[1].board.runs[0].frame_rate_hz == 25
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    benches[1].assert_all_off()
+    assert window.last_error is None, window.last_error
