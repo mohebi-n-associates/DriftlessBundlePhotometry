@@ -78,6 +78,7 @@ class FakeCamera:
 
     def start_streaming(self, handler, buffer_count: int) -> None:
         self.handler = handler
+        self.buffer_count = buffer_count
 
     def stop_streaming(self) -> None:
         self.handler = None
@@ -241,3 +242,14 @@ def test_gives_up_after_the_discovery_timeout() -> None:
         _cameras(system, discovery_timeout_s=2.0, clock=lambda: now["s"], sleep=sleep).__enter__()
     assert now["s"] == pytest.approx(2.0)
     assert not red.open
+
+
+def test_streams_with_enough_buffers_for_high_frame_rates() -> None:
+    green, red = FakeCamera("1"), FakeCamera("2")
+
+    with _cameras(FakeSystem([green, red])):
+        assert green.buffer_count == red.buffer_count == 64
+    with _cameras(FakeSystem([green, red]), buffer_count=8):
+        assert green.buffer_count == 8
+    with pytest.raises(ValueError, match="two stream buffers"):
+        _cameras(FakeSystem([green, red]), buffer_count=1)

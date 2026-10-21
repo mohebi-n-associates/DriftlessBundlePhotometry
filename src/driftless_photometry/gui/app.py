@@ -29,6 +29,7 @@ def run_gui(
         default_duration_s=default_duration_s,
         default_fibers=default_fibers,
         default_raw=default_raw,
+        auto_check_devices=True,
     )
     window.show()
     return app.exec()

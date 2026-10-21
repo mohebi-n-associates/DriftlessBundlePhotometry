@@ -86,6 +86,8 @@ from .trace_display import (
 )
 from .worker import (
     AcquisitionWorker,
+    DeviceChecker,
+    DeviceCheckWorker,
     LiveViewWorker,
     PreviewWorker,
     RigFactory,
@@ -219,9 +221,22 @@ class MainWindow(QMainWindow):
         default_fibers: int = 3,
         default_raw: bool = False,
         rig_factory: RigFactory = default_rig_factory,
+        device_checker: DeviceChecker | None = None,
+        auto_check_devices: bool = False,
     ) -> None:
         super().__init__()
         self._rig_factory = rig_factory
+        if device_checker is None:
+            from driftless_photometry.hardware.rwd_devices import check_rwd_devices
+
+            device_checker = check_rwd_devices
+        self._device_checker = device_checker
+        # Only the real application checks automatically: a check talks to the board.
+        self._auto_check_devices = auto_check_devices
+        self._device_thread: QThread | None = None
+        self._device_worker: DeviceCheckWorker | None = None
+        self.last_device_report = None
+        self._devices_checked_for_mode = False
         pg.setConfigOptions(
             imageAxisOrder="row-major",
             antialias=True,
@@ -680,6 +695,27 @@ class MainWindow(QMainWindow):
         self.rwd_safety_label.setObjectName("safetyWarning")
         self.rwd_safety_label.setWordWrap(True)
         layout.addWidget(self.rwd_safety_label)
+        devices_title = QLabel("DEVICES")
+        devices_title.setObjectName("eyebrow")
+        layout.addWidget(devices_title)
+        self.device_labels: dict[str, QLabel] = {}
+        for key, name in (
+            ("controller", "Controller"),
+            ("camera1", "Camera 1 (410/470 nm)"),
+            ("camera2", "Camera 2 (560 nm)"),
+        ):
+            label = QLabel(f"• {name}: not checked yet")
+            label.setObjectName("deviceStatus")
+            label.setProperty("state", "unknown")
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            self.device_labels[key] = label
+        self.check_devices_button = QPushButton("Check devices")
+        self.check_devices_button.setToolTip(
+            "Connect to the controller and list the cameras; no LED is switched on"
+        )
+        self.check_devices_button.clicked.connect(self.start_device_check)
+        layout.addWidget(self.check_devices_button)
         form = QFormLayout()
         port_row = QWidget()
         port_layout = QHBoxLayout(port_row)
@@ -733,6 +769,70 @@ class MainWindow(QMainWindow):
         self._refresh_rwd_ports()
         self.rwd_port_combo.currentTextChanged.connect(self._invalidate_preview)
         return group
+
+    def start_device_check(self) -> None:
+        if self._device_thread is not None or self._thread is not None:
+            return
+        try:
+            config = self._build_config()
+        except Exception as error:
+            QMessageBox.critical(self, "Invalid configuration", str(error))
+            return
+        if not isinstance(config.source, RWDSourceConfig):
+            return
+        for label in self.device_labels.values():
+            label.setText(label.text().split(":")[0] + ": checking…")
+            self._set_device_state(label, "unknown")
+        thread = QThread(self)
+        worker = DeviceCheckWorker(config, self._device_checker)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_devices_checked)
+        worker.failed.connect(self._on_device_check_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._on_device_thread_finished)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        self._device_thread = thread
+        self._device_worker = worker
+        self._set_busy_controls(False)
+        self.statusBar().showMessage("Checking the RWD controller and cameras…")
+        thread.start()
+
+    def _on_devices_checked(self, report) -> None:
+        self.last_device_report = report
+        keys = ("controller", "camera1", "camera2")
+        for key, device in zip(keys, report.devices, strict=True):
+            mark = "✓" if device.ok else ("✗" if device.needed else "·")
+            self.device_labels[key].setText(f"{mark} {device.name}: {device.detail}")
+            self._set_device_state(
+                self.device_labels[key],
+                "ok" if device.ok else ("failed" if device.needed else "unknown"),
+            )
+        self.statusBar().showMessage(
+            "RWD controller and cameras found"
+            if report.ok
+            else "RWD device check found a problem; see the RWD hardware panel"
+        )
+
+    def _on_device_check_failed(self, traceback_text: str) -> None:
+        for label in self.device_labels.values():
+            label.setText(label.text().split(":")[0] + ": check failed")
+            self._set_device_state(label, "failed")
+        if not self._close_pending:
+            QMessageBox.critical(self, "Device check failed", traceback_text)
+
+    def _on_device_thread_finished(self) -> None:
+        self._device_thread = None
+        self._device_worker = None
+        self._set_busy_controls(self._thread is not None)
+
+    @staticmethod
+    def _set_device_state(label: QLabel, state: str) -> None:
+        label.setProperty("state", state)
+        label.style().unpolish(label)
+        label.style().polish(label)
 
     def _refresh_rwd_ports(self) -> None:
         current = self._rwd_port()
@@ -1036,6 +1136,11 @@ class MainWindow(QMainWindow):
         self._active_trace_wavelengths = tuple(int(w) for w in profile.wavelengths)
         for wavelength_nm, check in self.trace_wavelength_checks.items():
             check.setVisible(wavelength_nm in self._active_trace_wavelengths)
+        if not is_rwd:
+            self._devices_checked_for_mode = False
+        elif self._auto_check_devices and not self._devices_checked_for_mode:
+            self._devices_checked_for_mode = True
+            QTimer.singleShot(0, self.start_device_check)
         if is_rwd:
             self.source_mode_hint.setText(_RWD_MODE_HINT)
             self.backend_badge.setText("RWD hardware")
@@ -1302,6 +1407,9 @@ class MainWindow(QMainWindow):
                 color: #61778a; background: #13283a; border-color: #22394d;
             }
             QLabel#hint { color: #7694aa; }
+            QLabel#deviceStatus[state="ok"] { color: #4fd18b; }
+            QLabel#deviceStatus[state="failed"] { color: #ff8791; font-weight: 700; }
+            QLabel#deviceStatus[state="unknown"] { color: #7694aa; }
             QLabel#safetyWarning {
                 background: #3a1820; color: #ffb3b9; border-radius: 6px; padding: 8px;
                 font-weight: 700;
@@ -2492,6 +2600,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.close)
 
     def _set_busy_controls(self, busy: bool) -> None:
+        checking = getattr(self, "_device_thread", None) is not None
+        if hasattr(self, "check_devices_button"):
+            self.check_devices_button.setEnabled(not busy and not checking)
+        busy = busy or checking
         self.live_button.setEnabled(not busy)
         self.preview_button.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self._preview_signature is not None)
@@ -2503,6 +2615,8 @@ class MainWindow(QMainWindow):
             widget.setEnabled(not busy)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._device_thread is not None:
+            self._device_thread.wait(15_000)
         if self._thread is not None and self._thread.isRunning():
             self._close_pending = True
             self.stop_recording()

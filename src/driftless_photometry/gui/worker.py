@@ -16,9 +16,11 @@ from driftless_photometry.acquisition import (
 )
 from driftless_photometry.config import RWDSourceConfig, SessionConfig
 from driftless_photometry.hardware import RigSource, RWDRig, SimulatedRig
+from driftless_photometry.hardware.rwd_devices import RWDDeviceReport
 from driftless_photometry.state import AcquisitionState
 
 RigFactory = Callable[[SessionConfig], RigSource]
+DeviceChecker = Callable[[SessionConfig], RWDDeviceReport]
 
 
 def default_rig_factory(config: SessionConfig) -> RigSource:
@@ -145,3 +147,24 @@ class LiveViewWorker(QObject):
         request = getattr(self._source, "request_gain", None)
         if request is not None:
             request(gain_db)
+
+
+class DeviceCheckWorker(QObject):
+    """Check the RWD controller and cameras off the GUI thread; no LED is switched on."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, config: SessionConfig, checker: DeviceChecker) -> None:
+        super().__init__()
+        self._config = config
+        self._checker = checker
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = self._checker(self._config)
+        except BaseException:
+            self.failed.emit(traceback.format_exc())
+        else:
+            self.finished.emit(report)
