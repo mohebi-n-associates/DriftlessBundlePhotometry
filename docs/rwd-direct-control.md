@@ -609,3 +609,12 @@ and the TTL source on Input 1. The operator was away; the script kept Windows aw
   - Interrupted spools accept log lines written after the last manifest update.
   - The start-delay check runs only up to 50 Hz.
   - The period rule uses 1 µs steps below 10 ms, and the period check is tighter.
+- **2.5 h at 120 Hz, second attempt (spool v4):** clean for 63 minutes.
+  - 453 664 frames landed exactly on the 8.333 ms grid. The cameras ran −24 ppm against
+    it, matching every other rate, which confirms the 120 Hz period.
+  - Then one 6.1 s disk-write stall outside DBF filled the 64-frame spool queue, only
+    0.5 s of frames at 120 frames/s, and ended the recording with a back-pressure
+    fault. The board was switched off and the spool kept for recovery.
+  - The spool queue is now sized in seconds of data: 30 s for trace-only recordings,
+    and a 1 GB cap with raw frames retained. The manifest is rewritten at most once a
+    second.

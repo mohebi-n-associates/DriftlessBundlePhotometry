@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Callable
 from contextlib import suppress
@@ -77,6 +78,27 @@ def spool_chunk_size_for(config: SessionConfig) -> int:
     """
 
     return max(16, round(config.camera.requested_fps / 4))
+
+
+SPOOL_BUFFER_S = 30.0
+"""Seconds of frames the spool queue holds while its writer is stalled."""
+SPOOL_RAW_BUFFER_BYTES = 1_000_000_000
+"""Memory cap for queued raw frames when full frames are retained."""
+
+
+def spool_queue_size_for(config: SessionConfig) -> int:
+    """Queue capacity in frames, so a disk stall is measured in seconds, not frames.
+
+    A fixed 64-frame queue lasted half a second at 120 frames/s, and a single 6 s write
+    stall then ended a recording (bench, 2026-10-21). Trace-only frames are small, so
+    30 s costs a few megabytes; retained raw frames are capped at about 1 GB.
+    """
+
+    frames = math.ceil(config.camera.requested_fps * SPOOL_BUFFER_S)
+    if config.camera.raw_capture:
+        frame_bytes = config.camera.width_px * config.camera.height_px * 2
+        frames = min(frames, SPOOL_RAW_BUFFER_BYTES // frame_bytes)
+    return max(64, frames)
 
 
 LIVE_VIEW_LIMIT_S = 600.0
@@ -276,7 +298,9 @@ FinalizationCallback = Callable[[FinalizationProgress], None]
 class AcquisitionEngine:
     """Coordinate matched frames, extraction, spool, and NWB finalization."""
 
-    def __init__(self, *, spool_chunk_size: int | None = None, spool_queue_size: int = 64) -> None:
+    def __init__(
+        self, *, spool_chunk_size: int | None = None, spool_queue_size: int | None = None
+    ) -> None:
         self._state = AcquisitionStateMachine()
         self._spool_chunk_size = spool_chunk_size
         self._spool_queue_size = spool_queue_size
@@ -329,7 +353,7 @@ class AcquisitionEngine:
             spool = SessionSpool(
                 config,
                 chunk_size=self._spool_chunk_size or spool_chunk_size_for(config),
-                queue_size=self._spool_queue_size,
+                queue_size=self._spool_queue_size or spool_queue_size_for(config),
                 runtime_provenance=capture_runtime_provenance(
                     adapter_name=str(
                         getattr(

@@ -381,3 +381,25 @@ def test_interrupted_spool_keeps_log_lines_written_after_its_last_manifest(tmp_p
     ttl_log.write_text(json.dumps(dataclasses.asdict(edge)) + "\n", encoding="utf-8")
     with pytest.raises(SpoolError, match="TTL count does not match"):
         load_session_spool(spool.path)
+
+
+def test_spool_queue_absorbs_a_writer_stall(tmp_path: Path, monkeypatch) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    spool = SessionSpool(config, chunk_size=4, queue_size=200, submit_timeout_s=0.5)
+    release = threading.Event()
+    original = spool._commit_chunk
+    stalled = {"once": False}
+
+    def stalling_commit(items):
+        if not stalled["once"]:
+            stalled["once"] = True
+            release.wait(5.0)
+        original(items)
+
+    monkeypatch.setattr(spool, "_commit_chunk", stalling_commit)
+    _submit_frames(spool, 150)  # all queue up while the writer is stuck
+    assert spool.diagnostics.queue_depth > 100
+    release.set()
+    spool.close()
+
+    assert len(load_session_spool(spool.path).data.frame_ids) == 150
