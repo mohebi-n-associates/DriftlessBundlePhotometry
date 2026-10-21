@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -13,12 +14,14 @@ import numpy as np
 from driftless_photometry.config import ChannelConfig, SessionConfig, Wavelength
 from driftless_photometry.diagnostics import AcquisitionDiagnostics, FinalizationProgress
 from driftless_photometry.domain import (
+    EventMark,
     ExposureRecord,
     InvalidTimeInterval,
     SystemEvent,
     TraceSample,
     TTLEdge,
 )
+from driftless_photometry.events import TTLPulseClassifier
 from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 from driftless_photometry.hardware import RigSource, StartCondition
 from driftless_photometry.provenance import capture_runtime_provenance
@@ -43,6 +46,8 @@ class AcquisitionProgress:
     image: np.ndarray
     diagnostics: AcquisitionDiagnostics | None = None
     camera_index: int = 1
+    event_marks: tuple[EventMark, ...] = ()
+    """Marks recorded since the previous progress report, for live display."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,6 +317,8 @@ class AcquisitionEngine:
         self._run_lock = threading.Lock()
         self._source: RigSource | None = None
         self._stop_requested = threading.Event()
+        self._marks_lock = threading.Lock()
+        self._pending_marks: list[tuple[float, str, str]] = []
 
     @property
     def state(self) -> AcquisitionState:
@@ -321,6 +328,24 @@ class AcquisitionEngine:
         self._stop_requested.set()
         if self._source is not None:
             self._source.stop()
+
+    def mark_event(
+        self, name: str, source: str = "key", *, at_monotonic_s: float | None = None
+    ) -> None:
+        """Record a named operator event at ``at_monotonic_s`` (now by default).
+
+        Thread-safe. The host instant is placed on the session clock through the most
+        recently received camera frame, so it lags the true instant by that frame's
+        delivery delay (one exposure plus readout, typically tens of milliseconds).
+        """
+
+        if source not in {"key", "button"}:
+            raise ValueError("operator marks come from a key or a button")
+        if not name:
+            raise ValueError("event marks need a name")
+        pressed_s = time.monotonic() if at_monotonic_s is None else at_monotonic_s
+        with self._marks_lock:
+            self._pending_marks.append((pressed_s, name, source))
 
     def run(
         self,
@@ -348,6 +373,11 @@ class AcquisitionEngine:
         storage_capacity: StorageCapacity | None = None
         self._source = source
         self._stop_requested.clear()
+        with self._marks_lock:
+            self._pending_marks.clear()
+        last_frame_monotonic_s: float | None = None
+        new_marks: list[EventMark] = []
+        classifier = TTLPulseClassifier(config.ttl_events)
         try:
             if self.state is AcquisitionState.DISCONNECTED:
                 self._transition(AcquisitionState.READY, on_state)
@@ -384,10 +414,30 @@ class AcquisitionEngine:
                 self._transition(AcquisitionState.RECORDING, on_state)
             # Otherwise waiting for the start condition stays ARMED until the first frame.
 
+            def submit_mark(mark: EventMark) -> None:
+                spool.submit_event_mark(mark)
+                new_marks.append(mark)
+
+            def flush_operator_marks() -> None:
+                with self._marks_lock:
+                    pending = self._pending_marks[:]
+                    self._pending_marks.clear()
+                for pressed_s, name, mark_source in pending:
+                    if last_frame_monotonic_s is None:
+                        submit_mark(
+                            EventMark(0.0, name, mark_source, "set before the first exposure")
+                        )
+                        continue
+                    at_s = last_timestamp + (pressed_s - last_frame_monotonic_s)
+                    submit_mark(EventMark(max(0.0, at_s), name, mark_source))
+
             def submit_edges(edges: tuple[TTLEdge, ...]) -> None:
                 nonlocal stop_on_ttl
                 for edge in edges:
                     spool.submit_ttl(edge)
+                    named = classifier.observe(edge)
+                    if named is not None:
+                        submit_mark(named)
                     if (
                         stop_on_ttl
                         and edge.line == recording.stop_ttl_line
@@ -464,9 +514,14 @@ class AcquisitionEngine:
                     maximum_absolute_clock_residual_s,
                     abs(clock_residual_s),
                 )
+                # Marks set before this frame arrived are placed through the previous one.
+                flush_operator_marks()
                 last_sequence = sequence
                 last_controller_tick = packet.exposure.controller_tick_us
                 last_timestamp = timestamp
+                last_frame_monotonic_s = time.monotonic()
+                marks = tuple(new_marks)
+                new_marks.clear()
                 if on_progress is not None:
                     on_progress(
                         AcquisitionProgress(
@@ -482,10 +537,13 @@ class AcquisitionEngine:
                                 ),
                             ),
                             camera_index=packet.exposure.camera_index,
+                            event_marks=marks,
                         )
                     )
                 # After stop(), keep reading until the source ends so that it can hand
                 # over the events it observed while shutting down.
+            if frame_count:
+                flush_operator_marks()
             if frame_count == 0:
                 if self._stop_requested.is_set():
                     spool.close(complete=False)

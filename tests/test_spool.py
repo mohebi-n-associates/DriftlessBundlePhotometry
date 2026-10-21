@@ -9,6 +9,7 @@ import pytest
 
 from driftless_photometry.config import CUSTOM_PROFILE, demo_config
 from driftless_photometry.domain import (
+    EventMark,
     ExposureRecord,
     FramePacket,
     InvalidTimeInterval,
@@ -311,7 +312,7 @@ def test_spool_manifest_stays_small_however_many_chunks_commit(tmp_path: Path) -
     spool.close()
 
     manifest = json.loads((spool.path / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 4
+    assert manifest["schema_version"] == 5
     assert manifest["chunk_count"] == 300
     assert "chunks" not in manifest
     assert (spool.path / "manifest.json").stat().st_size < 2_000
@@ -403,3 +404,39 @@ def test_spool_queue_absorbs_a_writer_stall(tmp_path: Path, monkeypatch) -> None
     spool.close()
 
     assert len(load_session_spool(spool.path).data.frame_ids) == 150
+
+
+def test_spool_round_trips_event_marks(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    spool = SessionSpool(config, chunk_size=2)
+    _submit_frames(spool, 4)
+    marks = [
+        EventMark(0.05, "Tone", "key"),
+        EventMark(0.1, "Lever", "ttl", "TTL input 1 (lever) pulse of 52 ms"),
+    ]
+    for mark in marks:
+        spool.submit_event_mark(mark)
+    spool.close()
+
+    loaded = load_session_spool(spool.path)
+
+    assert loaded.schema_version == 5
+    assert loaded.data.event_marks == marks
+
+
+def test_schema_v4_spools_without_an_event_mark_log_still_load(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    spool = SessionSpool(config, chunk_size=2)
+    _submit_frames(spool, 3)
+    spool.close()
+    (spool.path / "event_marks.jsonl").unlink()
+    manifest_path = spool.path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 4
+    del manifest["event_mark_count"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    loaded = load_session_spool(spool.path)
+
+    assert loaded.schema_version == 4
+    assert loaded.data.event_marks == []

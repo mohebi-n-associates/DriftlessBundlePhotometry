@@ -71,7 +71,21 @@ before starting DBF, because only one program can use the controller's port.
      Otherwise choose its COM port. Use *Refresh* after plugging it in.
    - **TTL outputs:** tick an output to drive a pulse train on it during the
      recording, with its frequency and pulse width.
-5. **TTL inputs:** label the BNC inputs you use. Both edges are recorded by default.
+5. **TTL inputs and events** (left panel):
+   - **TTL inputs:** tick the BNC inputs you use, label them, and choose which edges
+     to record. All four record both edges by default.
+   - **Markers:** give keys 1–4 a name, for example *Tone*. While recording, press
+     the key or click its button below the traces to mark that event. Markers are
+     timed on the computer's clock through the latest camera frame, so they can lag
+     the true moment by one exposure plus readout. A key does nothing while you type
+     in a text box.
+   - **Named TTL events:** name the pulses on an input by their width, from the
+     rising to the falling edge, for example *Lever* for 50–150 ms. The input must
+     record both edges. The event is timed at the pulse's rising edge on the board
+     clock.
+
+   Markers and named events appear as dashed lines on the traces while recording.
+   None of these settings needs a new preview.
 
 ## Place the fiber circles on both cameras
 
@@ -140,6 +154,8 @@ every recorded wavelength correct.
     fired, so DBF works it out from the camera and the position in the LED cycle after
     each sequencer start.
 - TTL input edges with the board's raw millisecond ticks.
+- Event marks: each marker and named TTL event, with its source (key, button, or ttl)
+  and, for TTL events, the pulse width.
 - System events, including the controller's identity, each sequencer start and
   restart, and the TTL clock alignment.
 - Invalid time spans around any restart.

@@ -104,11 +104,27 @@ version, move its completed entries into a dated version section.
   the trigger (`recording_start_trigger`, `recording_stop_trigger`), including the
   start edge's board tick. The options are saved with the settings and need no new
   preview.
+- Event marking:
+  - The new *TTL inputs and events* panel sets which TTL inputs are recorded, their
+    labels and edges.
+  - Name keys 1–4 as markers. While recording, press the key or its button to mark
+    the event.
+  - Name TTL pulses on an input by their width, for example *Lever* for 50–150 ms.
+
+  Marks show as dashed lines on the live traces. Each NWB file stores them in a new
+  `event_marks` table with their source (key, button, or ttl). Operator marks are
+  timed on the host clock through the latest camera frame. TTL marks take the
+  pulse's rising edge on the board clock. Settings files keep them.
 - RWD recordings end with a camera-diagnostics event: frames delivered, incomplete
   frames, and frames lost to a full host queue.
 
 ### Changed
 
+- Recovery spools moved to schema v5, which adds the event-mark log. Spools from
+  schemas 1–4 still load.
+- The setup window keeps each finished worker until Qt has deleted it. Dropping it at
+  once could delete it from two threads at the same moment and crash DBF after a
+  device check.
 - The Alvium cameras now stream into 64 buffers instead of 16 (about half a second
   each at 120 frames/s). With 16, camera 1 occasionally delivered an incomplete frame
   at 120 frames/s, which cost a sequencer restart.

@@ -562,3 +562,29 @@ def test_delayed_and_ttl_starts_reach_the_source_and_are_recorded(tmp_path: Path
         events = io.read().events["system_events"].to_dataframe()
     detail = events[events["event"] == "recording_start_trigger"]["detail"].iloc[0]
     assert detail == "simulated a falling edge on TTL input 3"
+
+
+def test_operator_marks_are_timed_through_the_latest_frame(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+    engine = AcquisitionEngine()
+    stamps = []
+    shown = []
+
+    def on_progress(progress) -> None:
+        shown.extend(progress.event_marks)
+        if progress.frame_count == 10:
+            stamps.append(progress.sample.timestamp_s)
+            engine.mark_event("Tone", "button")
+
+    engine.mark_event("Early", "key")  # cleared: a new run starts with no pending marks
+    result = engine.run(config, SimulatedRig(config), duration_s=1.0, on_progress=on_progress)
+
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        marks = io.read().events["event_marks"].to_dataframe()
+    assert marks["event_name"].tolist() == ["Tone"]
+    assert marks["source"].tolist() == ["button"]
+    # Simulated frames arrive at once, so the mark lands on the frame it followed.
+    assert marks["timestamp"].iloc[0] == pytest.approx(stamps[0], abs=0.01)
+    assert [mark.name for mark in shown] == ["Tone"]
+    with pytest.raises(ValueError, match="key or a button"):
+        engine.mark_event("Tone", "ttl")

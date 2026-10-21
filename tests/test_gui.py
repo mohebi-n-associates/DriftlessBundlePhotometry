@@ -894,3 +894,78 @@ def test_gui_cancels_a_recording_still_waiting_to_start(qtbot, tmp_path: Path) -
     assert "nothing was recorded" in window.live_status.text()
     assert not list(tmp_path.rglob("*.nwb"))
     assert not list(tmp_path.rglob("*.photometry-spool"))
+
+
+def test_gui_records_markers_and_named_ttl_events_and_draws_them(qtbot, tmp_path: Path) -> None:
+    import pyqtgraph as pg
+    from pynwb import NWBHDF5IO
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, default_duration_s=2.5)
+    qtbot.addWidget(window)
+    window.marker_name_edits["1"].setText("Tone")
+    check, line, low, high, name = window.ttl_event_rows[0]
+    check.setChecked(True)
+    line.setCurrentIndex(line.findData(1))
+    low.setValue(50)
+    high.setValue(150)
+    name.setText("Lever")
+    assert list(window.marker_buttons) == ["1"]
+    assert not window.marker_buttons["1"].isEnabled()
+    window.start_preview()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+
+    window.start_recording()
+    qtbot.waitUntil(lambda: window._trace_latest_s is not None, timeout=10_000)
+    assert window.marker_buttons["1"].isEnabled()
+    window.mark_event("1", "key")
+    qtbot.mouseClick(window.marker_buttons["1"], Qt.MouseButton.LeftButton)
+    window.mark_event("7", "key")  # no marker on key 7
+    qtbot.waitUntil(lambda: window._thread is None, timeout=30_000)
+
+    assert window.last_error is None, window.last_error
+    with NWBHDF5IO(window.last_result.report.path, mode="r", load_namespaces=True) as io:
+        marks = io.read().events["event_marks"].to_dataframe()
+    operator = marks[marks["source"] != "ttl"]
+    assert sorted(operator["source"]) == ["button", "key"]
+    assert set(operator["event_name"]) == {"Tone"}
+    ttl = marks[marks["source"] == "ttl"]
+    assert ttl["timestamp"].round(6).tolist() == [0.0, 1.0, 2.0]
+    assert set(ttl["event_name"]) == {"Lever"}
+    assert "pulse of 100 ms" in ttl["detail"].iloc[0]
+    drawn = [item for item in window.trace_plots[0].items if isinstance(item, pg.InfiniteLine)]
+    assert len(drawn) == len(window._event_marks_shown) >= 4
+    assert not window.marker_buttons["1"].isEnabled()
+
+
+def test_gui_event_settings_round_trip(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    _check, label, edges = window.ttl_input_rows[3]
+    label.setText("lick")
+    edges.setCurrentIndex(edges.findData("rising"))
+    window.ttl_input_rows[4][0].setChecked(False)
+    window.marker_name_edits["2"].setText("Shock")
+    rule = window.ttl_event_rows[1]
+    rule[0].setChecked(True)
+    rule[1].setCurrentIndex(rule[1].findData(2))
+    rule[4].setText("Reward")
+
+    config = window._build_config()
+
+    assert [(t.line, t.label, t.edges.value) for t in config.ttl_inputs] == [
+        (1, "behavior_1", "both"),
+        (2, "behavior_2", "both"),
+        (3, "lick", "rising"),
+    ]
+    assert [(m.key, m.name) for m in config.event_markers] == [("2", "Shock")]
+    assert [(r.line, r.name) for r in config.ttl_events] == [(2, "Reward")]
+    window._apply_configuration(demo_config(tmp_path, fiber_count=1))
+    assert window._build_config().event_markers == ()
+    window._apply_configuration(config)
+    rebuilt = window._build_config()
+    assert (rebuilt.ttl_inputs, rebuilt.event_markers, rebuilt.ttl_events) == (
+        config.ttl_inputs,
+        config.event_markers,
+        config.ttl_events,
+    )
+    assert list(window.marker_buttons) == ["2"]

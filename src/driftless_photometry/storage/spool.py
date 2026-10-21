@@ -21,6 +21,7 @@ from driftless_photometry.diagnostics import SpoolDiagnostics
 from driftless_photometry.domain import (
     AcquisitionData,
     DroppedFrameEvent,
+    EventMark,
     FramePacket,
     InvalidTimeInterval,
     SystemEvent,
@@ -35,8 +36,9 @@ from driftless_photometry.provenance import (
 from .frames import FrameStream
 from .nwb import _safe_filename
 
-_SPOOL_SCHEMA_VERSION = 4
-_SUPPORTED_SPOOL_SCHEMA_VERSIONS = {1, 2, 3, _SPOOL_SCHEMA_VERSION}
+_SPOOL_SCHEMA_VERSION = 5
+"""v5 adds the event-mark log; older DBF versions refuse a v5 spool rather than drop it."""
+_SUPPORTED_SPOOL_SCHEMA_VERSIONS = {1, 2, 3, 4, _SPOOL_SCHEMA_VERSION}
 _CHUNK_INDEX = "chunks.jsonl"
 """Schema v4+: one line per committed chunk, appended and fsynced. Earlier schemas kept
 the list in the manifest, which made each commit rewrite every earlier entry and fell
@@ -87,11 +89,16 @@ class _SystemEventWork:
 
 
 @dataclass(frozen=True, slots=True)
+class _EventMarkWork:
+    mark: EventMark
+
+
+@dataclass(frozen=True, slots=True)
 class _StopWork:
     complete: bool
 
 
-_Work = _FrameWork | _TTLWork | _InvalidTimeWork | _SystemEventWork | _StopWork
+_Work = _FrameWork | _TTLWork | _InvalidTimeWork | _SystemEventWork | _EventMarkWork | _StopWork
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +156,7 @@ class SessionSpool:
             "ttl_edge_count": 0,
             "invalid_time_count": 0,
             "system_event_count": 0,
+            "event_mark_count": 0,
             "calibration_image": None,
             "wavelength_images": {},
         }
@@ -206,6 +214,10 @@ class SessionSpool:
     def submit_system_event(self, event: SystemEvent) -> None:
         self._ensure_open()
         self._put(_SystemEventWork(event=event))
+
+    def submit_event_mark(self, mark: EventMark) -> None:
+        self._ensure_open()
+        self._put(_EventMarkWork(mark=mark))
 
     @property
     def diagnostics(self) -> SpoolDiagnostics:
@@ -297,11 +309,13 @@ class SessionSpool:
         ttl_path = self.path / "ttl_edges.jsonl"
         invalid_path = self.path / "invalid_times.jsonl"
         system_path = self.path / "system_events.jsonl"
+        mark_path = self.path / "event_marks.jsonl"
         try:
             with (
                 ttl_path.open("a", encoding="utf-8") as ttl_file,
                 invalid_path.open("a", encoding="utf-8") as invalid_file,
                 system_path.open("a", encoding="utf-8") as system_file,
+                mark_path.open("a", encoding="utf-8") as mark_file,
             ):
                 while True:
                     work = self._queue.get()
@@ -316,6 +330,8 @@ class SessionSpool:
                         self._write_invalid_time(invalid_file, work.interval)
                     elif isinstance(work, _SystemEventWork):
                         self._write_system_event(system_file, work.event)
+                    elif isinstance(work, _EventMarkWork):
+                        self._write_line(mark_file, asdict(work.mark), "event_mark_count")
                     else:
                         if frame_buffer:
                             self._commit_timed_chunk(frame_buffer)
@@ -325,6 +341,8 @@ class SessionSpool:
                         os.fsync(invalid_file.fileno())
                         system_file.flush()
                         os.fsync(system_file.fileno())
+                        mark_file.flush()
+                        os.fsync(mark_file.fileno())
                         self._manifest["complete"] = work.complete
                         self._write_manifest()
                         self._queue.task_done()
@@ -346,6 +364,11 @@ class SessionSpool:
         invalid_file.write(json.dumps(asdict(interval), separators=(",", ":")) + "\n")
         invalid_file.flush()
         self._manifest["invalid_time_count"] = int(self._manifest["invalid_time_count"]) + 1
+
+    def _write_line(self, log_file: IO[str], record: dict, count_key: str) -> None:
+        log_file.write(json.dumps(record, separators=(",", ":")) + "\n")
+        log_file.flush()
+        self._manifest[count_key] = int(self._manifest[count_key]) + 1
 
     def _write_system_event(self, system_file: IO[str], event: SystemEvent) -> None:
         system_file.write(json.dumps(asdict(event), separators=(",", ":")) + "\n")
@@ -586,6 +609,10 @@ def load_session_spool(path: Path) -> LoadedSpool:
     data.system_events.extend(
         SystemEvent(**record) for record in _log_records(path / "system_events.jsonl", complete)
     )
+    if schema_version >= 5:
+        data.event_marks.extend(
+            EventMark(**record) for record in _log_records(path / "event_marks.jsonl", complete)
+        )
 
     if schema_version >= 2:
         provenance_document = json.loads(
@@ -666,6 +693,11 @@ def load_session_spool(path: Path) -> LoadedSpool:
             len(data.system_events),
             int(manifest.get("system_event_count", 0)),
             "system-event count does not match event log",
+        ),
+        (
+            len(data.event_marks),
+            int(manifest.get("event_mark_count", 0)),
+            "event-mark count does not match mark log",
         ),
     ):
         if observed < expected or (complete and observed != expected):

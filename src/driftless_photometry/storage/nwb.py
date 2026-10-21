@@ -767,6 +767,30 @@ def _add_events(
             )
         nwbfile.add_events_table(ttl)
 
+    if data.event_marks:
+        marks = _make_events_table(
+            name="event_marks",
+            description=(
+                "Named experimental events: operator markers set with a key or button "
+                "(host-timed through the latest camera frame) and TTL pulses classified "
+                "by width (timed at their rising edge)."
+            ),
+            source_description="Driftless acquisition coordinator.",
+            columns=(
+                ("event_name", "Configured event name."),
+                ("source", "key, button, or ttl."),
+                ("detail", "How the event was observed, such as the TTL pulse width."),
+            ),
+        )
+        for mark in sorted(data.event_marks, key=lambda item: item.timestamp_s):
+            marks.add_row(
+                timestamp=mark.timestamp_s,
+                event_name=mark.name,
+                source=mark.source,
+                detail=mark.detail,
+            )
+        nwbfile.add_events_table(marks)
+
     if data.dropped_frames:
         dropped = _make_events_table(
             name="dropped_frame_events",
@@ -987,6 +1011,9 @@ def _round_trip_verify(
             data.ttl_edges
         ):
             raise RuntimeError("NWB round-trip TTL event count mismatch")
+        stored_marks = len(nwbfile.events["event_marks"]) if "event_marks" in nwbfile.events else 0
+        if stored_marks != len(data.event_marks):
+            raise RuntimeError("NWB round-trip event-mark count mismatch")
         if data.invalid_times:
             if "invalid_times" not in nwbfile.intervals:
                 raise RuntimeError("NWB round-trip invalid-time table is missing")
