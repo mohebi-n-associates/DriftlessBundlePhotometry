@@ -65,8 +65,8 @@ The desktop system selector is part of the persisted settings workflow. Both sys
 show camera ROI, excitation-voltage, raw-frame, and wavelength-image controls. Custom
 mode retains its mandatory preview, and so does RWD mode. RWD mode adds a panel
 with the no-fail-safe warning, the controller port, and TTL output pulse trains.
-The calibration view switches between the two RWD cameras, each with its own fiber
-circles. **Live view** streams either system's cameras for focusing and ROI
+The calibration view shows the two RWD cameras side by side, each with its own fiber
+circles, next to the frame rate, exposure, and gain controls. **Live view** streams either system's cameras for focusing and ROI
 placement, with nothing validated or recorded. It throttles the display to 15 frames
 per second per camera and wavelength and stops itself after 10 minutes. Optional
 auto contrast stretches only the displayed image. Live smoothing is an elapsed-time trailing mean

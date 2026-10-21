@@ -138,3 +138,10 @@ class LiveViewWorker(QObject):
         """Thread-safe live-view stop request."""
 
         self._source.stop()
+
+    def request_gain(self, gain_db: float) -> None:
+        """Change camera gain while streaming, if the source supports it."""
+
+        request = getattr(self._source, "request_gain", None)
+        if request is not None:
+            request(gain_db)

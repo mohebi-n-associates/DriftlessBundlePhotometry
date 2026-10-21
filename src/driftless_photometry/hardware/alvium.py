@@ -171,6 +171,14 @@ class AlviumTriggeredCameras:
             finally:
                 self._system = None
 
+    def set_gain(self, gain_db: float) -> None:
+        """Change both cameras' gain while streaming; call from the owning thread."""
+
+        if gain_db < 0:
+            raise ValueError("gain must be non-negative")
+        for camera in self._cameras.values():
+            camera.get_feature_by_name("Gain").set(float(gain_db))
+
     def get(self, timeout_s: float) -> AlviumFrame | None:
         """Return the next frame from either camera, or None if none arrives in time."""
 

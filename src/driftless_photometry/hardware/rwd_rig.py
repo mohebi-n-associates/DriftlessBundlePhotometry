@@ -60,6 +60,8 @@ class RWDCameraSource(Protocol):
 
     def get(self, timeout_s: float) -> AlviumFrame | None: ...
 
+    def set_gain(self, gain_db: float) -> None: ...
+
 
 RWDCameraFactory = Callable[[AlviumSettings, tuple[str, ...]], RWDCameraSource]
 RWDTransportFactory = Callable[[str], RWDControllerTransport]
@@ -129,6 +131,8 @@ class RWDRig:
         self._clock = clock
         self._timing = timing or RWDRigTiming()
         self._stop = threading.Event()
+        self._gain_lock = threading.Lock()
+        self._pending_gain_db: float | None = None
         self.identity: RWDControllerIdentity | None = None
         self.port: str | None = None
 
@@ -138,6 +142,22 @@ class RWDRig:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def request_gain(self, gain_db: float) -> None:
+        """Ask the running session to change both cameras' gain (thread-safe).
+
+        For live view: gain changes the recorded scale, so recordings keep one gain.
+        """
+
+        if gain_db < 0:
+            raise ValueError("gain must be non-negative")
+        with self._gain_lock:
+            self._pending_gain_db = float(gain_db)
+
+    def _take_pending_gain(self) -> float | None:
+        with self._gain_lock:
+            gain, self._pending_gain_db = self._pending_gain_db, None
+        return gain
 
     def packets(self, duration_s: float) -> Iterator[RigPacket]:
         if duration_s <= 0:
@@ -163,6 +183,7 @@ class RWDRig:
                 stop=self._stop,
                 identity=self.identity,
                 port=self.port or "",
+                pending_gain=self._take_pending_gain,
             )
             yield from session.run(duration_s)
         finally:
@@ -221,7 +242,9 @@ class _RWDSession:
         stop: threading.Event,
         identity: RWDControllerIdentity | None,
         port: str,
+        pending_gain: Callable[[], float | None] = lambda: None,
     ) -> None:
+        self._pending_gain = pending_gain
         self._config = config
         self._plan = plan
         self._transport = transport
@@ -281,6 +304,10 @@ class _RWDSession:
         try:
             finished = False
             while not finished and not self._stop.is_set():
+                gain = self._pending_gain()
+                if gain is not None:
+                    self._cameras.set_gain(gain)
+                    self._event("rwd_camera_gain_changed", f"{gain:g} dB on both cameras")
                 frame = self._cameras.get(self._timing.poll_interval_s)
                 self._poll_controller()
                 if frame is not None:

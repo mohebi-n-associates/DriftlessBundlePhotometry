@@ -124,6 +124,7 @@ class SimulatedRWDCameras:
         self.late: dict[tuple[str, int, int], float] = {}
         """Extra delivery delay in seconds for (camera, run, slot)."""
         self.disconnect_at_s: float | None = None
+        self.gain_db = settings.gain_db if settings else float(config.camera.gain)
         self.delivered: list[AlviumFrame] = []
         self.delivered_items: list[_Pending] = []
         self.open = False
@@ -140,6 +141,9 @@ class SimulatedRWDCameras:
 
         index = next(i for i, item in enumerate(self.delivered) if item is frame)
         return self.delivered_items[index].trigger_s
+
+    def set_gain(self, gain_db: float) -> None:
+        self.gain_db = float(gain_db)
 
     def get(self, timeout_s: float) -> AlviumFrame | None:
         if not self.open:
@@ -229,6 +233,7 @@ class SimulatedRWDCameras:
         fraction = lit / self._exposure_s
         power = run.led_value[item.led] / 10_000 if run.led_enabled[item.led] else 0.0
         level = _FIBER_LEVEL[item.led] * fraction * (0.5 + 10.0 * power)
+        level *= 10 ** (self.gain_db / 20)
         image = np.full(self._shape, 100, dtype=np.uint16)
         image += (self._masks[item.camera] * min(level, 3900.0)).astype(np.uint16)
         timestamp_ns = self._offset_ns[item.camera] + round(
