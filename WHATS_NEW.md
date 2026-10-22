@@ -6,6 +6,115 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+### Review fixes — 2026-10-22
+
+This work addresses the repository review of acquisition safety, scientific data
+integrity, and operator workflow. Changes are uncommitted at the user's request.
+
+- **Reject an ambiguous first RWD frame, including run zero.** The first frame must
+  arrive before the next possible exposure from that camera could have completed.
+  Previously a missing first 410 nm frame could make every following 410/470 label
+  swap while the file still validated. The new causal arrival bound forces an
+  invalid span and sequencer restart instead. It also rejects sufficiently late
+  delivery of a valid first frame, particularly at high rates; reduce the rate or
+  camera/USB latency if attribution fails. This conservative behavior is intentional.
+  The new gate is simulator-tested and still needs hardware revalidation.
+- **Close hardware before draining a failed acquisition.** Recording, preview, and
+  live view explicitly close their packet generators on the owner thread. A retained
+  exception traceback can no longer keep an RWD generator suspended with LEDs on
+  while the recovery writer drains. Cleanup failures are attached to the error and
+  retained in the acquisition fault record.
+- **Attempt the entire off sequence after a failed acknowledgement.** Sequencer,
+  all four TTL outputs, and every LED enable/power command are attempted independently
+  with bounded acknowledgement waits. Closing releases the port and reports any
+  unconfirmed shutdown instead of silently succeeding. Device checks also report
+  shutdown failure. An unresponsive or unplugged RWD still requires the unit's power
+  switch; this software cannot add a hardware watchdog.
+- **Act on a TTL stop when it is received.** Recording stop no longer waits up to
+  ten seconds for the TTL clock estimator to settle. The final drain retains the
+  aligned edge and its original tick. Preview/live view do not use recording stop
+  triggers. TTL alignment keeps a bounded recent frame history.
+- **Verify scientific content before accepting recovered files.** Reopening checks
+  every retained raw `uint16` frame, trace timestamps and values, commanded-intensity
+  timestamps, excitation/TTL/drop/event-mark/system records, invalid spans, ROI
+  geometry, calibration references, overlays, and raw-frame time/wavelength metadata.
+  Frame and event checks use bounded batches instead of materializing a camera-event
+  DataFrame. The old endpoint-only image check and missing-TTL-table loophole could
+  accept altered files and then remove their only good recovery spool. Invalid
+  canonical outputs are refused and the spool is kept. Original complete outputs
+  from an interrupted promotion remain recoverable without a recovery marker.
+- **Persist the actual session UTC origin after a delayed/TTL start.** A source
+  reports session zero, the spool writer atomically saves it before committing frames,
+  and finalization uses that saved configuration. RWD records the host UTC estimate
+  and trigger/receipt uncertainty; it does not claim an independently calibrated UTC
+  clock. The earlier setup timestamp remains a system event. Relative exposure and
+  TTL timestamps retain their shared session clock.
+- **Bound the GUI handoff and display history.** Workers retain latest images per
+  camera/wavelength and queue at most one lightweight notification. The GUI drains
+  at 10 Hz, retaining trace extrema when a backlog must be aggregated. Display trace
+  histories and event graphics are capped; acquired samples/events still go directly
+  to the spool without display decimation. Aggregated display history is identified,
+  and live dF/F calculated from it is explicitly approximate. Rolling F0 evaluates
+  requested bins in bounded batches, avoiding a dense allocation from session zero
+  for a small baseline window. Full-session metadata loading/NWB table construction
+  still grows with recording length; a streaming finalizer and measured long-run
+  memory gate remain follow-up work in `roadmap.md`.
+- **Preserve placement while changing fiber count.** Existing circles on both
+  cameras and their subject metadata stay in place when fibers are added or removed.
+  Only new fibers receive default circles. Recording and preview lock circle editing;
+  live view continues to allow placement.
+- **Make Stop reachable throughout the workflow.** A persistent header button and
+  Escape shortcut stop acquisition, preview, live view, output tests, and power-meter
+  measurements. Closing waits asynchronously for device cleanup and file validation,
+  rather than blocking the GUI for 15 seconds and potentially destroying a running
+  thread. Device discovery itself finishes its bounded calls before close.
+- **Separate demonstration from physical operation.** `dbf --demo` always uses the
+  Custom simulator, skips saved defaults, and refuses RWD imports/selection. Use
+  `dbf --gui` or the installed desktop shortcut for hardware support. This prevents
+  a demonstration command from opening the controller or lighting a real fiber.
+- **Expose recovery and recording review in the GUI.** Configuration has an
+  interrupted-recording recovery dialog with background checksum inspection, counts,
+  per-spool errors, validation, and a keep-spool option enabled by default. A corrupt
+  spool does not hide other sessions. Acquisition errors show the actual recovery
+  path only when one exists and put the traceback in expandable details. Review setup
+  lists wavelengths, subjects, timing, output location, storage estimate, and any
+  remaining demonstration metadata on RWD. Completion shows frame/TTL counts and
+  output paths. Storage estimates now account for metadata duplicated into every ROI
+  file, including trace-only recordings.
+- **Fit ordinary laptop screens.** The initial window is 1280 × 720 with a 960 × 600
+  minimum; settings, camera setup, and trace rows remain scrollable. Offscreen visual
+  checks covered 1366 × 768 with 1, 3, and 9 fibers. Physical hardware and platform
+  display scaling were not validated by those checks.
+
+Validation: targeted timing, shutdown, sparse-TTL, corruption/recovery, delayed-start,
+mailbox pressure, rolling-baseline, ROI-placement, simulator isolation, and GUI
+tests were added. The final full run passed **364 tests**, with **1 skip** for a
+non-Windows boundary test, in 274 seconds (`python -m pytest -q -p no:cacheprovider`).
+`ruff check .` and `ruff format --check .` passed (106 files). `git diff --check`
+passed, and `AGENTS.md` / `CLAUDE.md` still have identical SHA-256 hashes. CLI help
+recognizes both GUI launch modes. No physical hardware, new installer, or
+clean-machine test was run; the bench and finalization-memory gates above remain open.
+
+### Review fixes, second pass — 2026-10-22
+
+- Previews check commanded intensity again. On RWD, LED power may change during a
+  preview only after each wavelength's first frame, which must match the settings;
+  Custom previews check every frame.
+- Pressing **Fire** while a TTL start is armed no longer drives the output early.
+  Output triggers wait for the recording to start, and an output mark before run 0
+  is stamped at session zero rather than at the raw host clock.
+- A *When I press Stop* recording sizes its free-space check by the **Expected
+  length** field instead of the 24 h limit, so raw-frame recordings are not refused.
+- Settings with markers on keys 5–9 or more than four named TTL events keep them when
+  the GUI rebuilds the settings; the panel says what it kept.
+- Stopping a recording that was still waiting to start keeps the passed preview.
+- Rolling-F0 and control-fit dF/F compute only over the visible span plus one window,
+  and the control fit uses strided samples of both traces.
+- GUI workers move back to the GUI thread before their run ends, so the window owns
+  and deletes them; the retired-worker list and `deleteLater` wiring are gone.
+- The delayed start, output test, and power measurement share one `poll_until`
+  helper that keeps the controller link serviced while they wait.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller

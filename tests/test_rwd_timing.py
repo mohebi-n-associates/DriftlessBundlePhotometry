@@ -185,7 +185,17 @@ def test_tracker_flags_cameras_whose_first_frames_do_not_line_up(tmp_path: Path)
     result = tracker.observe(late_camera2)
 
     assert isinstance(result, RWDContinuityBreak)
-    assert "does not line up" in result.reason
+    assert "too late to establish wavelength phase" in result.reason
+
+
+@pytest.mark.parametrize("lost_slots", [1, 2, 3])
+def test_first_frame_loss_cannot_establish_a_false_phase(tmp_path: Path, lost_slots: int):
+    plan = RWDExcitationPlan.from_config(_config(tmp_path, (W410, W470)))
+    tracker = RWDSegmentTracker(plan, enabled_host_s=0.0)
+    frame = _frames(plan, range(6))[lost_slots]
+    result = tracker.observe(frame)
+    assert isinstance(result, RWDContinuityBreak)
+    assert "too late to establish wavelength phase" in result.reason
 
 
 def test_tracker_fails_when_the_board_period_differs_from_the_command(tmp_path: Path) -> None:

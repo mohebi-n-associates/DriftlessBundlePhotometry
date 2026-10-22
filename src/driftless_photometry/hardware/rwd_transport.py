@@ -11,7 +11,6 @@ from __future__ import annotations
 import time
 from collections import deque
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -85,6 +84,30 @@ def open_rwd_serial(port: str) -> RWDSerialLike:
     link.rts = False
     link.open()
     return link
+
+
+def poll_until(
+    transport: RWDControllerTransport,
+    deadline_s: float,
+    *,
+    clock: Callable[[], float],
+    wait: Callable[[float], object],
+    stopped: Callable[[], bool] = lambda: False,
+) -> tuple[int, bool]:
+    """Keep the controller link serviced until ``clock()`` reaches ``deadline_s``.
+
+    Polling handles heartbeats and link checks while DBF waits; ``wait`` pauses up to
+    10 ms between polls. Returns the retransmissions seen and whether ``stopped`` cut
+    the wait short.
+    """
+
+    retransmissions = 0
+    while clock() < deadline_s:
+        if stopped():
+            return retransmissions, True
+        retransmissions += transport.poll().retransmissions
+        wait(min(0.01, max(0.0, deadline_s - clock())))
+    return retransmissions, False
 
 
 def candidate_rwd_ports() -> tuple[str, ...]:
@@ -192,22 +215,28 @@ class RWDControllerTransport:
             self._last_controller_frame_s = self._last_host_heartbeat_s = self._clock()
             self.identity = self._handshake()
             self.all_off()
-        except BaseException:
-            self.close()
+        except BaseException as error:
+            try:
+                self.close()
+            except Exception as shutdown_error:
+                error.add_note(str(shutdown_error))
             raise
         return self.identity
 
-    def command(self, body: RWDCommand) -> None:
+    def command(
+        self, body: RWDCommand, *, timeout_s: float | None = None, resends: int | None = None
+    ) -> None:
         """Send one command, resending until acknowledged and, where known, confirmed."""
 
         self._sequence = (self._sequence + 1) & 0xFFFF
         message = body.to_message(self._sequence)
         expected = _CONFIRMATION.get(body.function)
-        for _attempt in range(self._resends + 1):
+        attempts = (self._resends if resends is None else resends) + 1
+        for _attempt in range(attempts):
             self._replies.clear()
             self._acked.discard(message.sequence)
             self._write(message)
-            deadline = self._clock() + self._ack_timeout_s
+            deadline = self._clock() + (self._ack_timeout_s if timeout_s is None else timeout_s)
             while self._clock() < deadline:
                 self._read_once()
                 if message.sequence in self._acked and (
@@ -218,8 +247,7 @@ class RWDControllerTransport:
                     return
         raise AcquisitionFault(
             AcquisitionFaultCode.CONTROLLER_DISCONNECT,
-            f"RWD controller did not acknowledge {message.function_name} "
-            f"after {self._resends + 1} attempts",
+            f"RWD controller did not acknowledge {message.function_name} after {attempts} attempts",
         )
 
     def poll(self) -> RWDPollResult:
@@ -250,27 +278,38 @@ class RWDControllerTransport:
     def all_off(self) -> None:
         """Stop the sequencer, every TTL output, and every LED (enable off, power 0 %)."""
 
-        self.command(device_enable(False))
-        for port in RWD_OUTPUT_PORTS:
-            self.command(output_enable(port, False))
+        commands = [device_enable(False)]
+        commands.extend(output_enable(port, False) for port in RWD_OUTPUT_PORTS)
         for led in RWDLed:
-            self.command(led_enable(led, False))
-            self.command(led_power(led, 0.0))
+            commands.extend((led_enable(led, False), led_power(led, 0.0)))
+        failures = []
+        for body in commands:
+            try:
+                # A dead link must not skip any off command or spend 35 seconds
+                # retrying. Eleven independent commands have at most 4.4 s of ack waits.
+                self.command(body, timeout_s=min(0.2, self._ack_timeout_s), resends=1)
+            except Exception as error:
+                failures.append(f"{body.function.name} {body.data.hex()}: {error}")
+        if failures:
+            raise AcquisitionFault(
+                AcquisitionFaultCode.CONTROLLER_DISCONNECT,
+                "RWD shutdown unconfirmed; use the unit's power switch. " + "; ".join(failures),
+            )
 
     def close(self) -> None:
-        """Send the off sequence (best effort) and release the port, even after errors.
-
-        The sequencer disable goes first. If the board does not acknowledge it, the
-        remaining off commands are skipped rather than waiting on a dead link.
-        """
+        """Attempt every off command, release the port, and report unconfirmed shutdown."""
 
         link = self._serial
         if link is None:
             return
         try:
             if link.is_open:
-                with suppress(AcquisitionFault, OSError):
-                    self.all_off()
+                self.all_off()
+            else:
+                raise AcquisitionFault(
+                    AcquisitionFaultCode.CONTROLLER_DISCONNECT,
+                    "RWD shutdown unconfirmed: port closed; use the unit's power switch",
+                )
         finally:
             try:
                 link.close()

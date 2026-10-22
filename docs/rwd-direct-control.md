@@ -182,7 +182,13 @@ behavior on a virtual clock. Nothing below has run on hardware yet; part 5 does 
 
 **Wavelength and time.** `RWDExcitationPlan` lists the enabled LEDs in the board's
 cycle order. `RWDSegmentTracker` gives each camera's first frame in a run that
-camera's first slot in the cycle. Each later frame must have the next frame ID, and
+camera's first slot in the cycle only if its host receipt precedes the earliest
+possible completion of that camera's next slot: enable-send time + next-slot time +
+exposure duration. This causal bound also applies to run zero, where no previous
+delay baseline exists. Ambiguous first arrivals are invalidated and restarted.
+High host/camera latency can conservatively reject a valid first frame, especially
+at high frame rates. The gate added in the 2026-10-22 review is simulator-tested,
+not newly bench-confirmed. Each later frame must have the next frame ID, and
 its hardware timestamp must land on the camera's next slot. The tracker fits each
 camera's clock period, so crystal differences of tens of ppm never accumulate.
 
@@ -210,11 +216,13 @@ across runs.
 - a missing, repeated, or reordered frame ID;
 - a frame early, late, or after a missed slot (beyond a quarter period);
 - a frame from a camera no enabled LED triggers;
+- a first frame arriving too late to prove its initial phase, including run zero;
 - first frames of two cameras that do not line up within half a period;
 - no frame within 2 s of a start, or 0.5 s past a slot's expected arrival;
 - after a restart, an enable-to-first-frame delay that differs by more than half a
   period from the delay measured at session start. This catches a camera that missed
-  its first trigger. Run 0 sets the baseline, so it cannot check itself.
+  its first trigger. This older relative-delay check runs through 50 Hz, in addition
+  to the causal first-arrival bound at every rate.
 
 **On a break,** the rig:
 
@@ -232,6 +240,18 @@ Three consecutive restarts without a recorded frame raise `CAMERA_DISCONNECT`. A
 fitted trigger period more than 0.2 % off the command raises `CLOCK_DISCONTINUITY`
 rather than drifting. That would happen, for example, if firmware rounded 30 Hz to a
 33 ms period.
+
+**Failure cleanup and UTC origin (review, 2026-10-22).** Consumers explicitly close
+the rig iterator before waiting for storage. The transport tries all off commands
+even after an acknowledgement fails and surfaces unconfirmed shutdown. Its power
+switch warning remains necessary: host software cannot guarantee LED-off on a lost
+link. A recording's TTL stop acts on receipt, before clock alignment; final draining
+still records the aligned edge. Preview/live view do not arm this stop condition.
+Session UTC zero is the midpoint between the enable-send instant and first completed
+frame receipt minus exposure, mapped through a host UTC/monotonic pair. The file
+records that estimate and its trigger/receipt uncertainty, separately from the
+earlier setup time. Host UTC accuracy is unmeasured. These changes have simulator
+regressions; their physical fault/latency behavior remains a bench gate.
 
 **The exposure cut short by a stop is never recorded.** That is stricter than
 marking it invalid:

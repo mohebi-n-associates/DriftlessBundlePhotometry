@@ -18,6 +18,7 @@ def run_gui(
     default_duration_s: float = 5.0,
     default_fibers: int = 3,
     default_raw: bool = False,
+    demo: bool = False,
 ) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Driftless Bundle Photometry")
@@ -31,6 +32,7 @@ def run_gui(
         default_raw=default_raw,
         default_system="rwd",
         auto_check_devices=True,
+        demo_only=demo,
     )
     window.show()
     return app.exec()

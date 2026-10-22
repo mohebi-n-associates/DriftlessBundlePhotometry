@@ -11,7 +11,31 @@ validation.
 
 **Current baseline:** 0.2.0
 
-**Last updated:** 2026-09-02
+**Last updated:** 2026-10-22
+
+## Review follow-up gates — 2026-10-22
+
+The Unreleased review fixes in `WHATS_NEW.md` add first-frame phase rejection,
+explicit hardware cleanup, independent off commands, immediate TTL stop, complete
+raw-frame verification, UTC-origin persistence, bounded GUI handoff/history, and
+operator recovery controls. Their automated evidence does not close hardware gates.
+
+- **Next, storage scale:** replace full-session Python metadata/trace loading and
+  NWB event-table construction with a streaming or disk-backed finalizer. The raw
+  frame stream and round-trip event comparison are bounded, but metadata still grows
+  with session length. Exit: measure peak RSS through acquisition, finalization,
+  validation, and interrupted-promotion recovery for a representative long recording
+  with 9 ROIs; enforce a documented memory budget and retain exact counts/content.
+- **Hardware required, RWD reliability:** revalidate the causal first-arrival bound
+  at the supported rates and under USB contention; deliberately lose the first
+  frame/trigger. Exercise a failed off acknowledgement, sparse TTL stop, cancellation
+  during power measurement, disk-pressure cleanup, and close. Record optical/output
+  measurements and external timing references. Host-derived UTC uncertainty and TTL
+  offset accuracy require measured bounds. The unit's power switch remains the only
+  host-loss fail-safe.
+- **Planned, operator acceptance:** test 1/3/9-fiber workflows on Windows at 100/125/150%
+  display scaling, including recovery and reviewing default subject metadata. Current
+  offscreen 1366 × 768 checks do not establish high-DPI or hardware usability.
 
 ## How to use this roadmap
 

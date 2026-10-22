@@ -30,6 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--headless", action="store_true", help="run a simulated recording")
     mode.add_argument("--demo", action="store_true", help="open the desktop GUI demo")
     mode.add_argument(
+        "--gui", action="store_true", help="open the desktop GUI with hardware support"
+    )
+    mode.add_argument(
         "--recover-spool",
         type=Path,
         metavar="PATH",
@@ -128,7 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
-    if args.demo:
+    if args.demo or args.gui:
         from driftless_photometry.gui.app import run_gui
 
         return run_gui(
@@ -136,6 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             default_duration_s=args.duration,
             default_fibers=args.fibers,
             default_raw=args.raw,
+            demo=args.demo,
         )
 
     config = demo_config(

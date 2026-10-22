@@ -24,6 +24,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from driftless_photometry.config import RWD_PROFILE, SessionConfig, Wavelength, profile_for
@@ -50,7 +51,12 @@ from .rwd_timing import (
     RWDSlotAssignment,
     RWDTTLClock,
 )
-from .rwd_transport import RWDControllerIdentity, RWDControllerTransport, candidate_rwd_ports
+from .rwd_transport import (
+    RWDControllerIdentity,
+    RWDControllerTransport,
+    candidate_rwd_ports,
+    poll_until,
+)
 
 RWD_SUPPORTED_MODEL_CODES = frozenset({0})
 """MODEL_REPLY codes DBF drives; 0 = R821 is the only bench-validated model."""
@@ -144,6 +150,7 @@ class RWDRig:
         self._clock = clock
         self._timing = timing or RWDRigTiming()
         self._stop = threading.Event()
+        self._recording_stop = False
         self._gain_lock = threading.Lock()
         self._pending_gain_db: float | None = None
         self._pending_power: dict[Wavelength, float] = {}
@@ -157,6 +164,11 @@ class RWDRig:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def prepare_recording(self) -> None:
+        """Enable the recording stop trigger; previews do not act on this input."""
+
+        self._recording_stop = True
 
     def request_gain(self, gain_db: float) -> None:
         """Ask the running session to change both cameras' gain (thread-safe).
@@ -246,9 +258,11 @@ class RWDRig:
                 pending_gain=self._take_pending_gain,
                 output_triggers=self._take_output_triggers,
                 pending_power=self._take_pending_power,
+                recording_stop=self._recording_stop,
             )
             yield from session.run(duration_s, start, cycle)
         finally:
+            self._recording_stop = False
             try:
                 transport.close()
             finally:
@@ -322,7 +336,9 @@ class _RWDSession:
         pending_gain: Callable[[], float | None] = lambda: None,
         output_triggers: Callable[[], list[tuple[int, str]]] = list,
         pending_power: Callable[[], dict[Wavelength, float]] = dict,
+        recording_stop: bool = False,
     ) -> None:
+        self._recording_stop = recording_stop
         self._pending_power = pending_power
         self._pending_gain = pending_gain
         self._output_triggers = output_triggers
@@ -347,6 +363,8 @@ class _RWDSession:
         self._ttl = RWDTTLClock(exposure_s=plan.exposure_s)
         self._brightness = RWDBrightnessCheck(plan)
         self._host_origin_s = clock()
+        self._host_origin_utc = datetime.now(UTC)
+        self._session_start_time: datetime | None = None
         self._ttl_sequence = 0
         self._ignored_edges = 0
         self._early_edges = 0
@@ -430,6 +448,8 @@ class _RWDSession:
                     self._change_led_power(power)
                 frame = self._cameras.get(self._timing.poll_interval_s)
                 self._poll_controller()
+                if self._stop.is_set():
+                    break
                 self._service_outputs()
                 if self._pause is not None:
                     if frame is not None:
@@ -495,12 +515,17 @@ class _RWDSession:
         """Wait with every LED off for the start condition; False if Stop came first."""
 
         if start.ttl_line is None:
-            deadline = self._clock() + start.delay_s
-            while self._clock() < deadline:
-                if self._stop.is_set():
-                    return False
-                self._cameras.get(self._timing.poll_interval_s)
-                self._retransmissions += self._transport.poll().retransmissions
+            # The cameras' blocking read is the wait, so a virtual clock advances too.
+            retransmissions, stopped = poll_until(
+                self._transport,
+                self._clock() + start.delay_s,
+                clock=self._clock,
+                wait=lambda _s: self._cameras.get(self._timing.poll_interval_s),
+                stopped=self._stop.is_set,
+            )
+            self._retransmissions += retransmissions
+            if stopped:
+                return False
             self._event("recording_start_trigger", f"started after a {start.delay_s:g} s delay")
             return True
         # The board reports TTL inputs only while its sequencer runs, so arm it dark.
@@ -529,7 +554,7 @@ class _RWDSession:
             self._transport.command(device_enable(False))
         if trigger is None:
             return False
-        frames += self._drain_frames()
+        frames += self._drain_frames(service_outputs=False)
         self._start_trigger = (
             f"TTL {trigger.edge.edge} edge on input {trigger.edge.line} at board tick "
             f"{trigger.edge.tick_ms} ms; while armed with the LEDs off, {frames} camera "
@@ -538,15 +563,20 @@ class _RWDSession:
         )
         return True
 
-    def _drain_frames(self) -> int:
-        """After a sequencer stop, wait until the cameras fall quiet; return frames dropped."""
+    def _drain_frames(self, *, service_outputs: bool = True) -> int:
+        """After a sequencer stop, wait until the cameras fall quiet; return frames dropped.
+
+        While a TTL start is still armed, nothing has been recorded yet, so output programs
+        (and any queued manual or dF/F triggers) must wait for the recording.
+        """
 
         discarded = 0
         quiet_deadline = self._clock() + self._timing.drain_quiet_s
         while self._clock() < quiet_deadline:
             frame = self._cameras.get(self._timing.poll_interval_s)
             self._poll_controller()
-            self._service_outputs()
+            if service_outputs:
+                self._service_outputs()
             if frame is not None:
                 discarded += 1
                 quiet_deadline = self._clock() + self._timing.drain_quiet_s
@@ -696,6 +726,8 @@ class _RWDSession:
         if self._last_frame_host_s is not None and self._last_emitted_s is not None:
             trigger_host_s = self._last_frame_host_s - (self._baseline_start_delay_s or 0.0)
             return max(0.0, self._last_emitted_s + host_s - trigger_host_s)
+        if self._run_index < 0:
+            return 0.0  # before run 0 nothing is on the session clock yet
         return max(0.0, host_s - self._enabled_host_s)
 
     def _start_run(self) -> None:
@@ -795,6 +827,18 @@ class _RWDSession:
                     return False
         if self._last_emitted_s is None:
             run_start = 0.0
+            # The first trigger lies between sending ENABLE and receiving its completed
+            # frame minus exposure. Use the interval midpoint, retaining its uncertainty.
+            bound_s = max(0.0, frame.host_received_s - self._plan.exposure_s - self._enabled_host_s)
+            self._session_start_time = self._host_origin_utc + timedelta(
+                seconds=self._enabled_host_s - self._host_origin_s + bound_s / 2
+            )
+            self._event(
+                "session_utc_origin",
+                f"host UTC estimate {self._session_start_time.isoformat()}; "
+                f"trigger/receipt uncertainty ±{bound_s / 2:.6f} s; "
+                "host clock accuracy is not measured",
+            )
         else:
             run_start = self._run_start_from_anchor(frame)
             minimum = self._last_emitted_s + self._period_s
@@ -986,6 +1030,16 @@ class _RWDSession:
                     AcquisitionFaultCode.MALFORMED_CONTROLLER_STREAM,
                     f"RWD controller TTL ticks went backwards: {error}",
                 ) from error
+            recording = self._config.recording
+            if (
+                self._recording_stop
+                and recording.stop == "ttl"
+                and received.edge.line == recording.stop_ttl_line
+                and received.edge.edge == recording.stop_ttl_edge
+            ):
+                # Stop on receipt; alignment may hold this edge for ten seconds.
+                # Final release still preserves its board tick and aligned timestamp.
+                self._stop.set()
 
     def _release_edges(self, *, final: bool) -> None:
         was_aligned = self._ttl.aligned
@@ -1053,7 +1107,10 @@ class _RWDSession:
             invalid_times=tuple(self._invalid),
             system_events=tuple(self._events),
             event_marks=tuple(self._marks),
+            session_start_time=self._session_start_time,
+            stop_requested=self._recording_stop and self._stop.is_set(),
         )
+        self._session_start_time = None
         self._edges.clear()
         self._invalid.clear()
         self._events.clear()

@@ -48,9 +48,10 @@ def test_rwd_rig_records_an_interleaved_three_led_session(tmp_path: Path) -> Non
     assert all(frame.camera_timestamp_ns is not None for frame in frames)
     assert np.all(np.diff([frame.host_received_s for frame in frames]) > 0)
     events = [event.event for event in events_of(packets)]
-    assert events[:3] == [
+    assert events[:4] == [
         "rwd_controller_connected",
         "rwd_start_delay_measured",
+        "session_utc_origin",
         "rwd_sequencer_started",
     ]
     assert "rwd_sequencer_stopped" in events
@@ -212,7 +213,7 @@ def test_rwd_rig_retries_a_restart_whose_first_trigger_was_missed(tmp_path: Path
     events = events_of(packets)
     reasons = [event.detail for event in events if event.event == "rwd_sequencer_restart"]
     assert len(reasons) == 2
-    assert "first trigger may have been missed" in reasons[1]
+    assert "first trigger or frame may have been missed" in reasons[1]
     frames = frames_of(packets)
     third = bench.session_s(bench.board.runs[2].start_s + START_DELAY_S)
     after = [f.exposure for f in frames if f.exposure.timestamp_s >= third - 1e-6]
@@ -224,6 +225,17 @@ def test_rwd_rig_retries_a_restart_whose_first_trigger_was_missed(tmp_path: Path
     )
     (interval,) = invalid_of(packets)
     assert interval.stop_time_s == pytest.approx(after[0].timestamp_s)
+
+
+def test_initial_frame_loss_is_restarted_before_any_false_identity(tmp_path: Path):
+    bench = Bench(_config(tmp_path, (W410, W470)))
+    bench.pending_setup = lambda cams: cams.lost.add(("1", 0, 0))
+    packets = bench.run(0.5)
+    assert len(bench.board.runs) == 2
+    assert invalid_of(packets)
+    assert "too late" in invalid_of(packets)[0].reason
+    assert frames_of(packets)[0].exposure.wavelength_nm == W410
+    bench.assert_all_off()
 
 
 def test_rwd_rig_fails_when_the_board_period_is_not_the_commanded_rate(tmp_path: Path) -> None:
@@ -410,7 +422,7 @@ def test_rwd_rig_times_non_divisor_rates_on_the_boards_period(tmp_path: Path) ->
     assert len(frames) == 61
 
 
-def test_rwd_rig_does_not_restart_on_host_scatter_at_120_hz(tmp_path: Path) -> None:
+def test_rwd_rig_rejects_ambiguous_first_arrival_at_120_hz(tmp_path: Path) -> None:
     bench = Bench(_config(tmp_path, requested_fps=120.0, exposure_us=5000))
 
     def setup(cams):
@@ -425,8 +437,9 @@ def test_rwd_rig_does_not_restart_on_host_scatter_at_120_hz(tmp_path: Path) -> N
     packets = bench.run(2.0)
 
     restarts = [e for e in events_of(packets) if e.event == "rwd_sequencer_restart"]
-    assert len(restarts) == 1
+    assert len(restarts) == 2
     assert "missed exposure" in restarts[0].detail
+    assert "too late to establish wavelength phase" in restarts[1].detail
     np.testing.assert_allclose(
         np.diff([f.exposure.timestamp_s for f in frames_of(packets)[:40]]), 0.008333, atol=1e-9
     )
@@ -623,4 +636,24 @@ def test_rwd_rig_changes_led_power_mid_session_with_a_marked_gap(tmp_path: Path)
     (gap,) = invalid_of(packets)
     assert gap.reason == "RWD sequencer restart: LED power changed"
     assert all(not gap.start_time_s <= t < gap.stop_time_s for _p, t in powers)
+    bench.assert_all_off()
+
+
+def test_rwd_rig_holds_output_triggers_until_an_armed_recording_starts(tmp_path: Path) -> None:
+    manual = RWDTTLOutputConfig(
+        port=4, frequency_hz=20.0, pulse_width_ms=10, trigger="manual", train_s=0.3
+    )
+    bench = Bench(_outputs_config(tmp_path, manual))
+    edge_at = bench.clock.now_s + 3.0
+    bench.board.schedule_input_edge(1, True, edge_at)
+    packets = bench.rig.packets(1.0, start=StartCondition(ttl_line=1))
+    bench.rig.trigger_output(4)  # pressed while DBF waits for the start edge
+
+    collected = list(packets)
+
+    _armed, recorded = bench.board.runs
+    marks = [mark for packet in collected for mark in packet.event_marks]
+    assert len(marks) == 1 and marks[0].timestamp_s < 0.05
+    assert _output_switches(bench.board, 4)[:2] == [False, True]
+    assert recorded.start_s > edge_at
     bench.assert_all_off()

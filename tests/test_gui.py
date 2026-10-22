@@ -162,10 +162,10 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     qtbot.addWidget(window)
     window.show()
 
-    assert window.size().width() == 2300
-    assert window.size().height() == 1300
-    assert window.minimumWidth() == 1408
-    assert window.minimumHeight() == 792
+    assert window.size().width() <= 1366
+    assert window.size().height() <= 768
+    assert window.minimumWidth() <= 960
+    assert window.minimumHeight() <= 600
     assert window.tabs.count() == 3
     assert window.tabs.tabText(0) == "Acquire"
     assert window.tabs.tabText(1) == "Camera & fiber ROIs"
@@ -947,7 +947,8 @@ def test_gui_start_and_stop_options_round_trip_without_a_new_preview(qtbot, tmp_
     assert (sequential.excitation, sequential.excitation_on_s) == ("sequential", 30.0)
     window.excitation_mode_combo.setCurrentIndex(0)
     window.stop_mode_combo.setCurrentIndex(window.stop_mode_combo.findData("manual"))
-    assert not window.duration_spin.isEnabled()
+    assert window.duration_spin.isEnabled()
+    assert window._duration_label.text() == "Expected length"
     assert window._build_config().recording_limit_s == 24 * 60 * 60
 
     window._apply_configuration(config)
@@ -971,6 +972,7 @@ def test_gui_cancels_a_recording_still_waiting_to_start(qtbot, tmp_path: Path) -
     assert window.last_error is None
     assert window.last_result is None
     assert "nothing was recorded" in window.live_status.text()
+    assert window.start_button.isEnabled()  # the passed preview still counts
     assert not list(tmp_path.rglob("*.nwb"))
     assert not list(tmp_path.rglob("*.photometry-spool"))
 
@@ -1200,3 +1202,23 @@ def test_gui_logs_failures_to_the_settings_folder(qtbot, tmp_path: Path, monkeyp
 
     log = (settings_root() / "logs" / "dbf-errors.log").read_text(encoding="utf-8")
     assert "Preview failed" in log and "no camera frame within 2 s" in log
+
+
+def test_gui_keeps_event_settings_the_panel_cannot_show(qtbot, tmp_path: Path) -> None:
+    payload = demo_config(tmp_path, fiber_count=1).model_dump()
+    payload["event_markers"] = [{"key": "2", "name": "Tone"}, {"key": "7", "name": "Shock"}]
+    payload["ttl_events"] = [
+        {"line": 1, "min_width_ms": 10 * i, "max_width_ms": 10 * i + 5, "name": f"E{i}"}
+        for i in range(6)
+    ]
+    config = SessionConfig.model_validate(payload)
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+
+    window._apply_configuration(config)
+    rebuilt = window._build_config()
+
+    assert [(m.key, m.name) for m in rebuilt.event_markers] == [("2", "Tone"), ("7", "Shock")]
+    assert [rule.name for rule in rebuilt.ttl_events] == [f"E{i}" for i in range(6)]
+    assert "keys 7" in window.events_extra_label.text()
+    assert "2 more named TTL event(s)" in window.events_extra_label.text()

@@ -303,6 +303,19 @@ class RWDSegmentTracker:
         plan = self._plan
         camera = frame.camera_index
         slot = plan.first_slot(camera)
+        # Causality, not a measured average USB latency: a completed later exposure
+        # cannot arrive before its trigger plus exposure time. Beyond that boundary
+        # the first delivered frame could be a later slot, even with consecutive IDs.
+        # Fail closed at high rates/latencies rather than inventing an initial phase.
+        next_slot = plan.next_slot(camera, slot)
+        latest_unambiguous = self._enabled_host_s + next_slot * plan.period_s + plan.exposure_s
+        if frame.host_received_s >= latest_unambiguous:
+            return RWDContinuityBreak(
+                camera,
+                f"camera {camera}'s first frame arrived too late to establish wavelength "
+                "phase; a first trigger or frame may have been missed (reduce the "
+                "frame rate or camera/USB latency)",
+            )
         slot0_host_s = frame.host_received_s - plan.exposure_s - slot * plan.period_s
         if self._slot0_host_s is None:
             self._slot0_host_s = slot0_host_s
@@ -381,6 +394,10 @@ class RWDTTLClock:
     def observe_frame(self, host_received_s: float, session_s: float) -> None:
         if self.offset_s is None:
             self._frames.append((host_received_s, host_received_s - session_s))
+            oldest = host_received_s - self.window_s - self.settle_s
+            # Before the first TTL, retain only the neighborhood needed for alignment.
+            while self._frames and self._frames[0][0] < oldest:
+                del self._frames[0]
 
     def add_edge(self, edge: RWDInputEdge, host_s: float) -> None:
         """Queue one edge; raises ValueError if board ticks go backwards."""

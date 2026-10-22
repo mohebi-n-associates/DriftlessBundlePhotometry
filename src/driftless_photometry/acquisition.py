@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -148,8 +149,9 @@ def run_live_view(
     minimum_gap_s = 1.0 / max_rate_hz
     last_shown: dict[tuple[int, Wavelength], float] = {}
     frame_count = 0
+    packets = source.packets(duration_s)
     try:
-        for rig_packet in source.packets(duration_s):
+        for rig_packet in packets:
             packet = rig_packet.frame
             if packet is None:
                 continue
@@ -172,7 +174,7 @@ def run_live_view(
                 )
             )
     finally:
-        source.stop()
+        _close_source(source, packets)
     return frame_count
 
 
@@ -193,7 +195,8 @@ def run_preview(
     """Exercise and validate acquisition inputs without creating scientific output.
 
     With ``allow_power_changes`` the commanded power may change during the preview (the
-    operator setting LED powers); the result reports the last power per wavelength.
+    operator setting LED powers) after each wavelength's first frame, which must still
+    match the configuration; the result reports the last power per wavelength.
     """
 
     planned_duration_s = preview_duration_s(config) if duration_s is None else duration_s
@@ -208,8 +211,9 @@ def run_preview(
     last_timestamp = -np.inf
     maximum_saturation = 0.0
     final_power: dict[Wavelength, float] = {}
+    packets = source.packets(planned_duration_s)
     try:
-        for rig_packet in source.packets(planned_duration_s):
+        for rig_packet in packets:
             packet = rig_packet.frame
             if packet is None:
                 continue
@@ -237,9 +241,12 @@ def run_preview(
                     f"preview received disabled or unknown wavelength "
                     f"{int(exposure.wavelength_nm)} nm"
                 )
+            # Changes are allowed only after a wavelength's first frame, which must still
+            # show the configured intensity.
+            changed_later = allow_power_changes and exposure.wavelength_nm in final_power
             if exposure.commanded_power_percent is not None:
                 final_power[exposure.wavelength_nm] = exposure.commanded_power_percent
-            if not allow_power_changes and not _commanded_intensity_matches(exposure, channel):
+            if not changed_later and not _commanded_intensity_matches(exposure, channel):
                 raise RuntimeError(
                     f"preview {int(exposure.wavelength_nm)} nm commanded intensity does not "
                     "match configuration"
@@ -281,7 +288,7 @@ def run_preview(
                     )
                 )
     finally:
-        source.stop()
+        _close_source(source, packets)
     if frame_count == 0:
         raise RuntimeError("preview ended without receiving a camera frame")
     missing = [wavelength for wavelength, count in wavelength_counts.items() if count < 2]
@@ -319,6 +326,17 @@ class AcquisitionCancelled(RuntimeError):
     """Stop came before the recording's first frame, so nothing was recorded."""
 
 
+def _close_source(source: RigSource, packets: object) -> None:
+    """Unwind the device-owning generator on its owner thread, before draining disk."""
+
+    try:
+        source.stop()
+    finally:
+        close = getattr(packets, "close", None)
+        if close is not None:
+            close()
+
+
 class AcquisitionEngine:
     """Coordinate matched frames, extraction, spool, and NWB finalization."""
 
@@ -333,6 +351,7 @@ class AcquisitionEngine:
         self._stop_requested = threading.Event()
         self._marks_lock = threading.Lock()
         self._pending_marks: list[tuple[float, str, str]] = []
+        self.recovery_path: Path | None = None
 
     @property
     def state(self) -> AcquisitionState:
@@ -385,6 +404,7 @@ class AcquisitionEngine:
         if not self._run_lock.acquire(blocking=False):
             raise RuntimeError("an acquisition is already running")
         spool: SessionSpool | None = None
+        packets = None
         frame_count = 0
         last_sequence = -1
         last_controller_tick = -1
@@ -408,8 +428,18 @@ class AcquisitionEngine:
                 self._transition(AcquisitionState.READY, on_state)
             if self.state is not AcquisitionState.READY:
                 raise RuntimeError(f"acquisition cannot start from state {self.state}")
-            storage_capacity = check_storage_capacity(config, duration_s)
+            # A manual stop may run up to 24 h, but the free-space check uses the expected
+            # length the operator entered; running out of space later is still a fault.
+            capacity_s = (
+                min(duration_s, config.recording_duration_s)
+                if config.recording.stop == "manual"
+                else duration_s
+            )
+            storage_capacity = check_storage_capacity(config, capacity_s)
             start = StartCondition.for_recording(config)
+            prepare = getattr(source, "prepare_recording", None)
+            if prepare is not None:
+                prepare()
             cycle = ExcitationCycle.for_recording(config)
             # Ask for packets before reporting ARMED: a Stop from then on must be kept.
             packets = (
@@ -435,6 +465,7 @@ class AcquisitionEngine:
                 ),
             )
             recording = config.recording
+            self.recovery_path = spool.path
             stop_on_ttl = recording.stop == "ttl"
             if start is None:
                 self._transition(AcquisitionState.RECORDING, on_state)
@@ -480,7 +511,24 @@ class AcquisitionEngine:
                         )
                         self.stop()
 
+            observed_session_start = None
             for rig_packet in packets:
+                if rig_packet.stop_requested:
+                    self._stop_requested.set()
+                if (
+                    rig_packet.session_start_time is not None
+                    and rig_packet.session_start_time != observed_session_start
+                ):
+                    if frame_count:
+                        raise AcquisitionFault(
+                            AcquisitionFaultCode.CLOCK_DISCONTINUITY,
+                            "source changed session time origin after recording started",
+                        )
+                    observed_session_start = rig_packet.session_start_time
+                    spool.submit_session_start(rig_packet.session_start_time)
+                    spool.submit_system_event(
+                        SystemEvent(0.0, "session_prepared", config.session_start_time.isoformat())
+                    )
                 for interval in rig_packet.invalid_times:
                     spool.submit_invalid_time(interval)
                 for event in rig_packet.system_events:
@@ -583,6 +631,7 @@ class AcquisitionEngine:
                 if self._stop_requested.is_set():
                     spool.close(complete=False)
                     spool.cleanup()
+                    self.recovery_path = None
                     spool = None
                     if self.state is AcquisitionState.RECORDING:
                         self._transition(AcquisitionState.DRAINING, on_state)
@@ -598,7 +647,7 @@ class AcquisitionEngine:
             if not loaded.complete:
                 raise RuntimeError("spool did not reach a complete state")
             reports = write_session_nwbs(
-                config,
+                loaded.config,
                 loaded.data,
                 frames=loaded.frames,
                 calibration_image=loaded.calibration_image,
@@ -612,6 +661,7 @@ class AcquisitionEngine:
                 maximum_absolute_clock_residual_s=maximum_absolute_clock_residual_s,
             )
             spool.cleanup()
+            self.recovery_path = None
             self._transition(AcquisitionState.READY, on_state)
             return AcquisitionRunResult(
                 reports=reports,
@@ -622,8 +672,12 @@ class AcquisitionEngine:
         except AcquisitionCancelled:
             raise
         except BaseException as error:
-            with suppress(BaseException):
-                source.stop()
+            try:
+                _close_source(source, packets)
+            except BaseException as shutdown_error:
+                error.add_note(f"Hardware cleanup failed: {shutdown_error}")
+            finally:
+                packets = None
             if spool is not None:
                 fault_code = _fault_code(error)
                 event_timestamp = max(0.0, last_timestamp) if np.isfinite(last_timestamp) else 0.0
@@ -640,7 +694,7 @@ class AcquisitionEngine:
                         system_event=SystemEvent(
                             timestamp_s=event_timestamp,
                             event=f"acquisition_fault:{fault_code.value}",
-                            detail=str(error),
+                            detail="\n".join((str(error), *getattr(error, "__notes__", ()))),
                         ),
                         invalid_time=invalid_time,
                     )
@@ -648,9 +702,11 @@ class AcquisitionEngine:
                 self._transition(AcquisitionState.ERROR, on_state)
             raise
         finally:
-            source.stop()
-            self._source = None
-            self._run_lock.release()
+            try:
+                _close_source(source, packets)
+            finally:
+                self._source = None
+                self._run_lock.release()
 
     def reset_error(self, on_state: StateCallback | None = None) -> None:
         if self.state is not AcquisitionState.ERROR:
