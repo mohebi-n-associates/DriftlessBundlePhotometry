@@ -159,7 +159,7 @@ version, move its completed entries into a dated version section.
   as bleaching or changing room light drops out and brief transients remain.
   **dF/F, control fit** now hides the 405/410 nm trace, which is already divided out
   of every signal.
-- **Run preview** now runs until **Stop preview** (10 minutes at most), so it can be
+- **Run preview** now runs until **Stop** (10 minutes at most), so it can be
   used to set LED powers and inspect the signal. On RWD the power sliders stay live
   during preview and live view: each change restarts the board's LED cycle with the
   new power, records an `rwd_led_power_changed` event, and marks the short gap invalid.
