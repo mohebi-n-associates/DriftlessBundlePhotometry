@@ -10,6 +10,7 @@ from driftless_photometry.gui.trace_display import (
     MAX_DISPLAY_POINTS,
     downsample_min_max,
     fitted_control_f0,
+    rolling_f0,
     trailing_mean,
 )
 
@@ -133,3 +134,19 @@ def test_fitted_control_f0_needs_a_varying_control() -> None:
 
     assert fitted_control_f0(times, flat + 1, times, flat, times) is None
     assert fitted_control_f0(times[:2], flat[:2], times[:2], flat[:2], times) is None
+
+
+def test_rolling_f0_follows_drift_but_not_a_brief_transient() -> None:
+    times = np.arange(0.0, 120.0, 0.05)
+    drift = 100.0 + 0.5 * times  # slow bleaching-like drift
+    values = drift.copy()
+    values[(times >= 90.0) & (times < 91.0)] *= 1.2  # a 1 s transient
+
+    f0 = rolling_f0(times, values, 20.0, times)
+
+    late = times > 30
+    assert np.allclose(f0[late & (times < 89)], drift[late & (times < 89)] - 5.0, atol=0.7)
+    assert abs(f0[times == 90.5][0] - (drift[times == 90.5][0] - 5.0)) < 1.0
+    dff = (values - f0) / f0 * 100
+    assert dff[times == 90.5][0] > 15.0
+    assert np.isfinite(f0).all()

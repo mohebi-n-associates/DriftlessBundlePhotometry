@@ -1069,12 +1069,17 @@ def test_gui_dff_control_fit_takes_f0_from_the_fitted_control(qtbot, tmp_path: P
 
     window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff_fit"))
 
-    assert "control fitted" in window.trace_baseline_hint.text()
+    assert "control hidden" in window.trace_baseline_hint.text()
     _, displayed = window._curves[(470, 0)].getData()
     assert np.nanmax(np.abs(displayed[:50])) < 2.0
     assert np.nanmedian(displayed[-10:]) > 7.0
-    _, control_dff = window._curves[(405, 0)].getData()
-    assert np.isfinite(control_dff).all()
+    assert not window._curves[(405, 0)].isVisible() and window._curves[(470, 0)].isVisible()
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff_rolling"))
+    assert window._curves[(405, 0)].isVisible()
+    assert "preceding window" in window.trace_baseline_hint.text()
+    _, rolling = window._curves[(470, 0)].getData()
+    assert np.isfinite(rolling).all()
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff_fit"))
     assert window._build_config().display.mode == "dff_fit"
 
 
