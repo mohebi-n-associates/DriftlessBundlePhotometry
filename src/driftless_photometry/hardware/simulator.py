@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -90,6 +91,7 @@ class SimulatedRig:
         fps = self._config.camera.requested_fps
         frame_count = max(1, round(duration_s * fps))
         started_monotonic = time.monotonic()
+        started_utc = datetime.now(UTC)
         previous_time = -1.0
         ttl_sequence = 0
         sequence = 0
@@ -147,7 +149,12 @@ class SimulatedRig:
                 ttl_sequence,
             )
             previous_time = timestamp_s
-            yield RigPacket(frame=frame, ttl_edges=edges, system_events=tuple(events))
+            yield RigPacket(
+                frame=frame,
+                ttl_edges=edges,
+                system_events=tuple(events),
+                session_start_time=started_utc if sequence == 0 else None,
+            )
             events.clear()
             sequence += 1
 

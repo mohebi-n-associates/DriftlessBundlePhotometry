@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import IO
 
@@ -98,7 +99,20 @@ class _StopWork:
     complete: bool
 
 
-_Work = _FrameWork | _TTLWork | _InvalidTimeWork | _SystemEventWork | _EventMarkWork | _StopWork
+@dataclass(frozen=True, slots=True)
+class _StartTimeWork:
+    value: datetime
+
+
+_Work = (
+    _FrameWork
+    | _TTLWork
+    | _InvalidTimeWork
+    | _SystemEventWork
+    | _EventMarkWork
+    | _StopWork
+    | _StartTimeWork
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +220,13 @@ class SessionSpool:
     def submit_ttl(self, edge: TTLEdge) -> None:
         self._ensure_open()
         self._put(_TTLWork(edge=edge))
+
+    def submit_session_start(self, value: datetime) -> None:
+        """Persist the actual time origin on the writer before its first frame commit."""
+        self._ensure_open()
+        if value.utcoffset() is None:
+            raise ValueError("session start time needs a timezone")
+        self._put(_StartTimeWork(value))
 
     def submit_invalid_time(self, interval: InvalidTimeInterval) -> None:
         self._ensure_open()
@@ -332,6 +353,13 @@ class SessionSpool:
                         self._write_system_event(system_file, work.event)
                     elif isinstance(work, _EventMarkWork):
                         self._write_line(mark_file, asdict(work.mark), "event_mark_count")
+                    elif isinstance(work, _StartTimeWork):
+                        self.config = self.config.model_copy(
+                            update={"session_start_time": work.value}
+                        )
+                        _atomic_write_json(
+                            self.path / "config.json", self.config.model_dump(mode="json")
+                        )
                     else:
                         if frame_buffer:
                             self._commit_timed_chunk(frame_buffer)

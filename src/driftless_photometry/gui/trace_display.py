@@ -14,6 +14,16 @@ HORIZONS: tuple[tuple[str, float | None], ...] = (
 )
 
 MAX_DISPLAY_POINTS = 4000
+MAX_HISTORY_POINTS = 8 * MAX_DISPLAY_POINTS
+
+
+def compact_history(times: NDArray, values: NDArray, budget: int) -> tuple[NDArray, NDArray]:
+    """Bound display memory, retaining endpoints and chronological bucket extrema."""
+    x, y = downsample_min_max(times[1:-1], values[1:-1], first_index=1, max_points=budget - 2)
+    x = np.concatenate((times[:1], x, times[-1:]))
+    y = np.concatenate((values[:1], y, values[-1:]))
+    unique = np.concatenate(([True], np.diff(x) > 0))
+    return x[unique], y[unique]
 
 
 def trailing_mean(
@@ -140,16 +150,32 @@ def fitted_control_f0(
 
     if len(control_times) < 3 or len(signal_times) < 3:
         return None
-    covered = (signal_times >= control_times[0]) & (signal_times <= control_times[-1])
-    stride = max(1, int(np.count_nonzero(covered)) // FIT_MAX_POINTS)
-    times = signal_times[covered][::stride]
-    signal = np.asarray(signal_values, dtype=np.float64)[covered][::stride]
-    control = np.interp(times, control_times, np.asarray(control_values, dtype=np.float64))
+    # Fit on evenly strided samples of both traces, so the cost stays bounded however
+    # long the recording runs; a slowly varying control barely changes the fit.
+    first = int(np.searchsorted(signal_times, control_times[0], side="left"))
+    last = int(np.searchsorted(signal_times, control_times[-1], side="right"))
+    stride = max(1, (last - first) // FIT_MAX_POINTS)
+    times = signal_times[first:last:stride]
+    signal = np.asarray(signal_values[first:last:stride], dtype=np.float64)
+    control_stride = max(1, len(control_times) // FIT_MAX_POINTS)
+    control_grid = control_times[::control_stride]
+    control = np.interp(
+        times, control_grid, np.asarray(control_values[::control_stride], dtype=np.float64)
+    )
     finite = np.isfinite(control) & np.isfinite(signal)
     if np.count_nonzero(finite) < 3 or np.ptp(control[finite]) <= 0:
         return None
     slope, intercept = np.polyfit(control[finite], signal[finite], 1)
-    fitted = np.interp(at_times, control_times, np.asarray(control_values, dtype=np.float64))
+    if len(at_times) == 0:
+        return np.empty(0, dtype=np.float64)
+    # Evaluate on just the control samples around the requested times.
+    low = max(0, int(np.searchsorted(control_times, at_times[0], side="right")) - 1)
+    high = min(len(control_times), int(np.searchsorted(control_times, at_times[-1])) + 1)
+    fitted = np.interp(
+        at_times,
+        control_times[low:high],
+        np.asarray(control_values[low:high], dtype=np.float64),
+    )
     return slope * fitted + intercept
 
 
@@ -187,13 +213,19 @@ def rolling_f0(
     counts = np.diff(np.concatenate((starts, [len(values)])))
     means = sums / counts
     bins = index[starts]
-    # Place bin means on a regular grid; empty bins repeat the previous mean.
-    grid = np.full(int(bins[-1]) + 1, np.nan)
-    grid[bins] = means
-    filled = np.flatnonzero(~np.isnan(grid))
-    grid = grid[filled[np.searchsorted(filled, np.arange(len(grid)), side="right") - 1]]
-    padded = np.concatenate((np.full(ROLLING_BINS_PER_WINDOW - 1, np.nan), grid))
-    windows = np.lib.stride_tricks.sliding_window_view(padded, ROLLING_BINS_PER_WINDOW)
-    baseline = np.nanmedian(windows, axis=1)
-    centers = start + (np.arange(len(grid)) + 1.0) * width
-    return np.interp(at_times, centers, baseline)
+    # Evaluate only the bins surrounding requested times. A dense grid from session
+    # zero grew with duration/window and could allocate gigabytes for a short window.
+    position = np.clip((at_times - start) / width - 1, 0, bins[-1])
+    left = np.floor(position).astype(np.int64)
+    right = np.minimum(left + 1, bins[-1])
+    needed, inverse = np.unique(np.concatenate((left, right)), return_inverse=True)
+    baseline = np.empty(len(needed), dtype=np.float64)
+    for offset in range(0, len(needed), 1024):
+        grid = needed[offset : offset + 1024, None] - np.arange(ROLLING_BINS_PER_WINDOW)[None, :]
+        lookup = np.searchsorted(bins, grid, side="right") - 1
+        windows = means[np.maximum(lookup, 0)]
+        windows[grid < 0] = np.nan
+        baseline[offset : offset + len(grid)] = np.nanmedian(windows, axis=1)
+    n = len(at_times)
+    lower, upper = baseline[inverse[:n]], baseline[inverse[n:]]
+    return lower + (upper - lower) * (position - left)

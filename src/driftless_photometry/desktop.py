@@ -16,7 +16,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments == ["--desktop-smoke"]:
         return _desktop_smoke()
     if not arguments:
-        arguments = ["--demo"]
+        arguments = ["--gui"]
     return cli_main(arguments)
 
 

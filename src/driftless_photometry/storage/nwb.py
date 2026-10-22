@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -931,6 +932,25 @@ def _add_raw_frames(
     nwbfile.add_acquisition(series)
 
 
+def _verify_rows(table, columns: tuple[str, ...], rows: Iterable[tuple], name: str) -> None:
+    """Compare every cell in bounded batches, including absent/extra tables and rows."""
+
+    iterator = iter(rows)
+    offset = 0
+    while batch := list(islice(iterator, 1024)):
+        if table is None or len(table) < offset + len(batch):
+            raise RuntimeError(f"NWB round-trip {name} count mismatch")
+        for index, column in enumerate(columns):
+            expected = np.asarray([row[index] for row in batch])
+            stored = np.asarray(table[column][offset : offset + len(batch)])
+            numeric = expected.dtype.kind in "fci"
+            if not np.array_equal(stored, expected, equal_nan=numeric):
+                raise RuntimeError(f"NWB round-trip {name}.{column} mismatch")
+        offset += len(batch)
+    if (len(table) if table is not None else 0) != offset:
+        raise RuntimeError(f"NWB round-trip {name} count mismatch")
+
+
 def _round_trip_verify(
     path: Path,
     config: SessionConfig,
@@ -938,10 +958,14 @@ def _round_trip_verify(
     frames: NDArray[np.uint16] | FrameStream | None,
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
     roi_index: int,
+    calibration_image: NDArray[np.uint16] | None = None,
+    additional_system_events: tuple[str, ...] = (),
 ) -> None:
     with NWBHDF5IO(path, mode="r", load_namespaces=True) as io:
         nwbfile = io.read()
         roi = config.enabled_rois[roi_index]
+        if nwbfile.session_start_time != config.session_start_time:
+            raise RuntimeError("NWB round-trip session start time mismatch")
         if nwbfile.session_id != f"{config.session_id}__{roi.fiber_id}":
             raise RuntimeError("NWB round-trip ROI session identity mismatch")
         if nwbfile.subject is None or nwbfile.subject.subject_id != roi.animal_id:
@@ -972,7 +996,7 @@ def _round_trip_verify(
         excitation_events = nwbfile.events["excitation_events"]
         if len(excitation_events) != len(data.frame_ids):
             raise RuntimeError("NWB round-trip excitation event count mismatch")
-        frame_table = frame_events.to_dataframe()
+        intensity = _intensity(config)
         exact_columns = {
             "camera_frame_id": data.frame_ids,
             "camera_index": data.frame_camera_indices,
@@ -981,51 +1005,138 @@ def _round_trip_verify(
             "wavelength_nm": data.frame_wavelengths_nm,
             "wavelength_source": data.frame_wavelength_sources,
             "controller_tick_us": data.frame_ticks_us,
+            "timestamp": data.frame_timestamps_s,
+            intensity.column: intensity.values(data),
+            "host_received_s": data.frame_host_received_s,
+            "roi_saturation_fraction": (
+                values[roi_index] for values in data.frame_saturation_fractions
+            ),
         }
-        for column, expected in exact_columns.items():
-            if not np.array_equal(frame_table[column].to_numpy(), np.asarray(expected)):
-                raise RuntimeError(f"NWB round-trip {column} provenance mismatch")
-        if not np.array_equal(
-            frame_table["timestamp"].to_numpy(),
-            np.asarray(data.frame_timestamps_s),
-        ):
-            raise RuntimeError("NWB round-trip frame timestamp mismatch")
-        intensity = _intensity(config)
-        if not np.array_equal(
-            frame_table[intensity.column].to_numpy(dtype=np.float64),
-            np.asarray(intensity.values(data), dtype=np.float64),
-            equal_nan=True,
-        ):
-            raise RuntimeError("NWB round-trip commanded-intensity provenance mismatch")
-        if not np.array_equal(
-            frame_table["host_received_s"].to_numpy(),
-            np.asarray(data.frame_host_received_s),
-        ):
-            raise RuntimeError("NWB round-trip host-receipt provenance mismatch")
-        expected_saturation = np.asarray(
-            [values[roi_index] for values in data.frame_saturation_fractions],
-            dtype=np.float32,
+        _verify_rows(
+            frame_events,
+            tuple(exact_columns),
+            zip(*exact_columns.values(), strict=True),
+            "camera_frames",
         )
-        if not np.array_equal(
-            frame_table["roi_saturation_fraction"].to_numpy(),
-            expected_saturation,
-        ):
-            raise RuntimeError("NWB round-trip saturation provenance mismatch")
-        if "ttl_edges" in nwbfile.events and len(nwbfile.events["ttl_edges"]) != len(
-            data.ttl_edges
-        ):
-            raise RuntimeError("NWB round-trip TTL event count mismatch")
-        stored_marks = len(nwbfile.events["event_marks"]) if "event_marks" in nwbfile.events else 0
-        if stored_marks != len(data.event_marks):
-            raise RuntimeError("NWB round-trip event-mark count mismatch")
-        if data.invalid_times:
-            if "invalid_times" not in nwbfile.intervals:
-                raise RuntimeError("NWB round-trip invalid-time table is missing")
-            if len(nwbfile.intervals["invalid_times"]) != len(data.invalid_times):
-                raise RuntimeError("NWB round-trip invalid-time count mismatch")
-        expected_system_count = 2 + len(data.system_events)
-        if len(nwbfile.events["system_events"]) < expected_system_count:
-            raise RuntimeError("NWB round-trip system-event count mismatch")
+        _verify_rows(
+            frame_events,
+            ("raw_saved", "raw_image_index"),
+            ((index >= 0, index) for index in data.frame_saved_indices),
+            "camera_frames",
+        )
+        _verify_rows(
+            excitation_events,
+            (
+                "timestamp",
+                "controller_sequence",
+                "wavelength_nm",
+                "wavelength_source",
+                "controller_tick_us",
+                intensity.column,
+            ),
+            zip(
+                data.frame_timestamps_s,
+                data.frame_sequences,
+                data.frame_wavelengths_nm,
+                data.frame_wavelength_sources,
+                data.frame_ticks_us,
+                intensity.values(data),
+                strict=True,
+            ),
+            "excitation_events",
+        )
+        _verify_rows(
+            nwbfile.events.get("ttl_edges"),
+            (
+                "timestamp",
+                "line",
+                "label",
+                "edge",
+                "new_level",
+                "controller_tick_us",
+                "controller_sequence",
+            ),
+            (
+                (
+                    e.timestamp_s,
+                    e.line,
+                    e.label,
+                    e.edge,
+                    e.new_level,
+                    e.controller_tick_us,
+                    e.sequence,
+                )
+                for e in data.ttl_edges
+            ),
+            "ttl_edges",
+        )
+        _verify_rows(
+            nwbfile.events.get("event_marks"),
+            ("timestamp", "event_name", "source", "detail", "duration"),
+            (
+                (m.timestamp_s, m.name, m.source, m.detail, m.duration_s)
+                for m in sorted(data.event_marks, key=lambda m: m.timestamp_s)
+            ),
+            "event_marks",
+        )
+        _verify_rows(
+            nwbfile.events.get("dropped_frame_events"),
+            ("timestamp", "expected_sequence", "observed_sequence", "missing_count", "reason"),
+            (
+                (e.timestamp_s, e.expected_sequence, e.observed_sequence, e.missing_count, e.reason)
+                for e in data.dropped_frames
+            ),
+            "dropped_frame_events",
+        )
+        _verify_rows(
+            nwbfile.intervals.get("invalid_times"),
+            ("start_time", "stop_time", "reason", "source_event"),
+            ((e.start_time_s, e.stop_time_s, e.reason, e.source_event) for e in data.invalid_times),
+            "invalid_times",
+        )
+        system_rows = [
+            (0.0, "recording_started", ""),
+            (data.frame_timestamps_s[-1], "recording_stopped", ""),
+        ]
+        system_rows.extend((e.timestamp_s, e.event, e.detail) for e in data.system_events)
+        # A normal acquisition may have promoted some ROI files before interruption.
+        # Those files predate recovery and legitimately have no recovery marker.
+        original_complete = additional_system_events == ("spool_recovered_complete",) and len(
+            nwbfile.events["system_events"]
+        ) == len(system_rows)
+        if not original_complete:
+            system_rows.extend(
+                (data.frame_timestamps_s[-1], e, "") for e in additional_system_events
+            )
+        _verify_rows(
+            nwbfile.events.get("system_events"),
+            ("timestamp", "event", "detail"),
+            system_rows,
+            "system_events",
+        )
+        roi_table = nwbfile.processing["photometry"]["camera_rois"]
+        roi_columns = ("fiber_id", "label", "center_x_px", "center_y_px", "radius_px")
+        if profile_for(config.source).camera_count > 1:
+            roi_columns += ("camera2_center_x_px", "camera2_center_y_px", "camera2_radius_px")
+        _verify_rows(
+            roi_table,
+            roi_columns,
+            [
+                tuple(
+                    _or_nan(getattr(roi, c)) if c.startswith("camera2_") else getattr(roi, c)
+                    for c in roi_columns
+                )
+            ],
+            "camera_rois",
+        )
+        if calibration_image is not None:
+            stored_reference = (
+                nwbfile.processing["photometry"]["calibration_images"]
+                .images["reference_frame"]
+                .data
+            )
+            if not np.array_equal(stored_reference, calibration_image):
+                raise RuntimeError("NWB round-trip calibration image mismatch")
         if wavelength_images:
             stored_images = nwbfile.processing["photometry"]["wavelength_roi_images"].images
             for wavelength, expected in wavelength_images.items():
@@ -1033,24 +1144,39 @@ def _round_trip_verify(
                 overlay_name = f"roi_overlay_{int(wavelength)}nm"
                 if not np.array_equal(stored_images[raw_name].data, expected):
                     raise RuntimeError(f"NWB round-trip reference mismatch for {raw_name}")
-                if stored_images[overlay_name].data.shape != (*expected.shape, 3):
-                    raise RuntimeError(f"NWB round-trip overlay shape mismatch for {overlay_name}")
+                overlay = render_annotated_rois(
+                    expected,
+                    rois_for_camera((roi,), profile_for(config.source).camera_for(wavelength)),
+                    bit_depth=config.camera.bit_depth,
+                )
+                if not np.array_equal(stored_images[overlay_name].data, overlay):
+                    raise RuntimeError(f"NWB round-trip overlay mismatch for {overlay_name}")
         if frames is not None:
             stored = nwbfile.acquisition["camera_frames"].data
             if isinstance(frames, FrameStream):
                 expected_shape = (frames.count, *frames.frame_shape)
-                first_frame = frames.first_frame
-                last_frame = frames.last_frame
+                expected_frames = frames.iter_frames()
             else:
                 expected_shape = frames.shape
-                first_frame = frames[0]
-                last_frame = frames[-1]
+                expected_frames = iter(frames)
             if tuple(stored.shape) != tuple(expected_shape):
                 raise RuntimeError("NWB round-trip raw frame shape mismatch")
-            if not np.array_equal(stored[0], first_frame) or not np.array_equal(
-                stored[-1], last_frame
+            if stored.dtype != np.uint16:
+                raise RuntimeError("NWB round-trip raw frame dtype mismatch")
+            count = 0
+            for count, expected in enumerate(expected_frames, 1):
+                if count > len(stored) or not np.array_equal(stored[count - 1], expected):
+                    raise RuntimeError("NWB round-trip raw frame values mismatch")
+            if count != len(stored):
+                raise RuntimeError("NWB round-trip raw frame count mismatch")
+            series = nwbfile.acquisition["camera_frames"]
+            if not np.array_equal(series.timestamps[:], data.frame_timestamps_s):
+                raise RuntimeError("NWB round-trip raw frame timestamps mismatch")
+            codes = _control_codes(profile_for(config.source))
+            if not np.array_equal(
+                series.control[:], [codes[Wavelength(w)] for w in data.frame_wavelengths_nm]
             ):
-                raise RuntimeError("NWB round-trip raw frame values mismatch")
+                raise RuntimeError("NWB round-trip raw frame wavelength control mismatch")
         table = nwbfile.lab_meta_data["FiberPhotometry"].fiber_photometry_table
         expected_rows = len(config.enabled_channels)
         if len(table) != expected_rows:
@@ -1064,6 +1190,11 @@ def _round_trip_verify(
             ):
                 raise RuntimeError(f"NWB round-trip trace shape mismatch for {name}")
             if expected_samples:
+                if not np.array_equal(
+                    nwbfile.acquisition[name].timestamps[:],
+                    [s.timestamp_s for s in data.traces[channel.wavelength_nm]],
+                ):
+                    raise RuntimeError(f"NWB round-trip trace timestamps mismatch for {name}")
                 expected_values = np.asarray(
                     [sample.values[roi_index] for sample in data.traces[channel.wavelength_nm]],
                     dtype=np.float32,
@@ -1088,6 +1219,13 @@ def _round_trip_verify(
                 )
                 if not np.array_equal(stored_commands.data[:], expected_commands):
                     raise RuntimeError(f"NWB round-trip intensity mismatch for {command_name}")
+                if not np.array_equal(
+                    stored_commands.timestamps[:],
+                    [data.frame_timestamps_s[i] for i in frame_indices],
+                ):
+                    raise RuntimeError(
+                        f"NWB round-trip intensity timestamps mismatch for {command_name}"
+                    )
 
 
 def _or_nan(value: float | None) -> float:
@@ -1170,6 +1308,8 @@ def _write_roi_partial_nwb(
         frames,
         wavelength_images,
         roi_index,
+        calibration_image,
+        additional_system_events,
     )
 
 
@@ -1181,6 +1321,8 @@ def _validate_roi_nwb(
     frames: NDArray[np.uint16] | FrameStream | None,
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
     roi_index: int,
+    calibration_image: NDArray[np.uint16] | None = None,
+    additional_system_events: tuple[str, ...] = (),
 ) -> NWBWriteReport:
     """Run the complete validation and exact round-trip gate on one candidate."""
 
@@ -1201,7 +1343,16 @@ def _validate_roi_nwb(
     if inspector_messages:
         raise RuntimeError("NWB Inspector found critical issues: " + "; ".join(inspector_messages))
 
-    _round_trip_verify(candidate_path, config, data, frames, wavelength_images, roi_index)
+    _round_trip_verify(
+        candidate_path,
+        config,
+        data,
+        frames,
+        wavelength_images,
+        roi_index,
+        calibration_image,
+        additional_system_events,
+    )
     trace_sample_count = sum(len(samples) for samples in data.traces.values())
     return NWBWriteReport(
         path=final_path,
@@ -1330,6 +1481,8 @@ def recover_or_resume_session_nwbs(
                     frames,
                     wavelength_images,
                     roi_index,
+                    calibration_image,
+                    additional_system_events,
                 )
             except Exception:
                 if candidate == final_path:

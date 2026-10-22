@@ -1,12 +1,13 @@
 import os
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 from pynwb import NWBHDF5IO
 
 from driftless_photometry.config import CUSTOM_PROFILE, demo_config
-from driftless_photometry.domain import ExposureRecord, FramePacket, TraceSample
+from driftless_photometry.domain import ExposureRecord, FramePacket, TraceSample, TTLEdge
 from driftless_photometry.storage import (
     SessionSpool,
     discover_session_spools,
@@ -31,6 +32,36 @@ def _submit_frames(spool: SessionSpool, count: int) -> None:
             saturation_fractions=np.zeros(2, dtype=np.float32),
         )
         spool.submit_frame(packet, sample)
+
+
+@pytest.mark.parametrize("corruption", ["middle_frame", "trace_time", "missing_ttl"])
+def test_recovery_refuses_corrupted_outputs_and_preserves_spool(tmp_path: Path, corruption: str):
+    config = demo_config(tmp_path, fiber_count=2, raw_capture=True, width_px=32, height_px=24)
+    spool = SessionSpool(config, chunk_size=2)
+    _submit_frames(spool, 6)
+    spool.submit_ttl(TTLEdge(0.1, 100_000, 1, "cue", "rising", True, 0))
+    spool.close()
+    first = recover_session_spool(spool.path, keep_spool=True)
+    path = first.nwbs[0].path
+    with NWBHDF5IO(path, mode="r", load_namespaces=True) as io:
+        nwb = io.read()
+        targets = {
+            "middle_frame": nwb.acquisition["camera_frames"].data.name,
+            "trace_time": nwb.acquisition["raw_fluorescence_405"].timestamps.name,
+            "missing_ttl": nwb.events["ttl_edges"]["timestamp"].data.parent.name,
+        }
+    with h5py.File(path, "r+") as handle:
+        target = targets[corruption]
+        if corruption == "middle_frame":
+            handle[target][2, 0, 0] += 1
+        elif corruption == "trace_time":
+            handle[target][1] += 0.01
+        else:
+            del handle[target]
+    with pytest.raises(RuntimeError, match="round-trip"):
+        recover_session_spool(spool.path)
+    assert spool.path.exists()
+    assert all(report.path.exists() for report in first.nwbs)
 
 
 def test_incomplete_spool_recovers_to_marked_valid_nwb(tmp_path: Path) -> None:
@@ -106,6 +137,27 @@ def test_recovery_is_idempotent_when_valid_outputs_already_exist(tmp_path: Path)
     assert [report.path for report in second.nwbs] == [report.path for report in first.nwbs]
     assert all(report.path.exists() for report in second.nwbs)
     assert spool.path.exists()
+
+
+def test_recovery_accepts_original_complete_outputs_without_a_recovery_marker(tmp_path: Path):
+    from driftless_photometry.storage import load_session_spool, write_session_nwbs
+
+    config = demo_config(tmp_path, fiber_count=2, width_px=32, height_px=24)
+    spool = SessionSpool(config, chunk_size=2)
+    _submit_frames(spool, 3)
+    spool.close()
+    loaded = load_session_spool(spool.path)
+    reports = write_session_nwbs(
+        config,
+        loaded.data,
+        calibration_image=loaded.calibration_image,
+        wavelength_images=loaded.wavelength_images,
+    )
+    # A crash after promotion but before spool deletion must remain recoverable.
+    result = recover_session_spool(spool.path)
+    assert result.reused_existing_outputs
+    assert result.spool_removed
+    assert [report.path for report in result.nwbs] == [report.path for report in reports]
 
 
 def test_recovery_resumes_interrupted_multi_roi_promotion(

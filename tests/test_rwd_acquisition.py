@@ -6,11 +6,57 @@ from pynwb import NWBHDF5IO
 from rwd_bench import W410, W470, W560, Bench, rwd_config
 
 from driftless_photometry.acquisition import AcquisitionEngine, run_preview
-from driftless_photometry.config import RWDSourceConfig
+from driftless_photometry.config import RecordingControlConfig, RWDSourceConfig
 from driftless_photometry.roi import circular_mask, rois_for_camera
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.storage import load_session_spool
 from driftless_photometry.storage.recovery import recover_session_spool
+
+
+def test_acquisition_fault_shuts_hardware_before_draining_spool(tmp_path: Path, monkeypatch):
+    from driftless_photometry.storage import SessionSpool
+
+    config = rwd_config(tmp_path, (W410, W470))
+    bench = Bench(config)
+    abort = SessionSpool.abort
+    inspected = []
+
+    def checked_abort(spool, **kwargs):
+        bench.assert_all_off()
+        assert not bench.board.is_open
+        inspected.append(True)
+        abort(spool, **kwargs)
+
+    monkeypatch.setattr(SessionSpool, "abort", checked_abort)
+
+    def fail(_progress):
+        raise RuntimeError("display consumer failed")
+
+    with pytest.raises(RuntimeError, match="display consumer failed") as caught:
+        AcquisitionEngine().run(config, bench.rig, duration_s=1.0, on_progress=fail)
+    assert caught.value.__traceback__ is not None  # Keeping it alive must not hold hardware.
+    assert inspected == [True]
+    bench.assert_all_off()
+
+
+def test_sparse_ttl_stop_is_immediate_and_preview_ignores_it(tmp_path: Path):
+    config = rwd_config(tmp_path, (W410, W470), fiber_count=1).model_copy(
+        update={
+            "recording": RecordingControlConfig(stop="ttl", stop_ttl_line=1, stop_ttl_edge="rising")
+        }
+    )
+    bench = Bench(config)
+    bench.board.schedule_input_edge(1, True, bench.clock.now_s + 0.4)
+    result = AcquisitionEngine().run(config, bench.rig, duration_s=20)
+    assert result.stopped_by_request
+    assert result.report.frame_count < 12
+    assert result.report.ttl_edge_count == 1
+    bench.assert_all_off()
+    preview = Bench(config)
+    preview.board.schedule_input_edge(1, True, preview.clock.now_s + 0.4)
+    result = run_preview(config, preview.rig, duration_s=1)
+    assert result.frame_count == 20
+    preview.assert_all_off()
 
 
 def test_rwd_preview_checks_every_wavelength_on_simulated_hardware(tmp_path: Path) -> None:
@@ -175,3 +221,30 @@ def test_rwd_dff_threshold_fires_its_output_program_and_marks_it(
     assert marks["duration"].tolist() == pytest.approx([0.25])
     assert marks["timestamp"].iloc[0] == pytest.approx(calls[5], abs=0.1)
     bench.assert_all_off()
+
+
+def test_rwd_preview_with_power_changes_still_checks_each_first_frame(tmp_path: Path) -> None:
+    configured = rwd_config(tmp_path, (W410, W470))
+    payload = configured.model_dump()
+    payload["channels"][1]["power_percent"] = 30.0  # the board runs 470 nm at 30 %
+    bench = Bench(type(configured).model_validate(payload))
+
+    with pytest.raises(RuntimeError, match="470 nm commanded intensity does not match"):
+        run_preview(configured, bench.rig, duration_s=0.5, allow_power_changes=True)
+
+    changing = Bench(configured)
+    frames = []
+
+    def change_after_first_frames(progress) -> None:
+        frames.append(progress)
+        if len(frames) == 4:
+            changing.rig.request_led_power(W470, 20.0)
+
+    result = run_preview(
+        configured,
+        changing.rig,
+        duration_s=1.0,
+        allow_power_changes=True,
+        on_progress=change_after_first_frames,
+    )
+    assert dict(result.final_power_percent)[W470] == 20.0

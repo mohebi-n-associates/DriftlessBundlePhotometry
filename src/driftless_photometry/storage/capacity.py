@@ -37,8 +37,10 @@ def estimate_session_bytes(config: SessionConfig, duration_s: float) -> tuple[in
         raise ValueError("duration_s must be positive")
     frame_count = math.ceil(config.camera.requested_fps * duration_s)
     roi_trace_bytes = len(config.enabled_rois) * 8
-    per_frame = _FRAME_METADATA_BYTES + roi_trace_bytes
     roi_file_count = len(config.enabled_rois)
+    # Shared exposure/timing metadata is copied to every independently useful NWB,
+    # even for trace-only recordings. Include both spool and all ROI outputs.
+    per_frame = _FRAME_METADATA_BYTES * (1 + roi_file_count) + roi_trace_bytes * 2
     if config.camera.raw_capture:
         # Raw frames exist once in the spool and once in every independently useful ROI NWB.
         per_frame += config.camera.width_px * config.camera.height_px * 2 * (1 + roi_file_count)

@@ -58,7 +58,8 @@ before starting DBF, because only one program can use the controller's port.
 
 ## Set up a recording
 
-1. Start DBF (`dbf --demo`) and choose **RWD** under *Acquisition system*.
+1. Start DBF (`dbf --gui` or the installed shortcut) and choose **RWD** under
+   *Acquisition system*. `dbf --demo` is restricted to the Custom simulator.
 2. **Excitation:** enable the LEDs you need and set each one's power in percent. The
    board can run one LED, 410+470, 470+560, or all three; it has no 410+560 mode.
 3. **Camera settings** (on *Camera & fiber ROIs*):
@@ -111,7 +112,7 @@ camera.
 1. On *Camera & fiber ROIs*, press **Live view**. DBF connects, switches the LEDs on
    with the current excitation settings, and streams both cameras. Nothing is
    recorded. The LEDs stay on until you press the same button, now **Stop live
-   view** (or **Stop** on *Acquire*); live view stops by itself after 10 minutes.
+   view**, the header **Stop**, or **Escape**); live view stops by itself after 10 minutes.
 2. Keep **Auto contrast** ticked while focusing. It stretches the display between
    the image's dim and bright pixels, which matters at low LED power. It changes only
    the display, never the recorded data.
@@ -182,6 +183,12 @@ recording so far, which removes shared artifacts such as bleaching and motion. T
 preceding *Baseline* seconds, which follows slow drift. All of them change only the
 display.
 
+If the display history is aggregated, its hint identifies this and live dF/F is an
+approximation. Saved raw samples and events remain complete. Only the most recent
+512 event marks are drawn. Use **Review setup…** to check subjects, wavelengths,
+recording conditions, output location, and the estimate for the complete ROI file
+set before pressing Record.
+
 Press **Record**. DBF connects, sends the settings, starts the LED sequence, and
 records until the stop condition or **Stop**. It then saves and validates one NWB
 file per ROI. Connecting and opening the cameras takes about 7 seconds. The NWB
@@ -215,6 +222,8 @@ Every file embeds the complete settings, so *Load NWB…* restores the whole set
 | Message or symptom | What it means | What to do |
 | --- | --- | --- |
 | LEDs still on after DBF stopped | DBF could not send the off sequence | Switch the unit off with its power switch |
+| "shutdown unconfirmed" | One or more off commands could not be confirmed | Use the unit's power switch; do not assume a closed window means LEDs or outputs are off |
+| "first frame arrived too late to establish wavelength phase" | Initial wavelength identity is ambiguous | Reduce the frame rate or camera/USB latency; DBF refuses to guess |
 | "no FTDI serial port for an RWD controller was found" | The controller's USB cable or power is missing | Connect it, switch the unit on, press *Refresh* |
 | "several FTDI serial ports were found" | Another FTDI device is attached | Choose the controller's port in the RWD panel |
 | "did not acknowledge" or "sent nothing for more than 5 s" | The controller link was lost | The LEDs may still be on: use the power switch, reconnect, and try again |
@@ -227,9 +236,16 @@ Every file embeds the complete settings, so *Load NWB…* restores the whole set
 
 ## Known limits
 
+For interrupted recordings, open **Configuration → Recover an interrupted
+recording…**. Select the output folder and session; the dialog verifies checksums
+and shows counts before recovery. It keeps the spool by default. A failed canonical
+file comparison leaves the source spool intact. Stop/Escape also cancel output
+tests and power measurement; closing stays responsive while hardware cleanup or
+NWB validation finishes.
+
 - The offset between TTL edges and exposures is estimated from host arrival times.
   It was about 2 ms in simulation and has not been measured on hardware. Intervals
   between TTL edges are exact to the board's 1 ms tick.
-- The restart path has only been tested in simulation, because no bench run needed a
-  restart.
+- The new first-arrival gate and failure cleanup changes have simulator tests and
+  require physical fault/latency revalidation, including high frame rates.
 - Whether TTL outputs pause during a restart has not been measured.

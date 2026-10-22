@@ -153,7 +153,8 @@ def test_headless_engine_records_only_enabled_rois(tmp_path: Path) -> None:
     with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
         assert io.read().subject.subject_id == config.rois[1].animal_id
     restored, warnings = configuration_from_nwb(result.report.path)
-    assert restored == config
+    assert restored.session_start_time >= config.session_start_time
+    assert restored == config.model_copy(update={"session_start_time": restored.session_start_time})
     assert warnings == []
 
 
@@ -622,3 +623,29 @@ def test_sequential_excitation_records_only_lit_windows(tmp_path: Path) -> None:
     assert ((times >= 2.0) & (times < 3.0)).sum() == 30
     pauses = events[events["event"] == "excitation_paused"]["timestamp"].tolist()
     assert pauses == pytest.approx([1.0, 3.0])
+
+
+def test_manual_stop_checks_storage_for_the_expected_length(tmp_path: Path, monkeypatch) -> None:
+    import driftless_photometry.acquisition as acquisition
+
+    config = _with_recording(demo_config(tmp_path, recording_duration_s=120.0), stop="manual")
+    checked = []
+    original = acquisition.check_storage_capacity
+
+    def capture(config, duration_s):
+        checked.append(duration_s)
+        return original(config, duration_s)
+
+    monkeypatch.setattr(acquisition, "check_storage_capacity", capture)
+    engine = AcquisitionEngine()
+    rig = SimulatedRig(config)
+    count = []
+
+    def stop_soon(progress) -> None:
+        count.append(progress)
+        if len(count) == 5:
+            engine.stop()
+
+    engine.run(config, rig, duration_s=config.recording_limit_s, on_progress=stop_soon)
+
+    assert checked == [120.0]

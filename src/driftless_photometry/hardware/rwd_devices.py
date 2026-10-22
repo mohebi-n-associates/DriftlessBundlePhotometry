@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass
 
 from driftless_photometry.config import SessionConfig
@@ -16,7 +15,7 @@ from .power_meter import PowerMeter
 from .rwd_controller_protocol import device_enable, output_config, output_enable
 from .rwd_rig import RWDTransportFactory, connect_rwd_controller
 from .rwd_timing import RWDExcitationPlan
-from .rwd_transport import RWDControllerTransport, candidate_rwd_ports
+from .rwd_transport import RWDControllerTransport, candidate_rwd_ports, poll_until
 
 _CAMERA_ROLES = {"1": "Camera 1 (410/470 nm)", "2": "Camera 2 (560 nm)"}
 
@@ -104,8 +103,10 @@ def _check_controller(
         )
     except Exception as error:
         return DeviceStatus("Controller", False, str(error))
-    with suppress(Exception):
+    try:
         transport.close()
+    except Exception as error:
+        return DeviceStatus("Controller", False, str(error))
     firmware = ".".join(str(part) for part in identity.firmware)
     return DeviceStatus(
         "Controller",
@@ -123,6 +124,7 @@ def drive_rwd_output_test(
     port_finder: Callable[[], tuple[str, ...]] = candidate_rwd_ports,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> str:
     """Drive one TTL output's first-step pulse train for ``seconds`` with the LEDs dark.
 
@@ -158,10 +160,11 @@ def drive_rwd_output_test(
         transport.command(device_enable(True))
         transport.command(output_config(port, frequency_hz, pulse_width_ms))
         transport.command(output_enable(port, True))
-        deadline = clock() + seconds
-        while clock() < deadline:
-            transport.poll()
-            sleep(0.01)
+        _retransmissions, stopped = poll_until(
+            transport, clock() + seconds, clock=clock, wait=sleep, stopped=cancelled
+        )
+        if stopped:
+            raise InterruptedError("TTL output test stopped")
         transport.command(output_enable(port, False))
         transport.command(device_enable(False))
     finally:
@@ -193,6 +196,7 @@ def measure_rwd_led_power(
     port_finder: Callable[[], tuple[str, ...]] = candidate_rwd_ports,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> tuple[LEDPowerReading, ...]:
     """Light each enabled LED alone, continuously, at its set power and read the meter.
 
@@ -212,14 +216,17 @@ def measure_rwd_led_power(
     )
 
     def wait(seconds: float) -> None:
-        deadline = clock() + seconds
-        while clock() < deadline:
-            transport.poll()
-            sleep(min(0.01, seconds))
+        _retransmissions, stopped = poll_until(
+            transport, clock() + seconds, clock=clock, wait=sleep, stopped=cancelled
+        )
+        if stopped:
+            raise InterruptedError("LED power measurement stopped")
 
     readings = []
     try:
         for channel in config.enabled_channels:
+            if cancelled():
+                raise InterruptedError("LED power measurement stopped")
             alone = config.model_copy(
                 update={
                     "channels": tuple(
@@ -236,6 +243,8 @@ def measure_rwd_led_power(
                 wait(settle_s)
                 values = []
                 for _ in range(samples):
+                    if cancelled():
+                        raise InterruptedError("LED power measurement stopped")
                     values.append(meter.read_power_w() * 1e3)
                     transport.poll()
             finally:

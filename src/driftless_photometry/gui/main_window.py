@@ -12,8 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-import shiboken6
-from PySide6.QtCore import QObject, QSignalBlocker, QSize, Qt, QThread, QTimer
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -92,7 +91,9 @@ from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
 from .trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
+    MAX_HISTORY_POINTS,
     compact_duration,
+    compact_history,
     downsample_min_max,
     fitted_control_f0,
     rolling_f0,
@@ -261,8 +262,18 @@ class MainWindow(QMainWindow):
         power_meter_factory: Callable[[], object] | None = None,
         power_measurer: Callable[[SessionConfig, object], tuple] | None = None,
         default_system: str = "custom",
+        demo_only: bool = False,
     ) -> None:
         super().__init__()
+        self._demo_only = demo_only
+        if demo_only:
+            from driftless_photometry.hardware import SimulatedRig
+
+            def rig_factory(config: SessionConfig):
+                return SimulatedRig(config, realtime=True)
+
+            auto_check_devices = False
+            default_system = "custom"
         self._rig_factory = rig_factory
         if output_tester is None:
             from driftless_photometry.hardware.rwd_devices import drive_rwd_output_test
@@ -309,11 +320,14 @@ class MainWindow(QMainWindow):
         with logo_path() as icon_path:
             self._logo_pixmap = QPixmap(str(icon_path))
             self.setWindowIcon(QIcon(self._logo_pixmap))
-        self.resize(2300, 1300)
-        self.setMinimumSize(1408, 792)
+        self.resize(1280, 720)
+        self.setMinimumSize(960, 600)
         self._thread: QThread | None = None
         self._worker: AcquisitionWorker | PreviewWorker | None = None
-        self._retired_workers: list[QObject] = []
+        self._display_timer = QTimer(self)
+        self._display_timer.setSingleShot(True)
+        self._display_timer.setInterval(100)
+        self._display_timer.timeout.connect(self._drain_display)
         self._operation_kind: str | None = None
         self._close_pending = False
         self._preview_signature: str | None = None
@@ -335,6 +349,7 @@ class MainWindow(QMainWindow):
         self._trace_horizon_s: float | None = HORIZONS[0][1]
         self._trace_manual_x_range: tuple[float, float] | None = None
         self._trace_first_s: float | None = None
+        self._display_aggregated = False
         self._trace_latest_s: float | None = None
         self._last_trace_render_s: dict[int, float] = {}
         self._image_item = pg.ImageItem()
@@ -434,6 +449,13 @@ class MainWindow(QMainWindow):
         self.backend_badge.setObjectName("badge")
         self.backend_badge.setProperty("hardware", False)
         header.addWidget(self.backend_badge)
+        self.global_stop_button = QPushButton("Stop · Esc")
+        self.global_stop_button.setObjectName("attention")
+        self.global_stop_button.setEnabled(False)
+        self.global_stop_button.clicked.connect(self.stop_recording)
+        header.addWidget(self.global_stop_button)
+        self._stop_shortcut = QShortcut(QKeySequence("Escape"), self)
+        self._stop_shortcut.activated.connect(self.stop_recording)
         return header_widget
 
     @staticmethod
@@ -483,6 +505,8 @@ class MainWindow(QMainWindow):
         self.source_combo.setObjectName("sourceSelector")
         self.source_combo.addItem("Custom", "custom")
         self.source_combo.addItem("RWD", "rwd")
+        if self._demo_only:
+            self.source_combo.model().item(1).setEnabled(False)
         self.source_combo.currentIndexChanged.connect(self._apply_source_mode)
         self.source_mode_hint = QLabel(_CUSTOM_MODE_HINT)
         self.source_mode_hint.setObjectName("hint")
@@ -518,6 +542,9 @@ class MainWindow(QMainWindow):
         self.settings_path_hint.setObjectName("hint")
         self.settings_path_hint.setWordWrap(True)
         settings_layout.addWidget(self.settings_path_hint, 2, 0, 1, 2)
+        self.recovery_button = QPushButton("Recover an interrupted recording…")
+        self.recovery_button.clicked.connect(self._open_recovery)
+        settings_layout.addWidget(self.recovery_button, 3, 0, 1, 2)
         controls_layout.addWidget(settings_group)
 
         session_group = QGroupBox("Recording")
@@ -736,6 +763,7 @@ class MainWindow(QMainWindow):
             shortcut.activated.connect(lambda key=key: self.mark_event(key, "key"))
             self._marker_shortcuts.append(shortcut)
         self._event_marks_shown: list[EventMark] = []
+        self._event_graphics: list[list[tuple[object, object]]] = []
 
         action_row = QHBoxLayout()
         self.preview_button = QPushButton("Run preview")
@@ -768,6 +796,9 @@ class MainWindow(QMainWindow):
             self.rwd_group,
             browse,
         ]
+        self.review_setup_button = QPushButton("Review setup…")
+        self.review_setup_button.clicked.connect(self._review_setup)
+        action_row.addWidget(self.review_setup_button)
         self._power_timer = QTimer(self)
         self._power_timer.setSingleShot(True)
         self._power_timer.setInterval(250)
@@ -935,7 +966,6 @@ class MainWindow(QMainWindow):
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(self._on_device_thread_finished)
-        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._device_thread = thread
         self._device_worker = worker
@@ -969,9 +999,10 @@ class MainWindow(QMainWindow):
 
     def _on_device_thread_finished(self) -> None:
         self._device_thread = None
-        self._retire_worker(self._device_worker)
         self._device_worker = None
         self._set_busy_controls(self._thread is not None)
+        if self._close_pending:
+            QTimer.singleShot(0, self.close)
 
     @staticmethod
     def _set_device_state(label: QLabel, state: str) -> None:
@@ -1087,15 +1118,16 @@ class MainWindow(QMainWindow):
         )
         config = config.model_copy(update={"source": source})
         thread = QThread(self)
-        worker = BoardTaskWorker(lambda: self._output_tester(config, port))
+        worker = BoardTaskWorker(lambda: worker.call(self._output_tester, config, port))
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_output_tested)
+        worker.cancelled.connect(self.statusBar().showMessage)
+        worker.cancelled.connect(thread.quit)
         worker.failed.connect(self._on_output_test_failed)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(self._on_device_thread_finished)
-        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._device_thread = thread
         self._device_worker = worker
@@ -1129,7 +1161,7 @@ class MainWindow(QMainWindow):
         def measure() -> tuple:
             meter = self._power_meter_factory()
             try:
-                return self._power_measurer(config, meter)
+                return worker.call(self._power_measurer, config, meter)
             finally:
                 meter.close()
 
@@ -1138,11 +1170,12 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_power_measured)
+        worker.cancelled.connect(self.statusBar().showMessage)
+        worker.cancelled.connect(thread.quit)
         worker.failed.connect(self._on_power_measurement_failed)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(self._on_device_thread_finished)
-        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._device_thread = thread
         self._device_worker = worker
@@ -1434,6 +1467,9 @@ class MainWindow(QMainWindow):
         return hasattr(self, "source_combo") and self.source_combo.currentData() == "rwd"
 
     def _apply_source_mode(self, *_args: object) -> None:
+        if self._demo_only and self._is_rwd_mode():
+            self.source_combo.setCurrentIndex(self.source_combo.findData("custom"))
+            return
         if not hasattr(self, "rwd_group"):
             return
         is_rwd = self._is_rwd_mode()
@@ -1940,6 +1976,12 @@ class MainWindow(QMainWindow):
             layout.addWidget(widths, row, 3)
             self.ttl_event_rows.append((check, line, low, high, name))
             row += 1
+        self.events_extra_label = QLabel()
+        self.events_extra_label.setObjectName("hint")
+        self.events_extra_label.setWordWrap(True)
+        layout.addWidget(self.events_extra_label, row, 0, 1, 4)
+        self._extra_markers: tuple[EventMarkerConfig, ...] = ()
+        self._extra_ttl_events: tuple[TTLEventRuleConfig, ...] = ()
         self._load_event_controls(self._session_template)
         return group
 
@@ -1955,25 +1997,45 @@ class MainWindow(QMainWindow):
         )
 
     def _markers_from_controls(self) -> tuple[EventMarkerConfig, ...]:
-        return tuple(
+        shown = tuple(
             EventMarkerConfig(key=key, name=edit.text().strip())
             for key, edit in self.marker_name_edits.items()
             if edit.text().strip()
         )
+        return shown + self._extra_markers
 
     def _ttl_events_from_controls(self) -> tuple[TTLEventRuleConfig, ...]:
-        return tuple(
-            TTLEventRuleConfig(
-                line=line.currentData(),
-                min_width_ms=low.value(),
-                max_width_ms=high.value(),
-                name=name.text().strip() or f"TTL event {index + 1}",
+        return (
+            tuple(
+                TTLEventRuleConfig(
+                    line=line.currentData(),
+                    min_width_ms=low.value(),
+                    max_width_ms=high.value(),
+                    name=name.text().strip() or f"TTL event {index + 1}",
+                )
+                for index, (check, line, low, high, name) in enumerate(self.ttl_event_rows)
+                if check.isChecked()
             )
-            for index, (check, line, low, high, name) in enumerate(self.ttl_event_rows)
-            if check.isChecked()
+            + self._extra_ttl_events
         )
 
     def _load_event_controls(self, config: SessionConfig) -> None:
+        # Settings files may hold markers on keys 5-9 and more TTL rules than the panel
+        # shows; keep them unchanged rather than dropping them.
+        self._extra_markers = tuple(
+            marker for marker in config.event_markers if marker.key not in self.marker_name_edits
+        )
+        self._extra_ttl_events = tuple(config.ttl_events[len(self.ttl_event_rows) :])
+        kept = []
+        if self._extra_markers:
+            keys = ", ".join(marker.key for marker in self._extra_markers)
+            kept.append(f"markers on keys {keys}")
+        if self._extra_ttl_events:
+            kept.append(f"{len(self._extra_ttl_events)} more named TTL event(s)")
+        self.events_extra_label.setText(
+            "Also kept from the settings file: " + " and ".join(kept) if kept else ""
+        )
+        self.events_extra_label.setVisible(bool(kept))
         inputs = {ttl.line: ttl for ttl in config.ttl_inputs}
         for line, (check, label, edges) in self.ttl_input_rows.items():
             ttl = inputs.get(line)
@@ -2050,8 +2112,13 @@ class MainWindow(QMainWindow):
         for mark in marks:
             self._event_marks_shown.append(mark)
             self._draw_event_mark(mark)
+            if len(self._event_marks_shown) > 512:
+                del self._event_marks_shown[0]
+                for plot, item in self._event_graphics.pop(0):
+                    plot.removeItem(item)
 
     def _draw_event_mark(self, mark: EventMark) -> None:
+        graphics = []
         color = {"ttl": "#ffd166", "output": "#7bdff2"}.get(mark.source, "#f78fb3")
         for row, plot in self.trace_plots.items():
             if mark.duration_s > 0:
@@ -2063,6 +2130,7 @@ class MainWindow(QMainWindow):
                 )
                 region.setZValue(-5)
                 plot.addItem(region)
+                graphics.append((plot, region))
             line = pg.InfiniteLine(
                 pos=mark.timestamp_s,
                 angle=90,
@@ -2073,6 +2141,8 @@ class MainWindow(QMainWindow):
             )
             line.setZValue(20)
             plot.addItem(line)
+            graphics.append((plot, line))
+        self._event_graphics.append(graphics)
 
     def _build_start_row(self) -> QWidget:
         self.start_mode_combo = QComboBox()
@@ -2163,10 +2233,12 @@ class MainWindow(QMainWindow):
         stop = self.stop_mode_combo.currentData()
         self.stop_ttl_line_combo.setVisible(stop == "ttl")
         self.stop_ttl_edge_combo.setVisible(stop == "ttl")
-        self.duration_spin.setEnabled(stop != "manual")
-        self._duration_label.setText("Maximum length" if stop == "ttl" else "Duration")
+        self._duration_label.setText(
+            {"ttl": "Maximum length", "manual": "Expected length"}.get(stop, "Duration")
+        )
         self.duration_spin.setToolTip(
-            "Runs until you press Stop, for at most 24 hours"
+            "Runs until you press Stop, for at most 24 hours; the expected length sizes "
+            "the free-disk-space check"
             if stop == "manual"
             else "The recording ends here even if the stop TTL never arrives"
             if stop == "ttl"
@@ -2209,6 +2281,51 @@ class MainWindow(QMainWindow):
         )
         if selected:
             self.output_edit.setText(selected)
+
+    def _review_setup(self) -> None:
+        from driftless_photometry.storage import estimate_session_bytes
+
+        try:
+            config = self._build_config()
+        except ValueError as error:
+            QMessageBox.warning(self, "Check setup", str(error))
+            return
+        frames, size = estimate_session_bytes(config, config.recording_limit_s)
+        duration = f"{config.recording_limit_s:g} s"
+        if config.recording.stop != "duration":
+            duration += " safety limit; actual size depends on Stop"
+        details = [
+            f"System: {config.source.kind} · {config.camera.requested_fps:g} total frames/s",
+            "Wavelengths: "
+            + ", ".join(f"{int(c.wavelength_nm)} nm" for c in config.enabled_channels),
+            f"Start: {config.recording.start} · Stop: {config.recording.stop} · {duration}",
+            f"Up to {frames:,} frames; estimated spool + all NWBs: {size / 2**30:.2f} GiB",
+            f"Output: {config.output_directory.resolve()}",
+            f"Experimenter: {config.experimenter}\nDescription: {config.session_description}",
+            "One NWB per enabled fiber:",
+        ]
+        for roi in config.enabled_rois:
+            details.append(
+                f"{roi.fiber_id} → {roi.animal_id}: {roi.label}; "
+                f"{roi.brain_region}; {roi.sensor_type}"
+            )
+        if config.source.kind == "rwd" and (
+            config.experimenter == "Simulator" or "Synthetic" in config.session_description
+        ):
+            details.append("CHECK METADATA: this hardware setup still has demonstration metadata.")
+        QMessageBox.information(self, "Review recording setup", "\n".join(details))
+
+    def _open_recovery(self) -> None:
+        from .recovery import RecoveryDialog
+
+        dialog = RecoveryDialog(Path(self.output_edit.text()).expanduser(), self)
+        self._recovery_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._recovery_dialog = None
+            if self._close_pending:
+                QTimer.singleShot(0, self.close)
 
     def _save_settings_json(self) -> None:
         try:
@@ -2297,6 +2414,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Saved default settings to {written}")
 
     def _load_default_settings_at_startup(self) -> None:
+        if self._demo_only:
+            self.statusBar().showMessage("Demo: Custom simulator; physical hardware is disabled")
+            return
         try:
             config, warnings = load_default_settings_with_warnings()
             if config is None:
@@ -2318,6 +2438,11 @@ class MainWindow(QMainWindow):
 
     def _apply_configuration(self, config: SessionConfig) -> None:
         """Push one validated settings snapshot into every corresponding GUI control."""
+
+        if self._demo_only and isinstance(config.source, RWDSourceConfig):
+            raise ValueError(
+                "Demo mode accepts Custom simulator settings only. Open --gui for hardware."
+            )
 
         self._session_template = config
         self._active_config = config
@@ -2447,6 +2572,8 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "calibration_plot"):
             return
         self._invalidate_preview()
+        geometry = [self._circle_geometry(item) for item in self._roi_items]
+        geometry2 = [self._circle_geometry(item) for item in self._roi_items_cam2]
         self._rebuild_roi_metadata(self.fiber_count_spin.value())
         camera = self._session_template.camera
         preview = demo_config(
@@ -2455,11 +2582,25 @@ class MainWindow(QMainWindow):
             width_px=camera.width_px,
             height_px=camera.height_px,
         )
-        preview_rois = tuple(
-            roi.model_copy(update={"enabled": editor.enabled_check.isChecked()})
-            for roi, editor in zip(preview.rois, self._roi_metadata_editors, strict=True)
-        )
-        self._set_roi_items(preview_rois, camera)
+        preview_rois = []
+        for index, (roi, editor) in enumerate(
+            zip(preview.rois, self._roi_metadata_editors, strict=True)
+        ):
+            updates = {"enabled": editor.enabled_check.isChecked()}
+            if index < len(geometry):
+                updates.update(
+                    zip(("center_x_px", "center_y_px", "radius_px"), geometry[index], strict=True)
+                )
+            if index < len(geometry2):
+                updates.update(
+                    zip(
+                        ("camera2_center_x_px", "camera2_center_y_px", "camera2_radius_px"),
+                        geometry2[index],
+                        strict=True,
+                    )
+                )
+            preview_rois.append(roi.model_copy(update=updates))
+        self._set_roi_items(tuple(preview_rois), camera)
         self._update_overview()
 
     def _set_roi_items(
@@ -2778,7 +2919,7 @@ class MainWindow(QMainWindow):
         return SessionConfig.model_validate(payload)
 
     def start_preview(self) -> None:
-        if self._thread is not None:
+        if self._thread is not None or self._device_thread is not None:
             return
         try:
             config = self._build_config()
@@ -2811,7 +2952,8 @@ class MainWindow(QMainWindow):
                 config,
                 self._rig_factory,
                 duration_s=PREVIEW_LIMIT_S,
-                allow_power_changes=True,
+                # Only RWD changes LED power live; Custom previews check every frame.
+                allow_power_changes=isinstance(config.source, RWDSourceConfig),
             )
         except Exception as error:
             self._on_preview_failed(str(error))
@@ -2820,13 +2962,12 @@ class MainWindow(QMainWindow):
         self._preview_started_config = config
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.progress.connect(self._on_progress)
+        worker.progress.connect(self._on_display_ready)
         worker.completed.connect(self._on_preview_completed)
         worker.failed.connect(self._on_preview_failed)
         worker.completed.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(self._on_thread_finished)
-        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
@@ -2834,7 +2975,7 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def start_recording(self) -> None:
-        if self._thread is not None:
+        if self._thread is not None or self._device_thread is not None:
             return
         try:
             config = self._build_config()
@@ -2851,6 +2992,9 @@ class MainWindow(QMainWindow):
             return
         if isinstance(config.source, RWDSourceConfig) and not self._confirm_warmup():
             return
+        # A recording cancelled before its first frame recorded nothing, so it gives this
+        # passed preview back.
+        self._preview_before_recording = self._preview_signature
         self._preview_signature = None
         self._pending_preview_signature = None
         self._operation_kind = "recording"
@@ -2883,7 +3027,7 @@ class MainWindow(QMainWindow):
         worker = AcquisitionWorker(config, config.recording_limit_s, self._rig_factory)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.progress.connect(self._on_progress)
+        worker.progress.connect(self._on_display_ready)
         worker.finalization_progress.connect(self._on_finalization_progress)
         worker.state_changed.connect(self._on_state)
         worker.completed.connect(self._on_completed)
@@ -2893,7 +3037,6 @@ class MainWindow(QMainWindow):
         worker.failed.connect(thread.quit)
         worker.cancelled.connect(thread.quit)
         thread.finished.connect(self._on_thread_finished)
-        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
@@ -2908,7 +3051,7 @@ class MainWindow(QMainWindow):
             self.start_live_view()
 
     def start_live_view(self) -> None:
-        if self._thread is not None:
+        if self._thread is not None or self._device_thread is not None:
             return
         try:
             config = self._build_config()
@@ -2939,13 +3082,12 @@ class MainWindow(QMainWindow):
             return
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.frame.connect(self._on_live_frame)
+        worker.frame.connect(self._on_display_ready)
         worker.completed.connect(self._on_live_completed)
         worker.failed.connect(self._on_live_failed)
         worker.completed.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(self._on_thread_finished)
-        thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
@@ -3017,11 +3159,13 @@ class MainWindow(QMainWindow):
         )
 
     def _on_live_completed(self, frame_count: int) -> None:
+        self._drain_display()
         self.live_status.setText(f"Live view stopped after {frame_count:,} frames")
         self._set_system_status("READY", "ready")
         self.statusBar().showMessage("Live view stopped; nothing was recorded")
 
     def _on_live_failed(self, traceback_text: str) -> None:
+        self._drain_display()
         self._log_failure("Live view failed", traceback_text)
         self.last_error = traceback_text
         self.live_status.setText("Live view failed")
@@ -3031,6 +3175,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Live view failed", traceback_text)
 
     def stop_recording(self) -> None:
+        if self._device_worker is not None:
+            stop = getattr(self._device_worker, "request_stop", None)
+            if stop is not None:
+                stop()
+            self.statusBar().showMessage("Waiting for the hardware task to finish cleanup…")
         if self._worker is not None:
             operation = {"preview": "preview", "live": "live view"}.get(
                 self._operation_kind or "", "recording"
@@ -3038,11 +3187,13 @@ class MainWindow(QMainWindow):
             self.live_status.setText(f"Stopping {operation} after the current frame...")
             self.statusBar().showMessage(f"Stopping {operation} after the current frame...")
             self.stop_button.setEnabled(False)
+            self.global_stop_button.setEnabled(False)
             self._worker.request_stop()
 
     def _prepare_trace_curves(self, config: SessionConfig) -> None:
         self._active_config = config
         self._event_marks_shown = []
+        self._event_graphics = []
         self._configure_trace_plots(config.enabled_rois)
         self._active_trace_wavelengths = tuple(
             int(channel.wavelength_nm) for channel in config.enabled_channels
@@ -3057,6 +3208,7 @@ class MainWindow(QMainWindow):
         for seconds, button in self.horizon_buttons.items():
             button.setChecked(seconds == self._trace_horizon_s)
         self._trace_first_s = None
+        self._display_aggregated = False
         self._trace_latest_s = None
         self._last_trace_render_s = {
             wavelength: -np.inf for wavelength in self._active_trace_wavelengths
@@ -3152,7 +3304,10 @@ class MainWindow(QMainWindow):
 
     def _update_trace_horizon_availability(self, duration_s: float) -> None:
         operation = "preview" if self._operation_kind == "preview" else "recording"
-        self.trace_span_hint.setText(f"{compact_duration(duration_s)} available (this {operation})")
+        suffix = " · display aggregated; dF/F approximate" if self._display_aggregated else ""
+        self.trace_span_hint.setText(
+            f"{compact_duration(duration_s)} available (this {operation})" + suffix
+        )
         for label, seconds in HORIZONS:
             button = self.horizon_buttons[seconds]
             available = seconds is None or seconds <= duration_s or seconds == self._trace_horizon_s
@@ -3225,7 +3380,12 @@ class MainWindow(QMainWindow):
                         values = (values.astype(np.float64) - fitted_f0) / fitted_f0 * 100.0
                     values[~np.isfinite(values)] = np.nan
             elif mode == "dff_rolling":
-                f0 = rolling_f0(times, all_values, self.trace_baseline_spin.value(), selected_times)
+                window_s = self.trace_baseline_spin.value()
+                # Only the visible span and one window before it can affect what is shown.
+                low = int(np.searchsorted(times, selected_times[0] - window_s, side="left"))
+                f0 = rolling_f0(
+                    times[low:stop_index], all_values[low:stop_index], window_s, selected_times
+                )
                 with np.errstate(divide="ignore", invalid="ignore"):
                     values = (values.astype(np.float64) - f0) / f0 * 100.0
                 values[~np.isfinite(values)] = np.nan
@@ -3325,6 +3485,17 @@ class MainWindow(QMainWindow):
                 raise ValueError("live trace timestamps must increase per fiber/wavelength")
             times.append(point.timestamp_s)
             self._trace_values[key].append(point.value)
+            if len(times) > MAX_HISTORY_POINTS:
+                self._display_aggregated = True
+                x, y = compact_history(
+                    np.asarray(times), np.asarray(self._trace_values[key]), MAX_HISTORY_POINTS // 2
+                )
+                self._trace_times[key] = array("d", x)
+                self._trace_values[key] = array("f", y)
+                self.frame_counter.setToolTip(
+                    "Display history uses bucket extrema. Live dF/F "
+                    "is approximate; original samples remain in the NWB."
+                )
             self._trace_first_s = (
                 point.timestamp_s
                 if self._trace_first_s is None
@@ -3352,9 +3523,36 @@ class MainWindow(QMainWindow):
                 self._refresh_trace_wavelength(wavelength_nm)
                 self._last_trace_render_s[wavelength_nm] = latest
 
-    def _on_progress(self, progress: AcquisitionProgress) -> None:
+    def _on_display_ready(self, _notification: object = None) -> None:
+        if not self._display_timer.isActive():
+            self._display_timer.start()
+
+    def _drain_display(self) -> None:
+        self._display_timer.stop()
+        mailbox = getattr(self._worker, "display_mailbox", None)
+        if mailbox is None:
+            return
+        batch = mailbox.take()
+        if batch.aggregated:
+            self._display_aggregated = True
+        if batch.points:
+            self._append_live_trace_points(batch.points)
+        if batch.marks:
+            self._show_event_marks(batch.marks)
+        if batch.aggregated:
+            self.frame_counter.setToolTip(
+                "Display backlog was aggregated to extrema; "
+                "all original samples and events are stored independently."
+            )
+        for progress in batch.images:
+            if isinstance(progress, LiveFrame):
+                self._on_live_frame(progress)
+            else:
+                self._on_progress(progress, append_samples=False)
+
+    def _on_progress(self, progress: AcquisitionProgress, *, append_samples: bool = True) -> None:
         self._leds_lit()
-        if progress.event_marks:
+        if append_samples and progress.event_marks:
             self._show_event_marks(progress.event_marks)
         sample = progress.sample
         wavelength = int(sample.wavelength_nm)
@@ -3368,12 +3566,12 @@ class MainWindow(QMainWindow):
         )
         if self._active_config is None:
             raise RuntimeError("camera progress arrived without an active configuration")
-        self._append_live_trace_points(camera_live_trace_points(self._active_config, progress))
+        if append_samples:
+            self._append_live_trace_points(camera_live_trace_points(self._active_config, progress))
         camera_count = self._camera_frame_counts.get(progress.camera_index, 0) + 1
         self._camera_frame_counts[progress.camera_index] = camera_count
         self._last_camera_images[progress.camera_index] = progress.image
-        if camera_count == 1 or camera_count % 5 == 0:
-            self._show_calibration_frame(progress.camera_index, progress.image)
+        self._show_calibration_frame(progress.camera_index, progress.image)
         fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
         open_ended = self._operation_kind == "preview" or (
             self._operation_kind == "recording" and self._active_config.recording.stop != "duration"
@@ -3398,6 +3596,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setFormat(f"{fraction:.0%}")
 
     def _on_preview_completed(self, result: PreviewResult) -> None:
+        self._drain_display()
         self.last_preview = result
         self._pending_preview_signature = None
         # Powers may have changed during the preview; it validates the current settings
@@ -3483,6 +3682,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("LED power sent; the board restarts its LED cycle")
 
     def _on_preview_failed(self, traceback_text: str) -> None:
+        self._drain_display()
         self._log_failure("Preview failed", traceback_text)
         self.last_error = traceback_text
         self._preview_signature = None
@@ -3531,12 +3731,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _on_completed(self, result: AcquisitionRunResult) -> None:
+        self._drain_display()
         self.last_result = result
         self._refresh_all_trace_curves()
         self.progress_bar.setValue(1000)
         self.progress_bar.setFormat("100%")
         file_count = len(result.reports)
-        self.live_status.setText(f"Saved and validated {file_count} ROI NWB files")
+        reason = "stopped by operator/TTL" if result.stopped_by_request else "duration reached"
+        self.live_status.setText(
+            f"Validated {file_count} ROI NWB files · {result.report.frame_count:,} frames · "
+            f"{result.report.ttl_edge_count:,} TTL edges · {reason}"
+        )
+        self.live_status.setToolTip("\n".join(str(report.path) for report in result.reports))
         self._set_preview_status("Preview required before the next recording", "required")
         self._set_system_status("COMPLETE", "complete")
         self.statusBar().showMessage(
@@ -3548,25 +3754,51 @@ class MainWindow(QMainWindow):
         self.live_status.setText("Recording cancelled before it started; nothing was recorded")
         self._set_system_status("READY", "ready")
         self.statusBar().showMessage(message[:1].upper() + message[1:])
+        restored = getattr(self, "_preview_before_recording", None)
+        try:
+            current = self._configuration_signature(self._build_config())
+        except Exception:
+            current = None
+        if restored is not None and restored == current:
+            self._preview_signature = restored
+            self._set_preview_status(
+                "Preview still valid - the cancelled recording recorded nothing", "passed"
+            )
 
     def _on_failed(self, traceback_text: str) -> None:
+        self._drain_display()
         self._log_failure("Acquisition failed", traceback_text)
         self.last_error = traceback_text
-        self.live_status.setText("Acquisition failed — recovery spool preserved")
+        path = getattr(self._worker, "recovery_path", None)
+        recovery = (
+            f"Recovery spool: {path}"
+            if path is not None and path.exists()
+            else "No recovery spool was created."
+        )
+        self.live_status.setText("Acquisition failed — " + recovery)
         self._set_preview_status(
             "Preview required before another recording attempt",
             "required",
         )
         self._set_system_status("ERROR", "error")
-        self.statusBar().showMessage("Acquisition failed; recovery spool was preserved")
-        QMessageBox.critical(self, "Acquisition failed", traceback_text)
+        self.statusBar().showMessage(recovery)
+        if not self._close_pending:
+            message = QMessageBox(self)
+            message.setIcon(QMessageBox.Icon.Critical)
+            message.setWindowTitle("Acquisition failed")
+            message.setText(traceback_text.strip().splitlines()[-1])
+            message.setInformativeText(
+                recovery + "\nUse Configuration → Recover an interrupted recording to inspect it."
+            )
+            message.setDetailedText(traceback_text)
+            message.exec()
 
     def _on_thread_finished(self) -> None:
+        self._drain_display()
         self._warmup.leds_off()
         self._operation_uses_leds = False
         self._update_warmup_label()
         self._thread = None
-        self._retire_worker(self._worker)
         self._worker = None
         self._operation_kind = None
         self._set_busy_controls(False)
@@ -3588,18 +3820,6 @@ class MainWindow(QMainWindow):
                 log.write(f"=== {stamp} {title}\n{traceback_text.rstrip()}\n\n")
         except OSError:
             pass
-
-    def _retire_worker(self, worker: QObject | None) -> None:
-        """Hold a finished worker until Qt deletes it.
-
-        ``thread.finished`` runs the worker's ``deleteLater`` in the worker's own thread.
-        Dropping the last Python reference here as well made Python delete it from the
-        GUI thread at the same moment, which crashed the device-check test.
-        """
-
-        self._retired_workers = [item for item in self._retired_workers if shiboken6.isValid(item)]
-        if worker is not None:
-            self._retired_workers.append(worker)
 
     def _set_busy_controls(self, busy: bool) -> None:
         if hasattr(self, "marker_buttons"):
@@ -3623,6 +3843,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "camera_settings_group"):
             self.camera_settings_group.setEnabled(not busy or live)
         self.stop_button.setEnabled(busy)
+        self.global_stop_button.setEnabled(busy)
+        for item in (*self._roi_items, *self._roi_items_cam2):
+            item.setEnabled(not busy or live)
         for widget in self._settings_widgets:
             widget.setEnabled(not busy)
         if (live or previewing) and self._is_rwd_mode():
@@ -3639,11 +3862,16 @@ class MainWindow(QMainWindow):
                     check.setEnabled(True)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self._device_thread is not None:
-            self._device_thread.wait(15_000)
-        if self._thread is not None and self._thread.isRunning():
+        recovery = getattr(self, "_recovery_dialog", None)
+        if recovery is not None and recovery._thread is not None:
+            self._close_pending = True
+            recovery.reject()
+            event.ignore()
+            return
+        if self._device_thread is not None or self._thread is not None:
             self._close_pending = True
             self.stop_recording()
+            self.statusBar().showMessage("Closing after hardware cleanup and file validation…")
             event.ignore()
             return
         event.accept()

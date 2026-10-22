@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from driftless_photometry.config import SessionConfig
@@ -29,6 +30,10 @@ class RigPacket:
     invalid_times: tuple[InvalidTimeInterval, ...] = ()
     system_events: tuple[SystemEvent, ...] = ()
     event_marks: tuple[EventMark, ...] = ()
+    session_start_time: datetime | None = None
+    """UTC estimate of session zero, reported once by a live source after it starts."""
+    stop_requested: bool = False
+    """The source acted on a stop trigger before its timing records were aligned."""
 
 
 @dataclass(frozen=True, slots=True)

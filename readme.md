@@ -181,6 +181,11 @@ Run the GUI demo:
 dbf --demo
 ```
 
+Demo mode always runs the Custom simulator and ignores hardware defaults. Open
+`dbf --gui` or the installed desktop shortcut to use physical RWD hardware.
+The GUI also offers **Review setup…**, a Stop button available on every tab
+(Escape), and **Configuration → Recover an interrupted recording…**.
+
 Recover all committed data from a complete or interrupted spool:
 
 ```bash

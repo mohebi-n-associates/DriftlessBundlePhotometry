@@ -154,7 +154,8 @@ def test_unacknowledged_commands_fault_and_close_still_releases_the_port(
 
     assert fault.value.code is AcquisitionFaultCode.CONTROLLER_DISCONNECT
     assert "after 4 attempts" in str(fault.value)
-    transport.close()
+    with pytest.raises(AcquisitionFault, match="power switch"):
+        transport.close()
     assert not board.is_open
     assert not transport.is_open
 
@@ -245,8 +246,28 @@ def test_link_loss_is_a_controller_disconnect(clock: SteppingClock) -> None:
         transport.poll()
 
     assert fault.value.code is AcquisitionFaultCode.CONTROLLER_DISCONNECT
-    transport.close()
+    with pytest.raises(AcquisitionFault, match="power switch"):
+        transport.close()
     assert not transport.is_open
+
+
+def test_shutdown_attempts_all_commands_after_lost_acknowledgements(clock: SteppingClock):
+    board = _board(clock)
+    transport = _transport(board, clock)
+    transport.open()
+    _light_on(transport)
+    transport.command(output_enable(1, True))
+    board.drop_acks = 2
+    before = len(board.received)
+    with pytest.raises(AcquisitionFault, match="shutdown unconfirmed"):
+        transport.close()
+    commands = board.received[before:]
+    assert any(m.function is RWDFunction.LED_VALUE for m in commands)
+    assert any(m.function is RWDFunction.LED_ENABLE for m in commands)
+    assert not any(board.state.led_enabled.values())
+    assert not any(board.state.led_value.values())
+    assert not any(board.state.output_enabled.values())
+    assert not board.is_open
 
 
 def test_simulator_reproduces_bench_confirmations(clock: SteppingClock) -> None:

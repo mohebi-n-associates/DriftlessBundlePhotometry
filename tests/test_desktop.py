@@ -8,7 +8,7 @@ def test_desktop_opens_gui_when_no_arguments(monkeypatch) -> None:
     monkeypatch.setattr(desktop, "cli_main", lambda arguments: received.append(arguments) or 0)
 
     assert desktop.main([]) == 0
-    assert received == [["--demo"]]
+    assert received == [["--gui"]]
 
 
 def test_desktop_forwards_explicit_diagnostic_arguments(monkeypatch) -> None:
