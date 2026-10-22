@@ -741,7 +741,7 @@ class MainWindow(QMainWindow):
         self.preview_button = QPushButton("Run preview")
         self.preview_button.setObjectName("preview")
         self.preview_button.setMinimumHeight(38)
-        self.preview_button.clicked.connect(self._toggle_preview)
+        self.preview_button.clicked.connect(self.start_preview)
         self.start_button = QPushButton("Start recording")
         self.start_button.setObjectName("record")
         self.start_button.setMinimumHeight(38)
@@ -960,6 +960,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_device_check_failed(self, traceback_text: str) -> None:
+        self._log_failure("Device check failed", traceback_text)
         for label in self.device_labels.values():
             label.setText(label.text().split(":")[0] + ": check failed")
             self._set_device_state(label, "failed")
@@ -1165,6 +1166,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("LED power measured; every LED is off again")
 
     def _on_power_measurement_failed(self, traceback_text: str) -> None:
+        self._log_failure("Power measurement failed", traceback_text)
         self._warmup.leds_off()
         self.power_label.setText("Measurement failed")
         if not self._close_pending:
@@ -1175,6 +1177,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(summary)
 
     def _on_output_test_failed(self, traceback_text: str) -> None:
+        self._log_failure("TTL output test failed", traceback_text)
         self.last_output_test = None
         self.statusBar().showMessage("TTL output test failed")
         if not self._close_pending:
@@ -2794,8 +2797,8 @@ class MainWindow(QMainWindow):
         self.frame_counter.setText("0 preview frames")
         self.live_status.setText("Running acquisition preflight...")
         self._set_preview_status(
-            "Preview running - set LED powers and inspect the signal, then press Stop "
-            f"preview; it stops by itself after {PREVIEW_LIMIT_S / 60:g} minutes",
+            "Preview running - set LED powers and inspect the signal, then press Stop; "
+            f"it stops by itself after {PREVIEW_LIMIT_S / 60:g} minutes",
             "running",
         )
         self._set_system_status("PREVIEW", "preview")
@@ -2897,12 +2900,6 @@ class MainWindow(QMainWindow):
         self._progress_duration_s = config.recording_limit_s
         self._set_busy_controls(True)
         thread.start()
-
-    def _toggle_preview(self) -> None:
-        if self._operation_kind == "preview" and self._worker is not None:
-            self.stop_recording()
-        else:
-            self.start_preview()
 
     def _toggle_live_view(self) -> None:
         if self._operation_kind == "live" and self._worker is not None:
@@ -3025,6 +3022,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Live view stopped; nothing was recorded")
 
     def _on_live_failed(self, traceback_text: str) -> None:
+        self._log_failure("Live view failed", traceback_text)
         self.last_error = traceback_text
         self.live_status.setText("Live view failed")
         self._set_system_status("ERROR", "error")
@@ -3485,6 +3483,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("LED power sent; the board restarts its LED cycle")
 
     def _on_preview_failed(self, traceback_text: str) -> None:
+        self._log_failure("Preview failed", traceback_text)
         self.last_error = traceback_text
         self._preview_signature = None
         self._pending_preview_signature = None
@@ -3551,6 +3550,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message[:1].upper() + message[1:])
 
     def _on_failed(self, traceback_text: str) -> None:
+        self._log_failure("Acquisition failed", traceback_text)
         self.last_error = traceback_text
         self.live_status.setText("Acquisition failed — recovery spool preserved")
         self._set_preview_status(
@@ -3576,6 +3576,18 @@ class MainWindow(QMainWindow):
         if self._close_pending:
             self._close_pending = False
             QTimer.singleShot(0, self.close)
+
+    def _log_failure(self, title: str, traceback_text: str) -> None:
+        """Append a failure to ``logs/dbf-errors.log`` in the settings folder."""
+
+        try:
+            log_dir = settings_root() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(UTC).astimezone().isoformat(timespec="seconds")
+            with (log_dir / "dbf-errors.log").open("a", encoding="utf-8") as log:
+                log.write(f"=== {stamp} {title}\n{traceback_text.rstrip()}\n\n")
+        except OSError:
+            pass
 
     def _retire_worker(self, worker: QObject | None) -> None:
         """Hold a finished worker until Qt deletes it.
@@ -3606,8 +3618,7 @@ class MainWindow(QMainWindow):
             # While live view runs, the same button stops it.
             self.live_button.setEnabled(not busy or live)
             self.live_button.setText("Stop live view" if live else "Live view")
-        self.preview_button.setEnabled(not busy or previewing)
-        self.preview_button.setText("Stop preview" if previewing else "Run preview")
+        self.preview_button.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self._preview_signature is not None)
         if hasattr(self, "camera_settings_group"):
             self.camera_settings_group.setEnabled(not busy or live)

@@ -53,9 +53,9 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
     assert not window.start_button.isEnabled()
     assert window.preview_button.isEnabled()
     qtbot.mouseClick(window.preview_button, Qt.MouseButton.LeftButton)
-    assert window.preview_button.text() == "Stop preview"
+    assert not window.preview_button.isEnabled() and window.stop_button.isEnabled()
     qtbot.waitUntil(lambda: sum(window._camera_frame_counts.values()) >= 8, timeout=5_000)
-    qtbot.mouseClick(window.preview_button, Qt.MouseButton.LeftButton)  # stops it
+    qtbot.mouseClick(window.stop_button, Qt.MouseButton.LeftButton)
     qtbot.waitUntil(
         lambda: (
             (window.last_preview is not None or window.last_error is not None)
@@ -63,7 +63,7 @@ def test_gui_runs_simulator_without_blocking_and_writes_nwb(qtbot, tmp_path: Pat
         ),
         timeout=5_000,
     )
-    assert window.preview_button.text() == "Run preview"
+    assert window.preview_button.isEnabled()
     assert window.last_error is None
     assert window.last_preview is not None
     assert window.start_button.isEnabled()
@@ -1187,3 +1187,16 @@ def test_gui_starts_on_rwd_when_the_application_default_is_rwd(qtbot, tmp_path: 
 
     assert window.source_combo.currentData() == "rwd"
     assert isinstance(window._build_config().source, RWDSourceConfig)
+
+
+def test_gui_logs_failures_to_the_settings_folder(qtbot, tmp_path: Path, monkeypatch) -> None:
+    from driftless_photometry.settings import settings_root
+
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: None)
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+
+    window._on_preview_failed("Traceback: no camera frame within 2 s")
+
+    log = (settings_root() / "logs" / "dbf-errors.log").read_text(encoding="utf-8")
+    assert "Preview failed" in log and "no camera frame within 2 s" in log

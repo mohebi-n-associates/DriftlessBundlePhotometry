@@ -903,6 +903,22 @@ class _RWDSession:
                 self._event("rwd_brightness_qc_mismatch", message, at_s=session_s)
         return self._packet(packet)
 
+    def _camera_context(self) -> str:
+        """Settings and camera counters that explain a missing frame."""
+
+        text = (
+            f"{self._plan.frame_rate_hz} Hz, exposure {self._plan.exposure_us / 1000:g} ms, "
+            f"trigger period {self._period_s * 1e3:.3f} ms, LEDs "
+            + ", ".join(f"{int(w)} nm {p:g} %" for w, p in self._plan.power_percent.items())
+        )
+        diagnostics = getattr(self._cameras, "diagnostics", None)
+        if diagnostics is not None:
+            text += (
+                f"; cameras delivered {diagnostics.delivered} frame(s), "
+                f"{diagnostics.incomplete} incomplete, {diagnostics.queue_overflows} lost"
+            )
+        return text
+
     def _check_stall(self, *, frame_received: bool) -> None:
         """Restart when the next slot's frame is missing, judged by frame arrival times.
 
@@ -923,7 +939,7 @@ class _RWDSession:
             ):
                 self._restart(
                     f"no camera frame within {self._timing.first_frame_timeout_s:g} s of the "
-                    "sequencer start"
+                    f"sequencer start ({self._camera_context()})"
                 )
             return
         if self._run_last_host_s is None:
