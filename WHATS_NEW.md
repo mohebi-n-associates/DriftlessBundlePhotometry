@@ -148,6 +148,12 @@ version, move its completed entries into a dated version section.
 
 ### Changed
 
+- **Stop** ends a running preview; the preview button no longer doubles as a stop
+  button.
+- Every failure dialog is also appended to `logs/dbf-errors.log` in the settings
+  folder. When an RWD camera delivers no frame after a sequencer start, the message
+  now gives the frame rate, exposure, trigger period, LED powers, and the cameras'
+  delivered and incomplete frame counts.
 - The live traces add a **dF/F, rolling F0** mode. F0 at each moment is the median
   of the preceding *Baseline* seconds, taken over short bin means, so slow drift such
   as bleaching or changing room light drops out and brief transients remain.
