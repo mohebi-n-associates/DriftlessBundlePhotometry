@@ -219,7 +219,7 @@ class TraceDisplayConfig(BaseModel):
 
     horizon_s: Literal[15.0, 60.0, 600.0, 3600.0] | None = 15.0
     visible_wavelengths: tuple[Literal[405, 410, 470, 560, 565], ...] = (405, 470, 565)
-    mode: Literal["absolute", "dff", "dff_fit"] = "absolute"
+    mode: Literal["absolute", "dff", "dff_fit", "dff_rolling"] = "absolute"
     """``dff_fit`` takes F0 from the 405/410 nm control fitted to each signal."""
     dff_baseline_s: float = Field(default=5.0, ge=0.1, le=3600.0)
     smoothing_window_s: float = Field(

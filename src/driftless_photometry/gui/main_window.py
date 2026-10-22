@@ -95,6 +95,7 @@ from .trace_display import (
     compact_duration,
     downsample_min_max,
     fitted_control_f0,
+    rolling_f0,
     trailing_mean,
 )
 from .warmup import WARMUP_COOLDOWN_S, LEDWarmup, format_minutes
@@ -656,11 +657,19 @@ class MainWindow(QMainWindow):
         self.trace_mode_combo.addItem("Absolute", "absolute")
         self.trace_mode_combo.addItem("dF/F", "dff")
         self.trace_mode_combo.addItem("dF/F, control fit", "dff_fit")
+        self.trace_mode_combo.addItem("dF/F, rolling F0", "dff_rolling")
+        self.trace_mode_combo.setItemData(
+            3,
+            "F0 at each moment is the median of the trace over the preceding Baseline "
+            "seconds, so slow drift such as bleaching or room light is removed. Display "
+            "only.",
+            Qt.ItemDataRole.ToolTipRole,
+        )
         self.trace_mode_combo.setItemData(
             2,
             "F0 is the 410 nm (RWD) or 405 nm (Custom) control trace, fitted to each "
             "signal by least squares over the whole recording so far. The control "
-            "itself uses the median baseline. Display only.",
+            "is hidden, since it is already divided out. Display only.",
             Qt.ItemDataRole.ToolTipRole,
         )
         self.trace_mode_combo.currentIndexChanged.connect(self._apply_trace_mode)
@@ -3111,8 +3120,17 @@ class MainWindow(QMainWindow):
         self._refresh_all_trace_curves()
 
     def _apply_trace_visibility(self, *_args: object) -> None:
+        # In control-fit dF/F the 405/410 nm trace is the reference, already divided out
+        # of every signal, so it is hidden.
+        hidden = (
+            self._trace_control_wavelength()
+            if self.trace_mode_combo.currentData() == "dff_fit"
+            else None
+        )
         for (wavelength, _index), curve in self._curves.items():
-            curve.setVisible(self.trace_wavelength_checks[wavelength].isChecked())
+            curve.setVisible(
+                self.trace_wavelength_checks[wavelength].isChecked() and wavelength != hidden
+            )
 
     def _apply_trace_mode(self, *_args: object) -> None:
         mode = self.trace_mode_combo.currentData()
@@ -3120,9 +3138,10 @@ class MainWindow(QMainWindow):
         self.trace_baseline_spin.setEnabled(is_dff)
         self.trace_baseline_hint.setEnabled(is_dff)
         self.trace_baseline_hint.setText(
-            "F0: control fitted to each signal; control: median"
-            if mode == "dff_fit"
-            else "median F0 per ROI and wavelength"
+            {
+                "dff_fit": "F0: control fitted to each signal; control hidden",
+                "dff_rolling": "F0: median of the preceding window",
+            }.get(mode, "median F0 per ROI and wavelength")
         )
         for plot in self.trace_plots.values():
             if is_dff:
@@ -3130,6 +3149,7 @@ class MainWindow(QMainWindow):
             else:
                 plot.setLabel("left", "Fluorescence", units="counts")
             plot.enableAutoRange(axis="y", enable=True)
+        self._apply_trace_visibility()
         self._refresh_all_trace_curves()
 
     def _update_trace_horizon_availability(self, duration_s: float) -> None:
@@ -3206,6 +3226,11 @@ class MainWindow(QMainWindow):
                     with np.errstate(divide="ignore", invalid="ignore"):
                         values = (values.astype(np.float64) - fitted_f0) / fitted_f0 * 100.0
                     values[~np.isfinite(values)] = np.nan
+            elif mode == "dff_rolling":
+                f0 = rolling_f0(times, all_values, self.trace_baseline_spin.value(), selected_times)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    values = (values.astype(np.float64) - f0) / f0 * 100.0
+                values[~np.isfinite(values)] = np.nan
             elif mode in _DFF_MODES:
                 baseline_stop_s = times[0] + self.trace_baseline_spin.value()
                 baseline_stop = max(1, int(np.searchsorted(times, baseline_stop_s, side="right")))
@@ -3631,7 +3656,7 @@ _MARKER_ROWS = 4
 """Marker rows shown in setup; settings files may define markers for keys up to 9."""
 _TTL_EVENT_ROWS = 4
 
-_DFF_MODES = frozenset({"dff", "dff_fit"})
+_DFF_MODES = frozenset({"dff", "dff_fit", "dff_rolling"})
 
 _TRACE_ROW_HEIGHT_PX = 230
 """Height of one ROI's live trace row; rows beyond the visible area scroll."""

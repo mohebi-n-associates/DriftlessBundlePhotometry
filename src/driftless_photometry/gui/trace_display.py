@@ -151,3 +151,49 @@ def fitted_control_f0(
     slope, intercept = np.polyfit(control[finite], signal[finite], 1)
     fitted = np.interp(at_times, control_times, np.asarray(control_values, dtype=np.float64))
     return slope * fitted + intercept
+
+
+ROLLING_BINS_PER_WINDOW = 30
+"""Rolling F0 takes the median of this many bin means per window, so it stays cheap over
+hours of samples while one transient barely moves it."""
+
+
+def rolling_f0(
+    times: NDArray[np.float64],
+    values: NDArray[np.floating],
+    window_s: float,
+    at_times: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """A trailing baseline: at each of ``at_times``, the median of the preceding window.
+
+    Samples are averaged in bins of ``window_s / ROLLING_BINS_PER_WINDOW``; F0 at a bin is
+    the median of the bin means over the window ending there, and is interpolated to
+    ``at_times``. Before a full window has passed, the window is whatever came before.
+    """
+
+    if window_s <= 0:
+        raise ValueError("the rolling window must be positive")
+    values = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(values)
+    times, values = times[finite], values[finite]
+    if len(times) == 0 or len(at_times) == 0:
+        return np.full(len(at_times), np.nan)
+    width = window_s / ROLLING_BINS_PER_WINDOW
+    start = times[0]
+    index = np.floor((times - start) / width).astype(np.int64)
+    edges = np.flatnonzero(np.diff(index)) + 1
+    starts = np.concatenate(([0], edges))
+    sums = np.add.reduceat(values, starts)
+    counts = np.diff(np.concatenate((starts, [len(values)])))
+    means = sums / counts
+    bins = index[starts]
+    # Place bin means on a regular grid; empty bins repeat the previous mean.
+    grid = np.full(int(bins[-1]) + 1, np.nan)
+    grid[bins] = means
+    filled = np.flatnonzero(~np.isnan(grid))
+    grid = grid[filled[np.searchsorted(filled, np.arange(len(grid)), side="right") - 1]]
+    padded = np.concatenate((np.full(ROLLING_BINS_PER_WINDOW - 1, np.nan), grid))
+    windows = np.lib.stride_tricks.sliding_window_view(padded, ROLLING_BINS_PER_WINDOW)
+    baseline = np.nanmedian(windows, axis=1)
+    centers = start + (np.arange(len(grid)) + 1.0) * width
+    return np.interp(at_times, centers, baseline)

@@ -173,11 +173,14 @@ Choose when the recording starts and stops in the *Recording* group:
 
 None of these choices needs a new preview.
 
-While recording, the trace display's **Y axis** can show *Absolute* counts, *dF/F*
-against a median baseline, or *dF/F, control fit*. The control fit takes each 470 and
+While recording, the trace display's **Y axis** can show *Absolute* counts (the mean
+12-bit pixel value in each circle), *dF/F* against a median baseline, *dF/F, control
+fit*, or *dF/F, rolling F0*. The control fit takes each 470 and
 560 nm trace's F0 from the 410 nm trace, fitted to it by least squares over the
 recording so far, which removes shared artifacts such as bleaching and motion. The
-410 nm trace itself shows its median-baseline dF/F. All three change only the display.
+410 nm trace is hidden in that mode. *dF/F, rolling F0* uses the median of the
+preceding *Baseline* seconds, which follows slow drift. All of them change only the
+display.
 
 Press **Record**. DBF connects, sends the settings, starts the LED sequence, and
 records until the stop condition or **Stop**. It then saves and validates one NWB
