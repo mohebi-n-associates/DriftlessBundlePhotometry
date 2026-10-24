@@ -3355,6 +3355,20 @@ class MainWindow(QMainWindow):
         if points:
             self._append_live_trace_points(points)
 
+    def _readout_wavelength(self, camera: int) -> int | None:
+        """The one wavelength a camera's readout follows, so it does not flicker.
+
+        Camera 1 images both 410 and 470 nm; its readout shows the 470 nm signal, or
+        410 nm when 470 is off. Other cameras show their only wavelength.
+        """
+
+        active = self._active_trace_wavelengths
+        if camera == 1 and int(Wavelength.GREEN_470) in active:
+            return int(Wavelength.GREEN_470)
+        profile = self._active_profile
+        own = [int(w) for w in profile.wavelengths if profile.camera_for(w) == camera]
+        return next((w for w in own if w in active), None)
+
     def _show_roi_readout(
         self,
         camera: int,
@@ -3364,7 +3378,7 @@ class MainWindow(QMainWindow):
         saturation: Sequence[float],
     ) -> None:
         label = self.calibration_readouts.get(camera)
-        if label is None:
+        if label is None or wavelength != self._readout_wavelength(camera):
             return
         lines = []
         for roi, value, saturated in zip(rois, values, saturation, strict=True):

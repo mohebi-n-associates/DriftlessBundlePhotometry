@@ -1292,7 +1292,8 @@ def test_gui_live_view_draws_traces_and_roi_readouts(qtbot, tmp_path: Path) -> N
         timeout=15_000,
     )
     readout = window.calibration_readouts[1].text()
-    assert readout.startswith("Fiber 1: ") and " counts @ 4" in readout
+    assert readout.startswith("Fiber 1: ") and readout.endswith("counts @ 470 nm")
+    assert window._readout_wavelength(1) == 470
     assert "@ 560 nm" in window.calibration_readouts[2].text()
     _, values = window._curves[(470, 0)].getData()
     assert values is not None and len(values) >= 1
