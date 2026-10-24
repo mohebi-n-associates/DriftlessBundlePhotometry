@@ -140,7 +140,8 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   wavelength is drawn at most 15 times a second.
 - Each camera panel on *Camera & fiber ROIs* shows every ROI's mean intensity (counts)
   on the latest frame in its top-right corner, with its wavelength and any saturated
-  fraction, in live view, preview, and recording.
+  fraction, in live view, preview, and recording. Camera 1 follows 470 nm (410 nm when
+  470 is off), so its readout does not alternate between wavelengths.
 
 - TTL input edges are drawn on the live traces as thin dashed lines, one colour per
   input, as in DriftlessFLIP. A **TTL** switch and one switch per input above the
