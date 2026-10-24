@@ -740,3 +740,31 @@ def test_each_recording_gets_a_folder_with_its_nwbs_log_and_roi_maps(tmp_path: P
     assert "saline injection [fiber_02]" in str(embedded)
     restored, _warnings = configuration_from_nwb(result.reports[0].path)
     assert restored.output_directory == config.output_directory  # the root, not the folder
+
+
+def test_saved_roi_maps_use_auto_contrast_and_nwb_keeps_fixed_scale(tmp_path: Path) -> None:
+    import zlib
+
+    from driftless_photometry.roi import auto_contrast_levels, render_annotated_rois
+
+    config = demo_config(tmp_path, fiber_count=1, width_px=48, height_px=24)
+    result = AcquisitionEngine().run(config, SimulatedRig(config), duration_s=1.0)
+
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        images = io.read().processing["photometry"]["wavelength_roi_images"].images
+        fixed = images["roi_map_470nm"].data[:]
+        stretched = images["roi_map_autocontrast_470nm"].data[:]
+        mean = images["mean_reference_470nm"].data[:]
+    assert stretched.max() == 255 and fixed.max() < stretched.max()
+    assert np.array_equal(
+        stretched,
+        render_annotated_rois(
+            mean, config.enabled_rois, bit_depth=12, levels=auto_contrast_levels(mean)
+        ),
+    )
+    png = (tmp_path / config.session_id / "roi_map_470nm.png").read_bytes()
+    idat = png[png.index(b"IDAT") + 4 : png.index(b"IEND") - 8]
+    rows = zlib.decompress(idat)
+    width = 48 * 3 + 1
+    pixels = np.frombuffer(rows, dtype=np.uint8).reshape(24, width)[:, 1:].reshape(24, 48, 3)
+    assert np.array_equal(pixels, stretched)

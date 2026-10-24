@@ -127,11 +127,23 @@ def roi_bounding_box(
     return left, top, right - left, bottom - top
 
 
+AUTO_CONTRAST_PERCENTILES = (0.5, 99.9)
+"""The live display's Auto contrast stretch, reused for auto-contrast saved maps."""
+
+
+def auto_contrast_levels(frame: NDArray[np.uint16]) -> tuple[float, float]:
+    """Display levels from the frame's own dim and bright pixels."""
+
+    low, high = (float(v) for v in np.percentile(frame, AUTO_CONTRAST_PERCENTILES))
+    return low, max(high, low + 1.0)
+
+
 def render_annotated_rois(
     frame: NDArray[np.uint16],
     rois: tuple[ROIConfig, ...],
     *,
     bit_depth: int,
+    levels: tuple[float, float] | None = None,
 ) -> NDArray[np.uint8]:
     """Render fixed-scale RGB diagnostic imagery with colored circular ROI outlines.
 
@@ -145,8 +157,14 @@ def render_annotated_rois(
     if not 1 <= bit_depth <= 16:
         raise ValueError("bit_depth must be between 1 and 16")
     maximum = (1 << bit_depth) - 1
-    scaled = np.minimum(frame, maximum).astype(np.uint32)
-    grayscale = ((scaled * 255) // maximum).astype(np.uint8)
+    if levels is None:
+        scaled = np.minimum(frame, maximum).astype(np.uint32)
+        grayscale = ((scaled * 255) // maximum).astype(np.uint8)
+    else:
+        # A derived display stretch (auto contrast); the raw frame is untouched.
+        low, high = levels
+        stretched = (frame.astype(np.float64) - low) / (high - low)
+        grayscale = np.rint(np.clip(stretched, 0.0, 1.0) * 255).astype(np.uint8)
     annotated = np.repeat(grayscale[:, :, np.newaxis], 3, axis=2)
     yy, xx = np.ogrid[: frame.shape[0], : frame.shape[1]]
     for index, roi in enumerate(rois):

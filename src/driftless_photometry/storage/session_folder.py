@@ -19,7 +19,11 @@ from numpy.typing import NDArray
 from driftless_photometry import __version__
 from driftless_photometry.config import SessionConfig, Wavelength, profile_for
 from driftless_photometry.domain import AcquisitionData
-from driftless_photometry.roi import render_annotated_rois, rois_for_camera
+from driftless_photometry.roi import (
+    auto_contrast_levels,
+    render_annotated_rois,
+    rois_for_camera,
+)
 
 SESSION_LOG_NAME = "session_log.txt"
 SETTINGS_NAME = "settings.json"
@@ -59,10 +63,13 @@ def roi_maps(
     config: SessionConfig,
     data: AcquisitionData,
     wavelength_images: dict[Wavelength, NDArray[np.uint16]] | None = None,
+    *,
+    auto_contrast: bool = False,
 ) -> dict[Wavelength, NDArray[np.uint8]]:
     """Every enabled ROI outlined on each wavelength's mean reference (or first frame).
 
-    Fixed bit-depth scaling, as for the NWB diagnostic images; ROI colours follow ROI
+    Fixed bit-depth scaling by default, as for the NWB diagnostic images; with
+    ``auto_contrast``, the live view's Auto contrast stretch. ROI colours follow ROI
     order (listed in the session log).
     """
 
@@ -73,7 +80,10 @@ def roi_maps(
         mean = data.mean_reference_images.get(wavelength)
         image = mean.image if mean is not None else (wavelength_images or {})[wavelength]
         rois = rois_for_camera(config.enabled_rois, profile.camera_for(wavelength))
-        maps[wavelength] = render_annotated_rois(image, rois, bit_depth=config.camera.bit_depth)
+        levels = auto_contrast_levels(image) if auto_contrast else None
+        maps[wavelength] = render_annotated_rois(
+            image, rois, bit_depth=config.camera.bit_depth, levels=levels
+        )
     return maps
 
 
@@ -178,7 +188,11 @@ def session_log_text(config: SessionConfig, data: AcquisitionData) -> str:
         f"{sum(i.stop_time_s - i.start_time_s for i in data.invalid_times):.3f} s",
     ]
     for wavelength, mean in sorted(data.mean_reference_images.items(), key=lambda i: int(i[0])):
-        lines.append(f"  ROI map {int(wavelength)} nm: {mean.describe(int(wavelength))}")
+        low, high = auto_contrast_levels(mean.image)
+        lines.append(
+            f"  ROI map {int(wavelength)} nm: {mean.describe(int(wavelength))} "
+            f"Auto contrast {low:.0f}-{high:.0f} counts (0.5-99.9th percentile)."
+        )
 
     entries = [
         (event.timestamp_s, "event", f"{event.event}: {event.detail}".rstrip(": "))
@@ -248,6 +262,6 @@ def write_session_artifacts(
         + "\n",
         encoding="utf-8",
     )
-    for wavelength, rgb in roi_maps(config, data, wavelength_images).items():
+    for wavelength, rgb in roi_maps(config, data, wavelength_images, auto_contrast=True).items():
         write_png(folder / f"roi_map_{int(wavelength)}nm.png", rgb)
     return folder

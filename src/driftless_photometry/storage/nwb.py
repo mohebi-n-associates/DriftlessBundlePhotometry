@@ -53,7 +53,11 @@ from driftless_photometry.provenance import (
     NWB_RUNTIME_PROVENANCE_SCRATCH_NAME,
     capture_runtime_provenance,
 )
-from driftless_photometry.roi import render_annotated_rois, rois_for_camera
+from driftless_photometry.roi import (
+    auto_contrast_levels,
+    render_annotated_rois,
+    rois_for_camera,
+)
 from driftless_photometry.settings import NWB_SETTINGS_SCRATCH_NAME, settings_json
 
 from .frames import FrameStream
@@ -669,7 +673,23 @@ def _add_rois_and_calibration(
                             description=(
                                 f"Derived fixed-scale RGB view of the {int(wavelength)} nm "
                                 "mean reference with every ROI on this camera outlined, in "
-                                "ROI order; also roi_map_*.png in the recording's folder."
+                                "ROI order."
+                            ),
+                        ),
+                        RGBImage(
+                            name=f"roi_map_autocontrast_{int(wavelength)}nm",
+                            data=render_annotated_rois(
+                                mean.image,
+                                every_roi,
+                                bit_depth=config.camera.bit_depth,
+                                levels=auto_contrast_levels(mean.image),
+                            ),
+                            description=(
+                                f"Derived auto-contrast RGB view of the {int(wavelength)} nm "
+                                "mean reference (display stretch between its 0.5th and "
+                                "99.9th percentile) with every ROI on this camera outlined; "
+                                f"the same image as roi_map_{int(wavelength)}nm.png in the "
+                                "recording's folder."
                             ),
                         ),
                         GrayscaleImage(
