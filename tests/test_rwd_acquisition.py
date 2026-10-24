@@ -68,7 +68,7 @@ def test_rwd_preview_checks_every_wavelength_on_simulated_hardware(tmp_path: Pat
     counts = dict(result.wavelength_frame_counts)
     assert set(counts) == {W410, W470, W560}
     assert all(count >= 2 for count in counts.values())
-    assert not list(tmp_path.glob("*.nwb"))
+    assert not list(tmp_path.rglob("*.nwb"))
     bench.assert_all_off()
 
 
@@ -167,7 +167,7 @@ def test_rwd_spool_round_trips_camera_and_provenance_columns(tmp_path: Path) -> 
         engine.run(config, bench.rig, duration_s=2.0, on_progress=stop_early)
     bench.assert_all_off()
 
-    (spool_path,) = tmp_path.glob("*.photometry-spool")
+    (spool_path,) = tmp_path.glob("*/*.photometry-spool")
     loaded = load_session_spool(spool_path)
     data = loaded.data
     assert loaded.schema_version == 5

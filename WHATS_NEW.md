@@ -161,6 +161,19 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   ROI drawn on it (`mean_roi_overlay_{nm}nm`). Recordings shorter than that average
   their latest frames. The original single raw frame stays as `raw_reference_{nm}nm`.
 
+- Each recording now gets its own folder, `<output root>/<session id>/`, holding:
+  - every ROI's NWB file, plus the recovery spool while recording;
+  - `session_log.txt`, a detailed log (settings, ROIs, TTL inputs, frame and TTL
+    counts, and a timeline of system events, markers, notes, TTL events, stimulation,
+    invalid spans, and dropped frames) with the NWB file list;
+  - `settings.json`;
+  - `roi_map_{nm}nm.png`: the mean reference with every ROI on that camera outlined.
+
+  Each NWB file carries the same log (scratch `driftless_session_log`) and the
+  all-ROI maps (`roi_map_{nm}nm`). Settings saved in the NWB keep the output root, so
+  reloading them does not nest recordings. Recovery finds spools in recording folders
+  (`<id>/<id>.photometry-spool`) as well as directly under the root.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller

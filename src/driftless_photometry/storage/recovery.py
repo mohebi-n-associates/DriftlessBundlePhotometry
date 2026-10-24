@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .nwb import NWBWriteReport, recover_or_resume_session_nwbs
+from .session_folder import session_log_text, write_session_artifacts
 from .spool import load_session_spool, remove_session_spool
 
 
@@ -66,13 +67,13 @@ def discover_session_spools(
     *,
     incomplete_only: bool = False,
 ) -> tuple[SpoolInspection, ...]:
-    """Inspect only direct, explicitly suffixed child spools under ``root``."""
+    """Inspect explicitly suffixed spools under ``root`` and its recording folders."""
 
     resolved = root.expanduser().resolve()
     if not resolved.is_dir():
         raise NotADirectoryError(f"spool discovery root is not a directory: {resolved}")
     inspections = []
-    for candidate in sorted(resolved.glob("*.photometry-spool")):
+    for candidate in session_spool_candidates(resolved):
         if not candidate.is_dir():
             continue
         inspection = inspect_session_spool(candidate)
@@ -105,6 +106,8 @@ def recover_session_spool(path: Path, *, keep_spool: bool = False) -> RecoveryRe
     recovery_event = (
         "spool_recovered_complete" if loaded.complete else "spool_recovered_incomplete_acquisition"
     )
+    if not loaded.data.session_log:
+        loaded.data.session_log = session_log_text(loaded.config, loaded.data)
     reports, reused_existing_outputs = recover_or_resume_session_nwbs(
         loaded.config,
         loaded.data,
@@ -112,6 +115,12 @@ def recover_session_spool(path: Path, *, keep_spool: bool = False) -> RecoveryRe
         calibration_image=loaded.calibration_image,
         wavelength_images=loaded.wavelength_images,
         additional_system_events=(recovery_event,),
+    )
+    write_session_artifacts(
+        loaded.config,
+        loaded.data,
+        nwb_paths=tuple(report.path for report in reports),
+        wavelength_images=loaded.wavelength_images,
     )
     if not keep_spool:
         remove_session_spool(loaded.path)
@@ -123,3 +132,17 @@ def recover_session_spool(path: Path, *, keep_spool: bool = False) -> RecoveryRe
         inspection=inspection,
         reused_existing_outputs=reused_existing_outputs,
     )
+
+
+def session_spool_candidates(root: Path) -> list[Path]:
+    """Spools directly under ``root`` (older recordings) or in its recording folders."""
+
+    found = set(root.glob("*.photometry-spool"))
+    # Only a recording folder's own spool (<id>/<id>.photometry-spool), never arbitrary
+    # nested directories.
+    found |= {
+        spool
+        for spool in root.glob("*/*.photometry-spool")
+        if spool.parent.name == spool.name.removesuffix(".photometry-spool")
+    }
+    return sorted(found)

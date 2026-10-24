@@ -57,6 +57,7 @@ from driftless_photometry.roi import render_annotated_rois, rois_for_camera
 from driftless_photometry.settings import NWB_SETTINGS_SCRATCH_NAME, settings_json
 
 from .frames import FrameStream
+from .session_folder import without_session_folder
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -307,13 +308,23 @@ def _create_nwbfile(config: SessionConfig, roi: ROIConfig, data: AcquisitionData
         was_generated_by=[["driftless-bundle-photometry", __version__]],
     )
     nwbfile.add_scratch(
-        settings_json(config),
+        settings_json(without_session_folder(config)),
         name=NWB_SETTINGS_SCRATCH_NAME,
         description=(
             "Versioned complete application settings used for this recording, including "
             "all configured ROIs and display preferences."
         ),
     )
+    if data.session_log:
+        nwbfile.add_scratch(
+            data.session_log,
+            name="driftless_session_log",
+            description=(
+                "Human-readable session log: settings, ROIs, TTL inputs, and a timeline of "
+                "system events, markers, notes, TTL events, stimulation, invalid spans, and "
+                "dropped frames. The same text is session_log.txt in the recording's folder."
+            ),
+        )
     provenance = data.runtime_provenance or capture_runtime_provenance(
         adapter_name="not supplied",
         protocol_version="native_acquisition_v1",
@@ -647,8 +658,20 @@ def _add_rois_and_calibration(
             placed = rois_for_camera((roi,), camera)
             mean = (mean_images or {}).get(wavelength)
             if mean is not None:
+                every_roi = rois_for_camera(config.enabled_rois, camera)
                 diagnostic_images.extend(
                     (
+                        RGBImage(
+                            name=f"roi_map_{int(wavelength)}nm",
+                            data=render_annotated_rois(
+                                mean.image, every_roi, bit_depth=config.camera.bit_depth
+                            ),
+                            description=(
+                                f"Derived fixed-scale RGB view of the {int(wavelength)} nm "
+                                "mean reference with every ROI on this camera outlined, in "
+                                "ROI order; also roi_map_*.png in the recording's folder."
+                            ),
+                        ),
                         GrayscaleImage(
                             name=f"mean_reference_{int(wavelength)}nm",
                             data=mean.image,
@@ -1013,7 +1036,7 @@ def _round_trip_verify(
         if NWB_SETTINGS_SCRATCH_NAME not in nwbfile.scratch:
             raise RuntimeError("NWB round-trip settings snapshot is missing")
         stored_settings = json.loads(str(nwbfile.get_scratch(NWB_SETTINGS_SCRATCH_NAME)))
-        expected_settings = json.loads(settings_json(config))
+        expected_settings = json.loads(settings_json(without_session_folder(config)))
         if (
             stored_settings.get("format") != expected_settings["format"]
             or stored_settings.get("settings") != expected_settings["settings"]

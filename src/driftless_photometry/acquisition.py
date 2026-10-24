@@ -39,6 +39,11 @@ from driftless_photometry.storage import (
     load_session_spool,
     write_session_nwbs,
 )
+from driftless_photometry.storage.session_folder import (
+    session_log_text,
+    with_session_folder,
+    write_session_artifacts,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,6 +437,8 @@ class AcquisitionEngine:
             raise ValueError("duration_s must be positive")
         if not self._run_lock.acquire(blocking=False):
             raise RuntimeError("an acquisition is already running")
+        # Each recording gets its own folder for its NWB files, log, and ROI maps.
+        config = with_session_folder(config)
         spool: SessionSpool | None = None
         packets = None
         frame_count = 0
@@ -686,6 +693,7 @@ class AcquisitionEngine:
             loaded = load_session_spool(spool.path)
             if not loaded.complete:
                 raise RuntimeError("spool did not reach a complete state")
+            loaded.data.session_log = session_log_text(loaded.config, loaded.data)
             reports = write_session_nwbs(
                 loaded.config,
                 loaded.data,
@@ -699,6 +707,12 @@ class AcquisitionEngine:
                 dropped_frames=dropped_frames,
                 clock_residual_s=clock_residual_s,
                 maximum_absolute_clock_residual_s=maximum_absolute_clock_residual_s,
+            )
+            write_session_artifacts(
+                loaded.config,
+                loaded.data,
+                nwb_paths=tuple(report.path for report in reports),
+                wavelength_images=loaded.wavelength_images,
             )
             spool.cleanup()
             self.recovery_path = None

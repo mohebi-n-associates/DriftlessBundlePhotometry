@@ -216,6 +216,8 @@ class AcquisitionData:
     system_events: list[SystemEvent] = field(default_factory=list)
     event_marks: list[EventMark] = field(default_factory=list)
     mean_reference_images: dict[Wavelength, MeanReferenceImage] = field(default_factory=dict)
+    session_log: str = ""
+    """Human-readable session log; written into every NWB and the recording folder."""
     frame_ids: list[int] = field(default_factory=list)
     frame_timestamps_s: list[float] = field(default_factory=list)
     frame_sequences: list[int] = field(default_factory=list)

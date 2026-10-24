@@ -213,6 +213,14 @@ If something interrupts the frame stream, DBF stops the sequencer, marks the gap
 invalid, and restarts it. For example, a camera might miss a frame. The restart keeps
 every recorded wavelength correct.
 
+## Where a recording is saved
+
+Each recording gets its own folder inside the output root, named after the session:
+its ROI NWB files, `session_log.txt` (a readable account of the session, with every
+event, marker, note, and stimulation in time order), `settings.json`, and one
+`roi_map_{nm}nm.png` per wavelength with every ROI outlined. The NWB files contain the
+same log and maps.
+
 ## What each NWB file records
 
 - Raw fluorescence per wavelength (410, 470, and 560 nm) for that ROI's fiber, with 560
