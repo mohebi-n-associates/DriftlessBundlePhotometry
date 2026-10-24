@@ -129,6 +129,11 @@ camera.
    gives every circle that fiber's size. Once placed, tick **Lock ROI circles** so they
    cannot be dragged by accident.
 
+   To check how much light leaks between fibers, keep Live view running and press
+   **Crosstalk test…**: capture a dark baseline with every fiber capped, then put a
+   fluorescent target on one fiber at a time and capture it. The table gives each other
+   ROI's rise as a percentage of the lit fiber's; **Log in next recordings** keeps it.
+
    During live view, gain changes take effect at once. Frame-rate or exposure changes
    restart live view, because the controller takes them only at the start.
 5. Press **Stop**, then fill in each ROI's animal and region details. Each ROI becomes
