@@ -800,3 +800,16 @@ def test_signal_warnings_are_logged_as_system_events(tmp_path: Path) -> None:
     engine.run(config, SimulatedRig(config), duration_s=0.5, on_progress=on_progress)
     log = (tmp_path / config.session_id / "session_log.txt").read_text(encoding="utf-8")
     assert "roi_signal_warning: fiber_01: dark at 470 nm (12 counts)" in log
+
+
+def test_display_diagnostics_are_logged_as_system_events(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1)
+    engine = AcquisitionEngine()
+
+    def on_progress(progress):
+        if progress.frame_count == 5:
+            engine.log_system_event(0.2, "roi_snr", "fiber_01: 470 nm 25.10 over the last 120 s")
+
+    engine.run(config, SimulatedRig(config), duration_s=0.5, on_progress=on_progress)
+    log = (tmp_path / config.session_id / "session_log.txt").read_text(encoding="utf-8")
+    assert "roi_snr: fiber_01: 470 nm 25.10 over the last 120 s" in log

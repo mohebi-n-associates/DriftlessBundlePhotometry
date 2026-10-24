@@ -158,6 +158,10 @@ camera.
   warning when a wavelength goes dark (below 50 counts for 2 s), changes suddenly by
   30 % or more (fiber moved?), or drifts 30 % from its first 10 s. Recordings log each
   warning with its time.
+- During preview and recording each row's title shows the ROI's SNR per wavelength
+  (the lab analysis code's spectral SNR over the last 2 minutes, updated once a
+  minute). It needs each wavelength sampled at 28 Hz or more, so with three LEDs use a
+  frame rate of 84 Hz or higher; slower rates show "n/a". Recordings log it.
 - The **Rows** menu above the traces picks which ROIs' traces are shown. Untick the
   others (or *Select none*, then tick one) to give one ROI the whole trace area;
   *Select all* brings every row back.

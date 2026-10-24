@@ -8,6 +8,29 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.7 - 2026-10-24
+
+### Added
+
+- **SNR per ROI and wavelength** on each trace row's title during preview and
+  recording (for example "SNR 410 12.3 · 470 25.1 · 560 8.9", in each wavelength's
+  colour). It is the lab analysis code's spectral SNR (`compute_snr` in
+  `dataAnalysis/fiberphotometry/preprocess_rwd_photometry.py`): from a Welch PSD,
+  noise is the mean PSD in 10-14 Hz times the 14 Hz bandwidth, signal is the 0-14 Hz
+  power minus that noise, and SNR is their ratio. To stay steady it uses the last
+  2 minutes and updates once a minute, the first time after 1 minute. Live, a
+  quadratic trend over the window stands in for the analysis code's photobleaching
+  fit. Unlike the analysis code, which skips 410 nm, 410 nm is shown too.
+  - The 10-14 Hz noise band needs each wavelength sampled at 28 Hz or faster: with
+    three LEDs, a frame rate of 84 Hz or more (120 Hz gives 40 Hz each). Slower
+    rates show "n/a" with the rate, and the status bar says to raise the frame rate.
+  - Live view shows only display frames, not every sample, so it shows no SNR.
+  - Recordings log each ROI's SNR every minute as a `roi_snr` event in the session
+    log and every NWB file.
+  - Display only: the SNR reads the displayed ROI means and never changes recorded
+    data. If the display falls behind and compacts its points, SNR pauses for that run
+    rather than mislead.
+
 ## 0.3.6 - 2026-10-24
 
 ### Added
