@@ -115,6 +115,9 @@ clean-machine test was run; the bench and finalization-memory gates above remain
 - The delayed start, output test, and power measurement share one `poll_until`
   helper that keeps the controller link serviced while they wait.
 
+- The live trace y axis reads *Mean pixel intensity (counts)*, without pyqtgraph's
+  automatic SI prefix, which showed values above 1000 as "kcounts".
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller
