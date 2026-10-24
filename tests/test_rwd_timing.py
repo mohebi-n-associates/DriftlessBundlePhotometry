@@ -185,7 +185,7 @@ def test_tracker_flags_cameras_whose_first_frames_do_not_line_up(tmp_path: Path)
     result = tracker.observe(late_camera2)
 
     assert isinstance(result, RWDContinuityBreak)
-    assert "too late to establish wavelength phase" in result.reason
+    assert "does not line up" in result.reason
 
 
 @pytest.mark.parametrize("lost_slots", [1, 2, 3])
@@ -318,3 +318,40 @@ def test_tracker_accepts_crystal_offsets_but_not_a_wrong_period_model(tmp_path: 
     frames = _frames(plan, range(60), camera_ns_per_s=1e9 * (1 + 1e-3))
     results = [wrong.observe(frame) for frame in frames]
     assert any(isinstance(result, RWDContinuityBreak) and result.fatal for result in results)
+
+
+@pytest.mark.parametrize(
+    ("enabled", "camera", "needed"),
+    [
+        ((W410, W470), 1, True),  # even 410/470 alternation: only arrival time tells
+        ((W410, W470, W560), 1, False),  # steps 1, 2, 1, 2 reveal a shifted start
+        ((W410, W470, W560), 2, False),  # one wavelength per camera
+        ((W470, W560), 1, False),
+        ((W470,), 1, False),
+    ],
+)
+def test_arrival_bound_applies_only_where_timing_cannot_reveal_a_missed_trigger(
+    tmp_path: Path, enabled, camera: int, needed: bool
+) -> None:
+    plan = RWDExcitationPlan.from_config(_config(tmp_path, enabled))
+
+    assert plan.first_frame_phase_needs_arrival_bound(camera) is needed
+
+
+def test_three_led_late_first_frame_is_accepted_and_a_missed_trigger_still_caught(
+    tmp_path: Path,
+) -> None:
+    plan = RWDExcitationPlan.from_config(_config(tmp_path))
+    frames = _frames(plan, range(8))
+    late = RWDCameraFrame(1, frames[0].frame_id, frames[0].camera_timestamp_ns, 0.5)
+    tracker = RWDSegmentTracker(plan, enabled_host_s=0.0)
+    assert isinstance(tracker.observe(late), RWDSlotAssignment)
+
+    # Camera 1 missed slot 0: its first frame is really slot 1, its second slot 3.
+    shifted = RWDSegmentTracker(plan, enabled_host_s=0.0)
+    first = RWDCameraFrame(1, 0, frames[1].camera_timestamp_ns, 0.5)
+    second = RWDCameraFrame(1, 1, frames[3].camera_timestamp_ns, 0.6)
+    assert isinstance(shifted.observe(first), RWDSlotAssignment)
+    result = shifted.observe(second)
+    assert isinstance(result, RWDContinuityBreak)
+    assert "missed exposure" in result.reason

@@ -123,6 +123,14 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   only when it differs (`camera.camera2_gain`), and NWB files carry one camera model
   per gain when they differ.
 
+- The first-frame arrival limit now applies only where it is the sole evidence of a
+  missed first trigger: camera 1 with 410 + 470 nm alone. With all three LEDs, camera
+  1's 1-2-1-2 slot spacing exposes a shifted start on its next frame, and single-
+  wavelength cameras cannot be mislabelled, so first frames that arrive a few
+  milliseconds late no longer fail previews and recordings at 120 Hz. On the R821 the
+  first frame took about 11 ms at 120 Hz against a 13.7 ms limit, so busy hosts failed.
+  410 + 470 nm alone at high rates still fails closed.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller
