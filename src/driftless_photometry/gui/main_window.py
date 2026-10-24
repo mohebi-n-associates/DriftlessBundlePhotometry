@@ -1544,10 +1544,7 @@ class MainWindow(QMainWindow):
             title = f"ROI {row + 1} - {roi.label} / {roi.animal_id}"
             plot.setTitle(title, color="#e8f7fa", size="10pt")
             plot.showGrid(x=True, y=True, alpha=0.22)
-            if display_mode in _DFF_MODES:
-                plot.setLabel("left", "dF/F", units="%")
-            else:
-                plot.setLabel("left", "Fluorescence", units="counts")
+            _label_trace_axis(plot, dff=display_mode in _DFF_MODES)
             if row == len(rois) - 1:
                 plot.setLabel("bottom", "Session time", units="s")
             if row == 0:
@@ -3294,10 +3291,7 @@ class MainWindow(QMainWindow):
             }.get(mode, "median F0 per ROI and wavelength")
         )
         for plot in self.trace_plots.values():
-            if is_dff:
-                plot.setLabel("left", "dF/F", units="%")
-            else:
-                plot.setLabel("left", "Fluorescence", units="counts")
+            _label_trace_axis(plot, dff=is_dff)
             plot.enableAutoRange(axis="y", enable=True)
         self._apply_trace_visibility()
         self._refresh_all_trace_curves()
@@ -3899,3 +3893,18 @@ _DFF_MODES = frozenset({"dff", "dff_fit", "dff_rolling"})
 
 _TRACE_ROW_HEIGHT_PX = 230
 """Height of one ROI's live trace row; rows beyond the visible area scroll."""
+
+
+def _label_trace_axis(plot: pg.PlotItem, *, dff: bool) -> None:
+    """Label a trace row's y axis in plain units.
+
+    Absolute values are the mean raw camera value (0-4095 for 12-bit pixels) inside the
+    fiber's circle. pyqtgraph's automatic SI prefixes would show them as "kcounts" once
+    they pass 1000, so the prefixes are off.
+    """
+
+    plot.getAxis("left").enableAutoSIPrefix(False)
+    if dff:
+        plot.setLabel("left", "dF/F", units="%")
+    else:
+        plot.setLabel("left", "Mean pixel intensity", units="counts")

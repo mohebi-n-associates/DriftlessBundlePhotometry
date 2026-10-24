@@ -1222,3 +1222,15 @@ def test_gui_keeps_event_settings_the_panel_cannot_show(qtbot, tmp_path: Path) -
     assert [rule.name for rule in rebuilt.ttl_events] == [f"E{i}" for i in range(6)]
     assert "keys 7" in window.events_extra_label.text()
     assert "2 more named TTL event(s)" in window.events_extra_label.text()
+
+
+def test_gui_trace_axis_shows_plain_pixel_intensity(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=1))
+    axis = window.trace_plots[0].getAxis("left")
+
+    assert axis.labelText == "Mean pixel intensity" and axis.labelUnits == "counts"
+    assert not axis.autoSIPrefix
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff"))
+    assert axis.labelText == "dF/F" and not axis.autoSIPrefix
