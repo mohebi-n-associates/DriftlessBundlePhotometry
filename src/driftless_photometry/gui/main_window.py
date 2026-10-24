@@ -350,6 +350,9 @@ class MainWindow(QMainWindow):
         self._progress_duration_s = default_duration_s
         self._roi_items: list[pg.CircleROI] = []
         self._roi_items_cam2: list[pg.CircleROI] = []
+        # Display-only names beside the circles, and outlines on the wavelength images.
+        self._roi_labels: list[tuple[pg.PlotWidget, pg.TextItem]] = []
+        self._wavelength_roi_overlays: list[tuple[pg.PlotWidget, object]] = []
         self._restart_live_view = False
         self._camera_controls_ready = False
         self._camera_frame_counts: dict[int, int] = {}
@@ -2893,6 +2896,7 @@ class MainWindow(QMainWindow):
                 editor.age_edit,
             ):
                 edit.textChanged.connect(self._invalidate_preview)
+            editor.label_edit.textChanged.connect(self._refresh_roi_labels)
             editor.sex_combo.currentIndexChanged.connect(self._invalidate_preview)
             for camera, spin in editor.diameter_spins.items():
                 spin.valueChanged.connect(
@@ -2913,6 +2917,7 @@ class MainWindow(QMainWindow):
         for items in (self._roi_items, self._roi_items_cam2):
             if index < len(items):
                 items[index].setOpacity(1.0 if checked else 0.25)
+        self._refresh_roi_labels()
         try:
             rois = self._roi_configs_from_controls()
         except ValueError:
@@ -2968,6 +2973,9 @@ class MainWindow(QMainWindow):
             self.calibration_plot_cam2.removeItem(item)
         self._roi_items.clear()
         self._roi_items_cam2.clear()
+        for plot, label in self._roi_labels:
+            plot.removeItem(label)
+        self._roi_labels.clear()
         self._last_camera_images.clear()
         self._configure_trace_plots(tuple(roi for roi in rois if roi.enabled))
         blank = np.zeros((camera.height_px, camera.width_px), dtype=np.uint16)
@@ -2990,6 +2998,7 @@ class MainWindow(QMainWindow):
             circle.setZValue(10)
             circle.setOpacity(1.0 if roi.enabled else 0.25)
             circle.sigRegionChangeFinished.connect(self._on_roi_geometry_changed)
+            circle.sigRegionChanged.connect(self._refresh_roi_labels)
             self.calibration_plot.addItem(circle)
             self._roi_items.append(circle)
         for plot in (self.calibration_plot, self.calibration_plot_cam2):
@@ -3000,6 +3009,84 @@ class MainWindow(QMainWindow):
         self._enforce_diameter_limits()
         self._sync_diameter_controls()
         self._update_roi_summary()
+        self._refresh_roi_labels()
+
+    def _roi_display_name(self, index: int) -> str:
+        label = ""
+        if index < len(self._roi_metadata_editors):
+            label = self._roi_metadata_editors[index].label_edit.text().strip()
+        return f"ROI {index + 1} - {label}" if label else f"ROI {index + 1}"
+
+    def _roi_label_item(self, plot: pg.PlotWidget, index: int) -> pg.TextItem:
+        label = pg.TextItem(
+            color=_FIBER_COLORS[index % len(_FIBER_COLORS)],
+            fill=pg.mkBrush(4, 14, 22, 170),
+        )
+        label.setZValue(11)
+        plot.addItem(label)
+        self._roi_labels.append((plot, label))
+        return label
+
+    @staticmethod
+    def _place_roi_label(label: pg.TextItem, x: float, y: float, radius: float) -> None:
+        # Above the circle (y grows downward), or below it near the top edge.
+        if y - radius > 24:
+            label.setAnchor((0.5, 1.0))
+            label.setPos(x, y - radius - 2)
+        else:
+            label.setAnchor((0.5, 0.0))
+            label.setPos(x, y + radius + 2)
+
+    def _refresh_roi_labels(self, *_args: object) -> None:
+        """Name every circle in calibration/live view and on the wavelength images."""
+
+        if not hasattr(self, "calibration_plot"):
+            return
+        circles = [
+            (self.calibration_plot, index, item) for index, item in enumerate(self._roi_items)
+        ] + [
+            (self.calibration_plot_cam2, index, item)
+            for index, item in enumerate(self._roi_items_cam2)
+        ]
+        while len(self._roi_labels) < len(circles):
+            plot, index, _item = circles[len(self._roi_labels)]
+            self._roi_label_item(plot, index)
+        for (_plot, index, item), (_owner, label) in zip(circles, self._roi_labels, strict=True):
+            label.setText(self._roi_display_name(index))
+            label.setOpacity(item.opacity())
+            self._place_roi_label(label, *self._circle_geometry(item))
+        self._refresh_wavelength_roi_overlays()
+
+    def _refresh_wavelength_roi_overlays(self) -> None:
+        for plot, item in self._wavelength_roi_overlays:
+            plot.removeItem(item)
+        self._wavelength_roi_overlays.clear()
+        angles = np.linspace(0.0, 2.0 * np.pi, 97)
+        for wavelength, plot in getattr(self, "wavelength_image_plots", {}).items():
+            if wavelength not in self._active_profile.wavelengths:
+                continue
+            circles = self._circles_for(self._active_profile.camera_for(wavelength))
+            for index, circle in enumerate(circles):
+                x, y, radius = self._circle_geometry(circle)
+                color = _FIBER_COLORS[index % len(_FIBER_COLORS)]
+                outline = pg.PlotCurveItem(
+                    x + radius * np.cos(angles),
+                    y + radius * np.sin(angles),
+                    pen=pg.mkPen(color, width=2),
+                )
+                outline.setZValue(10)
+                outline.setOpacity(circle.opacity())
+                label = pg.TextItem(
+                    self._roi_display_name(index),
+                    color=color,
+                    fill=pg.mkBrush(4, 14, 22, 170),
+                )
+                label.setZValue(11)
+                label.setOpacity(circle.opacity())
+                self._place_roi_label(label, x, y, radius)
+                for item in (outline, label):
+                    plot.addItem(item)
+                    self._wavelength_roi_overlays.append((plot, item))
 
     def _add_camera2_items(self, rois: tuple[ROIConfig, ...]) -> None:
         for index, roi in enumerate(rois):
@@ -3021,6 +3108,7 @@ class MainWindow(QMainWindow):
             circle.setZValue(10)
             circle.setOpacity(1.0 if roi.enabled else 0.25)
             circle.sigRegionChangeFinished.connect(self._on_roi_geometry_changed)
+            circle.sigRegionChanged.connect(self._refresh_roi_labels)
             self.calibration_plot_cam2.addItem(circle)
             self._roi_items_cam2.append(circle)
 
@@ -3065,6 +3153,7 @@ class MainWindow(QMainWindow):
         self._enforce_diameter_limits()
         self._sync_diameter_controls()
         self._update_roi_summary()
+        self._refresh_roi_labels()
         self._invalidate_preview()
 
     def _diameter_limits(self) -> tuple[float, float]:
