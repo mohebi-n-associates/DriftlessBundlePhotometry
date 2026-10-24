@@ -8,6 +8,18 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.8 - 2026-10-24
+
+### Changed
+
+- **ROI circles lock while recording.** Once **Record** starts, the circles on both
+  cameras cannot be moved or resized (their handles disappear) and the diameter boxes
+  are disabled, whether or not **Lock ROI circles** is ticked; a recording's ROIs are
+  fixed when it starts. They unlock when it ends, unless Lock ROI circles is ticked.
+- Circles can now be moved during a preview as well as in live view. The preview's
+  traces keep the circles it started with, so a moved circle needs a new preview
+  before **Record**, as before.
+
 ## 0.3.7 - 2026-10-24
 
 ### Added

@@ -130,7 +130,8 @@ camera.
 
    Each circle is named beside it. **Apply diameter to all ROIs** in a fiber's tab
    gives every circle that fiber's size. Once placed, tick **Lock ROI circles** so they
-   cannot be dragged by accident.
+   cannot be dragged by accident. Circles always lock while a recording runs, and can
+   be moved in live view and during a preview (a moved circle needs a new preview).
 
    To check how much light leaks between fibers, keep Live view running and press
    **Crosstalk test…**: capture a dark baseline with every fiber capped, then put a

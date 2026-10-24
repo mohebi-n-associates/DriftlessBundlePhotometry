@@ -1,6 +1,6 @@
 # Driftless Bundle Photometry
 
-**Version 0.3.7** · [What's new](WHATS_NEW.md)
+**Version 0.3.8** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 

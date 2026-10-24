@@ -3014,9 +3014,15 @@ class MainWindow(QMainWindow):
         self._apply_roi_lock()
 
     def _apply_roi_lock(self, *_args: object) -> None:
-        """Locked circles ignore drags and hide their resize handles."""
+        """Locked circles ignore drags and hide their resize handles.
 
-        locked = hasattr(self, "roi_lock_check") and self.roi_lock_check.isChecked()
+        They are locked when the operator ticks Lock ROI circles, and always while a
+        recording runs: its ROIs are fixed when it starts.
+        """
+
+        locked = getattr(self, "_recording_roi_lock", False) or (
+            hasattr(self, "roi_lock_check") and self.roi_lock_check.isChecked()
+        )
         for circle in (*self._roi_items, *self._roi_items_cam2):
             circle.translatable = not locked
             for handle in circle.getHandles():
@@ -4675,8 +4681,11 @@ class MainWindow(QMainWindow):
             self.camera_settings_group.setEnabled(not busy or live)
         self.stop_button.setEnabled(busy)
         self.global_stop_button.setEnabled(busy)
+        # Circles stay editable in live view and preview, and lock while recording.
+        self._recording_roi_lock = busy and self._operation_kind == "recording"
         for item in (*self._roi_items, *self._roi_items_cam2):
-            item.setEnabled(not busy or live)
+            item.setEnabled(not self._recording_roi_lock)
+        self._apply_roi_lock()
         for widget in self._settings_widgets:
             widget.setEnabled(not busy)
         if (live or previewing) and self._is_rwd_mode():
