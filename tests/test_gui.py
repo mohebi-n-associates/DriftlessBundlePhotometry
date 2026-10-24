@@ -1250,3 +1250,19 @@ def test_gui_sets_a_separate_gain_for_rwd_camera_2(qtbot, tmp_path: Path) -> Non
 
     window._load_camera_controls(camera.model_copy(update={"camera2_gain": 4.5}))
     assert window.gain2_spin.value() == 4.5 and window.gain2_slider.value() == 45
+
+
+def test_gui_sets_its_own_windows_taskbar_identity(monkeypatch) -> None:
+    import sys
+
+    from driftless_photometry.gui import app
+
+    calls = []
+    shell = type("Shell", (), {"SetCurrentProcessExplicitAppUserModelID": calls.append})
+    fake_ctypes = type("CTypes", (), {"windll": type("WinDLL", (), {"shell32": shell})})
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "ctypes", fake_ctypes)
+
+    app._set_windows_app_id()
+
+    assert calls == [app.WINDOWS_APP_ID]
