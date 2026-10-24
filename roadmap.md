@@ -9,7 +9,7 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.3.9
+**Current baseline:** 0.3.10
 
 **Last updated:** 2026-10-24
 
@@ -399,10 +399,10 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
    - Smaller items left from 2026-10-24:
      - Record the git commit (and whether the tree had uncommitted edits) in the
        session log and NWB provenance, so a recording names its exact build.
-     - Saving speed: each ROI file still takes about 2-3 s to write and validate,
-       and stores 19 uncompressed reference and map images (about 23 MB). Consider
-       compressing images and reusing the loaded NWB schema across files; see the
-       storage-scale gate above.
+     - Saving speed: each ROI file still takes about 2-3 s to write and validate.
+       Consider reusing the loaded NWB schema across files; see the storage-scale
+       gate above. (Images and numeric event columns are compressed since 0.3.10,
+       about 5x smaller files.)
      - Publish 0.3.x: tag and GitHub release (which uploads to PyPI) once the owner
        approves; see Phase 8.
 

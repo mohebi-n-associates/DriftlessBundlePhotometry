@@ -8,6 +8,18 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.10 - 2026-10-24
+
+### Changed
+
+- **Smaller NWB files.** The 19 reference and ROI images in each ROI file and the
+  numeric columns of the per-frame `camera_frames` and `excitation_events` tables are
+  now stored with lossless gzip compression. On a real 3.7 min, 120 Hz recording the
+  images shrank from 19.8 to 4.1 MB and those columns from 3.3 to 0.4 MB, so a 26.4 MB
+  ROI file becomes about 5–6 MB. Every pixel and value is unchanged; the read-back
+  check after writing still compares them exactly. The traces and the optional raw
+  frames were already compressed.
+
 ## 0.3.9 - 2026-10-24
 
 ### Fixed

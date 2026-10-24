@@ -159,6 +159,31 @@ _EVENTS_TIMESTAMP_DESCRIPTION = next(
 )
 
 
+_IMAGE_COMPRESSION = {"compression": "gzip", "compression_opts": 4}
+"""Lossless: the reference and ROI images are most of an ROI file when uncompressed."""
+
+
+def _compressed(data):
+    return H5DataIO(np.asarray(data), **_IMAGE_COMPRESSION)
+
+
+def _grayscale_image(*, name: str, data, description: str) -> GrayscaleImage:
+    return GrayscaleImage(name=name, data=_compressed(data), description=description)
+
+
+def _rgb_image(*, name: str, data, description: str) -> RGBImage:
+    return RGBImage(name=name, data=_compressed(data), description=description)
+
+
+def _column_data(values: list):
+    """Numeric per-frame columns are stored compressed; text columns as they are."""
+
+    array = np.asarray(values)
+    if len(array) and array.dtype.kind in "biuf":
+        return H5DataIO(array, compression="gzip", compression_opts=4, shuffle=True)
+    return list(values)
+
+
 def _make_events_table(
     name: str,
     description: str,
@@ -192,10 +217,10 @@ def _make_events_table(
             TimestampVectorData(
                 name="timestamp",
                 description=_EVENTS_TIMESTAMP_DESCRIPTION,
-                data=list(values["timestamp"]),
+                data=_column_data(list(values["timestamp"])),
             ),
             *(
-                VectorData(name=column, description=text, data=list(values[column]))
+                VectorData(name=column, description=text, data=_column_data(list(values[column])))
                 for column, text in columns
             ),
         ],
@@ -675,7 +700,7 @@ def _add_rois_and_calibration(
             name="calibration_images",
             description="Static images used to define and verify circular fiber ROIs.",
             images=[
-                GrayscaleImage(
+                _grayscale_image(
                     name="reference_frame",
                     data=calibration_image,
                     description=(
@@ -698,7 +723,7 @@ def _add_rois_and_calibration(
                 every_roi = rois_for_camera(config.enabled_rois, camera)
                 diagnostic_images.extend(
                     (
-                        RGBImage(
+                        _rgb_image(
                             name=f"roi_map_{int(wavelength)}nm",
                             data=render_annotated_rois(
                                 mean.image,
@@ -712,7 +737,7 @@ def _add_rois_and_calibration(
                                 "named, in ROI order."
                             ),
                         ),
-                        RGBImage(
+                        _rgb_image(
                             name=f"roi_map_autocontrast_{int(wavelength)}nm",
                             data=render_annotated_rois(
                                 mean.image,
@@ -730,12 +755,12 @@ def _add_rois_and_calibration(
                                 "recording's folder."
                             ),
                         ),
-                        GrayscaleImage(
+                        _grayscale_image(
                             name=f"mean_reference_{int(wavelength)}nm",
                             data=mean.image,
                             description=mean.describe(int(wavelength)),
                         ),
-                        RGBImage(
+                        _rgb_image(
                             name=f"mean_roi_overlay_{int(wavelength)}nm",
                             data=render_annotated_rois(
                                 mean.image, placed, bit_depth=config.camera.bit_depth
@@ -749,7 +774,7 @@ def _add_rois_and_calibration(
                 )
             diagnostic_images.extend(
                 (
-                    GrayscaleImage(
+                    _grayscale_image(
                         name=f"raw_reference_{int(wavelength)}nm",
                         data=image,
                         description=(
@@ -757,7 +782,7 @@ def _add_rois_and_calibration(
                             f"{int(wavelength)} nm exposure."
                         ),
                     ),
-                    RGBImage(
+                    _rgb_image(
                         name=f"roi_overlay_{int(wavelength)}nm",
                         data=render_annotated_rois(
                             image,
