@@ -136,6 +136,11 @@ class TTLInputConfig(BaseModel):
     line: int = Field(ge=1, le=4)
     label: str = Field(min_length=1, max_length=64)
     edges: EdgeSelection = EdgeSelection.BOTH
+    fiber_ids: tuple[str, ...] = ()
+    """The ROIs whose NWB files get this input's edges; empty gives it to every ROI."""
+
+    def belongs_to(self, fiber_id: str) -> bool:
+        return not self.fiber_ids or fiber_id in self.fiber_ids
 
 
 EVENT_MARKER_KEYS = tuple(str(key) for key in range(1, 10))
@@ -518,6 +523,13 @@ class SessionConfig(BaseModel):
         ttl_lines = [ttl.line for ttl in self.ttl_inputs]
         if len(ttl_lines) != len(set(ttl_lines)):
             raise ValueError("TTL input lines must be unique")
+        known = {roi.fiber_id for roi in self.rois}
+        for ttl in self.ttl_inputs:
+            unknown = sorted(set(ttl.fiber_ids) - known)
+            if unknown:
+                raise ValueError(
+                    f"TTL input {ttl.line} is assigned to unknown ROI(s) {', '.join(unknown)}"
+                )
         enabled_fibers = {roi.fiber_id for roi in self.enabled_rois}
         enabled_wavelengths = {channel.wavelength_nm for channel in self.enabled_channels}
         for output in getattr(self.source, "ttl_outputs", ()):
@@ -630,6 +642,11 @@ class SessionConfig(BaseModel):
                 )
             elif needs_camera2 and roi.enabled:
                 raise ValueError(f"ROI {roi.fiber_id} needs camera-2 geometry for 560 nm")
+
+    def ttl_lines_for(self, fiber_id: str) -> frozenset[int]:
+        """The TTL inputs whose edges belong in ``fiber_id``'s NWB file."""
+
+        return frozenset(ttl.line for ttl in self.ttl_inputs if ttl.belongs_to(fiber_id))
 
     @property
     def recording_limit_s(self) -> float:

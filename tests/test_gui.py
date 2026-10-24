@@ -1320,11 +1320,12 @@ def test_gui_draws_ttl_edges_with_toggles_and_keeps_per_roi_notes(qtbot, tmp_pat
     window.start_recording()
     qtbot.waitUntil(lambda: window._trace_latest_s is not None, timeout=10_000)
     assert window.note_edit.isEnabled()
-    window.note_roi_combo.setCurrentIndex(2)  # ROI 2
+    assert all(check.isChecked() for check in window.note_roi_checks.values())
+    window.note_roi_checks["fiber_01"].setChecked(False)  # only ROI 2
     window.note_edit.setText("fiber 2 bumped")
     window.add_note()
+    window.note_roi_checks["fiber_01"].setChecked(True)  # both ROIs
     window.note_edit.setText("saline injection")
-    window.note_roi_combo.setCurrentIndex(0)
     window.add_note()
     qtbot.waitUntil(lambda: window._thread is None, timeout=30_000)
     assert window.last_error is None, window.last_error
@@ -1351,7 +1352,8 @@ def test_gui_draws_ttl_edges_with_toggles_and_keeps_per_roi_notes(qtbot, tmp_pat
     window.ttl_marker_check.setChecked(False)
     assert all(not item.isVisible() for _l, g in window._ttl_graphics for _p, item in g)
     history = window.notes_history.toPlainText()
-    assert "ROI 2 · fiber 2 bumped" in history and "all ROIs · saline injection" in history
+    assert "ROI 2 · fiber 2 bumped" in history
+    assert "ROI 1, ROI 2 · saline injection" in history
 
     paths = [report.path for report in window.last_result.reports]
     tables = []
@@ -1359,8 +1361,25 @@ def test_gui_draws_ttl_edges_with_toggles_and_keeps_per_roi_notes(qtbot, tmp_pat
         with NWBHDF5IO(path, mode="r", load_namespaces=True) as io:
             marks = io.read().events["event_marks"].to_dataframe()
         tables.append(marks[marks["source"] == "note"][["event_name", "fiber_id"]].values.tolist())
-    assert tables[0] == [["saline injection", ""]]
+    assert tables[0] == [["saline injection", "fiber_01"]]
     assert sorted(map(tuple, tables[1])) == [
         ("fiber 2 bumped", "fiber_02"),
-        ("saline injection", ""),
+        ("saline injection", "fiber_02"),
     ]
+
+
+def test_gui_assigns_ttl_inputs_to_rois(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    assert window.ttl_roi_buttons[1].text() == "All ROIs"
+
+    window._toggle_ttl_roi(1, "fiber_02", True)
+    assert window.ttl_roi_buttons[1].text() == "ROI 2"
+    config = window._build_config()
+    assert next(t for t in config.ttl_inputs if t.line == 1).fiber_ids == ("fiber_02",)
+    assert config.ttl_lines_for("fiber_01") == {2, 3, 4}
+
+    window._set_ttl_rois(1, ())
+    window._apply_configuration(config)
+    assert window.ttl_roi_buttons[1].text() == "ROI 2"
+    assert window._build_config().ttl_inputs == config.ttl_inputs

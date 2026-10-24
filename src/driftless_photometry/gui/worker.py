@@ -111,10 +111,10 @@ class AcquisitionWorker(QObject):
 
         self._engine.mark_event(name, source)
 
-    def add_note(self, text: str, fiber_id: str) -> None:
-        """Thread-safe timestamped operator note, timed now."""
+    def add_note(self, text: str, fiber_ids: tuple[str, ...]) -> None:
+        """Thread-safe timestamped operator note for the given ROIs, timed now."""
 
-        self._engine.add_note(text, fiber_id)
+        self._engine.add_note(text, fiber_ids)
 
     def trigger_output(self, port: int) -> None:
         """Thread-safe manual start of a TTL output program."""

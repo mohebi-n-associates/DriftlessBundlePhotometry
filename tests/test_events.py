@@ -22,7 +22,7 @@ def test_pulses_are_named_by_width_at_their_rising_edge() -> None:
 
     assert classifier.observe(_edge(1, "rising", 1000)) is None
     assert classifier.observe(_edge(1, "falling", 1010)) == EventMark(
-        1.0, "Short", "ttl", "TTL input 1 (lever) pulse of 10 ms"
+        1.0, "Short", "ttl", "TTL input 1 (lever) pulse of 10 ms", ttl_line=1
     )
     classifier.observe(_edge(1, "rising", 2000))
     assert classifier.observe(_edge(1, "falling", 2020)).name == "Long"  # [min, max)

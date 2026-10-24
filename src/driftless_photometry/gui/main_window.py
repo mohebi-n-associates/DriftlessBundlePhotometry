@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -1958,6 +1960,8 @@ class MainWindow(QMainWindow):
 
         heading("TTL INPUTS", "Inputs DBF records, with the label stored in the NWB files")
         self.ttl_input_rows: dict[int, tuple[QCheckBox, QLineEdit, QComboBox]] = {}
+        self.ttl_roi_buttons: dict[int, QToolButton] = {}
+        self._ttl_roi_selection: dict[int, tuple[str, ...]] = {}
         for line in range(1, 5):
             check = QCheckBox(f"Input {line}")
             label = QLineEdit(f"behavior_{line}")
@@ -1969,10 +1973,22 @@ class MainWindow(QMainWindow):
                 ("falling only", "falling"),
             ):
                 edges.addItem(text, value)
+            rois_button = QToolButton()
+            rois_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            rois_button.setToolTip(
+                "The ROIs (animals) this input belongs to; only their NWB files get its edges"
+            )
+            menu = QMenu(rois_button)
+            menu.aboutToShow.connect(
+                lambda line=line, menu=menu: self._fill_ttl_roi_menu(line, menu)
+            )
+            rois_button.setMenu(menu)
             layout.addWidget(check, row, 0)
-            layout.addWidget(label, row, 1, 1, 2)
+            layout.addWidget(label, row, 1)
+            layout.addWidget(rois_button, row, 2)
             layout.addWidget(edges, row, 3)
             self.ttl_input_rows[line] = (check, label, edges)
+            self.ttl_roi_buttons[line] = rois_button
             row += 1
 
         heading(
@@ -2034,15 +2050,66 @@ class MainWindow(QMainWindow):
         return group
 
     def _ttl_inputs_from_controls(self) -> tuple[TTLInputConfig, ...]:
+        known = self._known_fiber_ids()
         return tuple(
             TTLInputConfig(
                 line=line,
                 label=label.text().strip() or f"input_{line}",
                 edges=EdgeSelection(edges.currentData()),
+                fiber_ids=tuple(
+                    fiber for fiber in self._ttl_roi_selection.get(line, ()) if fiber in known
+                ),
             )
             for line, (check, label, edges) in self.ttl_input_rows.items()
             if check.isChecked()
         )
+
+    def _known_fiber_ids(self) -> tuple[str, ...]:
+        try:
+            return tuple(roi.fiber_id for roi in self._roi_configs_from_controls())
+        except Exception:
+            return tuple(roi.fiber_id for roi in self._session_template.rois)
+
+    def _fill_ttl_roi_menu(self, line: int, menu: QMenu) -> None:
+        menu.clear()
+        selected = set(self._ttl_roi_selection.get(line, ()))
+        every = menu.addAction("All ROIs")
+        every.setCheckable(True)
+        every.setChecked(not selected)
+        every.triggered.connect(lambda _c=False, line=line: self._set_ttl_rois(line, ()))
+        menu.addSeparator()
+        try:
+            rois = self._roi_configs_from_controls()
+        except Exception:
+            rois = self._session_template.rois
+        for index, roi in enumerate(rois):
+            action = menu.addAction(f"ROI {index + 1} - {roi.label} ({roi.animal_id})")
+            action.setCheckable(True)
+            action.setChecked(roi.fiber_id in selected)
+            action.triggered.connect(
+                lambda checked, line=line, fiber=roi.fiber_id: self._toggle_ttl_roi(
+                    line, fiber, checked
+                )
+            )
+
+    def _toggle_ttl_roi(self, line: int, fiber_id: str, checked: bool) -> None:
+        selected = [f for f in self._ttl_roi_selection.get(line, ()) if f != fiber_id]
+        if checked:
+            selected.append(fiber_id)
+        self._set_ttl_rois(line, tuple(selected))
+
+    def _set_ttl_rois(self, line: int, fiber_ids: tuple[str, ...]) -> None:
+        self._ttl_roi_selection[line] = fiber_ids
+        self._refresh_ttl_roi_buttons()
+
+    def _refresh_ttl_roi_buttons(self) -> None:
+        known = self._known_fiber_ids()
+        for line, button in self.ttl_roi_buttons.items():
+            selected = [f for f in self._ttl_roi_selection.get(line, ()) if f in known]
+            if not selected:
+                button.setText("All ROIs")
+            else:
+                button.setText(", ".join(f"ROI {known.index(f) + 1}" for f in selected))
 
     def _markers_from_controls(self) -> tuple[EventMarkerConfig, ...]:
         shown = tuple(
@@ -2088,9 +2155,11 @@ class MainWindow(QMainWindow):
         for line, (check, label, edges) in self.ttl_input_rows.items():
             ttl = inputs.get(line)
             check.setChecked(ttl is not None)
+            self._ttl_roi_selection[line] = ttl.fiber_ids if ttl is not None else ()
             if ttl is not None:
                 label.setText(ttl.label)
                 edges.setCurrentIndex(edges.findData(ttl.edges.value))
+        self._refresh_ttl_roi_buttons()
         markers = {marker.key: marker.name for marker in config.event_markers}
         for key, edit in self.marker_name_edits.items():
             edit.setText(markers.get(key, ""))
@@ -2140,7 +2209,7 @@ class MainWindow(QMainWindow):
     def _update_marker_buttons(self) -> None:
         recording = self._operation_kind == "recording" and self._worker is not None
         if hasattr(self, "note_edit"):
-            for widget in (self.note_roi_combo, self.note_edit, self.note_button):
+            for widget in (self.note_edit, self.note_button, *self.note_roi_checks.values()):
                 widget.setEnabled(recording)
         fire_buttons = getattr(self, "output_fire_buttons", {})
         for button in (*self.marker_buttons.values(), *fire_buttons.values()):
@@ -2174,7 +2243,7 @@ class MainWindow(QMainWindow):
             mark.source, "#f78fb3"
         )
         if mark.source == "note":
-            self.notes_history.appendPlainText(self._note_history_line(mark))
+            self._record_note_history(mark)
         note_row = self._trace_roi_indices.get(mark.fiber_id) if mark.fiber_id else None
         for row, plot in self.trace_plots.items():
             if note_row is not None and row != note_row:
@@ -2210,10 +2279,10 @@ class MainWindow(QMainWindow):
         title = QLabel("Note")
         title.setObjectName("hint")
         row.addWidget(title)
-        self.note_roi_combo = QComboBox()
-        self.note_roi_combo.addItem("All ROIs", "")
-        self.note_roi_combo.setToolTip("The ROI the note is about, or every ROI")
-        row.addWidget(self.note_roi_combo)
+        self.note_roi_layout = QHBoxLayout()
+        self.note_roi_layout.setSpacing(4)
+        self.note_roi_checks: dict[str, QCheckBox] = {}
+        row.addLayout(self.note_roi_layout)
         self.note_edit = QLineEdit()
         self.note_edit.setMaxLength(NOTE_MAX_CHARACTERS)
         self.note_edit.setPlaceholderText(
@@ -2228,10 +2297,23 @@ class MainWindow(QMainWindow):
         self.notes_toggle.setCheckable(True)
         self.notes_toggle.toggled.connect(self._toggle_notes_history)
         row.addWidget(self.notes_toggle)
-        for widget in (self.note_roi_combo, self.note_edit, self.note_button):
+        for widget in (self.note_edit, self.note_button):
             widget.setEnabled(False)
             widget.setToolTip(widget.toolTip() or "Notes can be added while recording")
         return row
+
+    def _rebuild_note_roi_checks(self, rois: Sequence[ROIConfig]) -> None:
+        for check in self.note_roi_checks.values():
+            self.note_roi_layout.removeWidget(check)
+            check.deleteLater()
+        self.note_roi_checks = {}
+        for index, roi in enumerate(rois):
+            check = QCheckBox(f"ROI {index + 1}")
+            check.setChecked(True)
+            check.setToolTip(f"Save the note in {roi.label}'s ({roi.animal_id}) NWB file")
+            self.note_roi_layout.addWidget(check)
+            self.note_roi_checks[roi.fiber_id] = check
+        self._update_marker_buttons()
 
     def _toggle_notes_history(self, shown: bool) -> None:
         self.notes_history.setVisible(shown)
@@ -2243,9 +2325,13 @@ class MainWindow(QMainWindow):
         text = self.note_edit.text().strip()
         if not text or self._operation_kind != "recording" or self._worker is None:
             return
-        self._worker.add_note(text, self.note_roi_combo.currentData() or "")
+        targets = tuple(fiber for fiber, check in self.note_roi_checks.items() if check.isChecked())
+        if not targets:
+            self.statusBar().showMessage("Tick at least one ROI for the note")
+            return
+        self._worker.add_note(text, targets)
         self.note_edit.clear()
-        self.statusBar().showMessage("Note added")
+        self.statusBar().showMessage(f"Note added for {len(targets)} ROI(s)")
 
     def _show_ttl_edges(self, edges: Sequence[TTLEdge]) -> None:
         for edge in edges:
@@ -2280,13 +2366,23 @@ class MainWindow(QMainWindow):
             for _plot, item in graphics:
                 item.setVisible(visible)
 
-    def _note_history_line(self, mark: EventMark) -> str:
-        target = "all ROIs"
-        if mark.fiber_id:
-            index = self._trace_roi_indices.get(mark.fiber_id)
-            target = f"ROI {index + 1}" if index is not None else mark.fiber_id
-        tenths = int(mark.timestamp_s * 10) % 10
-        return f"{format_minutes(mark.timestamp_s)}.{tenths} · {target} · {mark.name}"
+    def _record_note_history(self, mark: EventMark) -> None:
+        index = self._trace_roi_indices.get(mark.fiber_id) if mark.fiber_id else None
+        target = (
+            "all ROIs"
+            if not mark.fiber_id
+            else (f"ROI {index + 1}" if index is not None else mark.fiber_id)
+        )
+        entries = self._note_entries
+        if entries and entries[-1][0] == mark.timestamp_s and entries[-1][1] == mark.name:
+            entries[-1][2].append(target)
+        else:
+            entries.append([mark.timestamp_s, mark.name, [target]])
+        lines = []
+        for timestamp_s, text, targets in entries:
+            tenths = int(timestamp_s * 10) % 10
+            lines.append(f"{format_minutes(timestamp_s)}.{tenths} · {', '.join(targets)} · {text}")
+        self.notes_history.setPlainText("\n".join(lines))
 
     def _build_start_row(self) -> QWidget:
         self.start_mode_combo = QComboBox()
@@ -3429,10 +3525,8 @@ class MainWindow(QMainWindow):
         self._event_graphics = []
         self._ttl_graphics = []
         self.notes_history.clear()
-        self.note_roi_combo.clear()
-        self.note_roi_combo.addItem("All ROIs", "")
-        for index, roi in enumerate(config.enabled_rois):
-            self.note_roi_combo.addItem(f"ROI {index + 1} - {roi.label}", roi.fiber_id)
+        self._note_entries: list[list] = []
+        self._rebuild_note_roi_checks(config.enabled_rois)
         self._configure_trace_plots(config.enabled_rois)
         self._active_trace_wavelengths = tuple(
             int(channel.wavelength_nm) for channel in config.enabled_channels

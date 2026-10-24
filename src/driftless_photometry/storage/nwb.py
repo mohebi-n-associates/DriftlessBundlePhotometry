@@ -778,7 +778,8 @@ def _add_events(
         )
     nwbfile.add_events_table(excitation)
 
-    if data.ttl_edges:
+    roi_edges = _edges_for_roi(config, data, config.enabled_rois[roi_index].fiber_id)
+    if roi_edges:
         ttl = _make_events_table(
             name="ttl_edges",
             description="Observed rising and falling edges from up to four behavior TTL inputs.",
@@ -792,7 +793,7 @@ def _add_events(
                 ("controller_sequence", "Controller event sequence number."),
             ),
         )
-        for edge in data.ttl_edges:
+        for edge in roi_edges:
             ttl.add_row(
                 timestamp=edge.timestamp_s,
                 line=edge.line,
@@ -804,7 +805,7 @@ def _add_events(
             )
         nwbfile.add_events_table(ttl)
 
-    roi_marks = _marks_for_roi(data, config.enabled_rois[roi_index].fiber_id)
+    roi_marks = _marks_for_roi(config, data, config.enabled_rois[roi_index].fiber_id)
     if roi_marks:
         marks = _make_events_table(
             name="event_marks",
@@ -1105,7 +1106,7 @@ def _round_trip_verify(
                     e.controller_tick_us,
                     e.sequence,
                 )
-                for e in data.ttl_edges
+                for e in _edges_for_roi(config, data, roi.fiber_id)
             ),
             "ttl_edges",
         )
@@ -1114,7 +1115,7 @@ def _round_trip_verify(
             ("timestamp", "event_name", "source", "detail", "fiber_id", "duration"),
             (
                 (m.timestamp_s, m.name, m.source, m.detail, m.fiber_id, m.duration_s)
-                for m in _marks_for_roi(data, roi.fiber_id)
+                for m in _marks_for_roi(config, data, roi.fiber_id)
             ),
             "event_marks",
         )
@@ -1406,7 +1407,7 @@ def _validate_roi_nwb(
         inspector_messages=inspector_messages,
         frame_count=len(data.frame_ids),
         trace_sample_count=trace_sample_count,
-        ttl_edge_count=len(data.ttl_edges),
+        ttl_edge_count=len(_edges_for_roi(config, data, config.enabled_rois[roi_index].fiber_id)),
     )
 
 
@@ -1603,10 +1604,22 @@ def write_session_nwb(
     )[0]
 
 
-def _marks_for_roi(data: AcquisitionData, fiber_id: str) -> list:
-    """Event marks for one ROI's file: everything except notes about other ROIs."""
+def _marks_for_roi(config: SessionConfig, data: AcquisitionData, fiber_id: str) -> list:
+    """Event marks for one ROI's file: not other ROIs' notes or other ROIs' TTL inputs."""
 
+    lines = config.ttl_lines_for(fiber_id)
     return sorted(
-        (mark for mark in data.event_marks if mark.applies_to(fiber_id)),
+        (
+            mark
+            for mark in data.event_marks
+            if mark.applies_to(fiber_id) and (not mark.ttl_line or mark.ttl_line in lines)
+        ),
         key=lambda mark: mark.timestamp_s,
     )
+
+
+def _edges_for_roi(config: SessionConfig, data: AcquisitionData, fiber_id: str) -> list:
+    """TTL edges on the inputs assigned to ``fiber_id`` (every input unless assigned)."""
+
+    lines = config.ttl_lines_for(fiber_id)
+    return [edge for edge in data.ttl_edges if edge.line in lines]
