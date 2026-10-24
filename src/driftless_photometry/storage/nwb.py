@@ -782,7 +782,8 @@ def _add_events(
             )
         nwbfile.add_events_table(ttl)
 
-    if data.event_marks:
+    roi_marks = _marks_for_roi(data, config.enabled_rois[roi_index].fiber_id)
+    if roi_marks:
         marks = _make_events_table(
             name="event_marks",
             description=(
@@ -796,16 +797,18 @@ def _add_events(
                 ("event_name", "Configured event name."),
                 ("source", "key, button, ttl, or output (a train DBF drove)."),
                 ("detail", "How the event was observed, such as the TTL pulse width."),
+                ("fiber_id", "The ROI a note is about; empty for every ROI."),
             ),
         )
         # EventsTable's own optional ``duration`` column holds each output train's planned
         # length in seconds, and 0 for instantaneous marks.
-        for mark in sorted(data.event_marks, key=lambda item: item.timestamp_s):
+        for mark in roi_marks:
             marks.add_row(
                 timestamp=mark.timestamp_s,
                 event_name=mark.name,
                 source=mark.source,
                 detail=mark.detail,
+                fiber_id=mark.fiber_id,
                 duration=mark.duration_s,
             )
         nwbfile.add_events_table(marks)
@@ -1086,10 +1089,10 @@ def _round_trip_verify(
         )
         _verify_rows(
             nwbfile.events.get("event_marks"),
-            ("timestamp", "event_name", "source", "detail", "duration"),
+            ("timestamp", "event_name", "source", "detail", "fiber_id", "duration"),
             (
-                (m.timestamp_s, m.name, m.source, m.detail, m.duration_s)
-                for m in sorted(data.event_marks, key=lambda m: m.timestamp_s)
+                (m.timestamp_s, m.name, m.source, m.detail, m.fiber_id, m.duration_s)
+                for m in _marks_for_roi(data, roi.fiber_id)
             ),
             "event_marks",
         )
@@ -1569,3 +1572,12 @@ def write_session_nwb(
         wavelength_images=wavelength_images,
         additional_system_events=additional_system_events,
     )[0]
+
+
+def _marks_for_roi(data: AcquisitionData, fiber_id: str) -> list:
+    """Event marks for one ROI's file: everything except notes about other ROIs."""
+
+    return sorted(
+        (mark for mark in data.event_marks if mark.applies_to(fiber_id)),
+        key=lambda mark: mark.timestamp_s,
+    )

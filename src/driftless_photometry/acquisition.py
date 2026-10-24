@@ -15,6 +15,7 @@ import numpy as np
 from driftless_photometry.config import ChannelConfig, SessionConfig, Wavelength
 from driftless_photometry.diagnostics import AcquisitionDiagnostics, FinalizationProgress
 from driftless_photometry.domain import (
+    NOTE_MAX_CHARACTERS,
     EventMark,
     ExposureRecord,
     InvalidTimeInterval,
@@ -49,6 +50,8 @@ class AcquisitionProgress:
     camera_index: int = 1
     event_marks: tuple[EventMark, ...] = ()
     """Marks recorded since the previous progress report, for live display."""
+    ttl_edges: tuple[TTLEdge, ...] = ()
+    """TTL edges recorded since the previous progress report, for live display."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,7 +390,24 @@ class AcquisitionEngine:
             raise ValueError("event marks need a name")
         pressed_s = time.monotonic() if at_monotonic_s is None else at_monotonic_s
         with self._marks_lock:
-            self._pending_marks.append((pressed_s, name, source))
+            self._pending_marks.append((pressed_s, name, source, ""))
+
+    def add_note(
+        self, text: str, fiber_id: str = "", *, at_monotonic_s: float | None = None
+    ) -> None:
+        """Record a timestamped operator note for one ROI, or for all when ``fiber_id`` is "".
+
+        Thread-safe, and timed at submission like a marker.
+        """
+
+        text = text.strip()
+        if not text:
+            raise ValueError("a note needs text")
+        if len(text) > NOTE_MAX_CHARACTERS:
+            raise ValueError(f"notes hold at most {NOTE_MAX_CHARACTERS} characters")
+        submitted_s = time.monotonic() if at_monotonic_s is None else at_monotonic_s
+        with self._marks_lock:
+            self._pending_marks.append((submitted_s, text, "note", fiber_id))
 
     def run(
         self,
@@ -420,6 +440,7 @@ class AcquisitionEngine:
             self._pending_marks.clear()
         last_frame_monotonic_s: float | None = None
         new_marks: list[EventMark] = []
+        new_edges: list[TTLEdge] = []
         classifier = TTLPulseClassifier(config.ttl_events)
         dff_watchers = DffThresholdWatcher.for_config(config)
         trigger_output = getattr(source, "trigger_output", None)
@@ -479,19 +500,26 @@ class AcquisitionEngine:
                 with self._marks_lock:
                     pending = self._pending_marks[:]
                     self._pending_marks.clear()
-                for pressed_s, name, mark_source in pending:
+                for pressed_s, name, mark_source, fiber_id in pending:
                     if last_frame_monotonic_s is None:
                         submit_mark(
-                            EventMark(0.0, name, mark_source, "set before the first exposure")
+                            EventMark(
+                                0.0,
+                                name,
+                                mark_source,
+                                "set before the first exposure",
+                                fiber_id=fiber_id,
+                            )
                         )
                         continue
                     at_s = last_timestamp + (pressed_s - last_frame_monotonic_s)
-                    submit_mark(EventMark(max(0.0, at_s), name, mark_source))
+                    submit_mark(EventMark(max(0.0, at_s), name, mark_source, fiber_id=fiber_id))
 
             def submit_edges(edges: tuple[TTLEdge, ...]) -> None:
                 nonlocal stop_on_ttl
                 for edge in edges:
                     spool.submit_ttl(edge)
+                    new_edges.append(edge)
                     named = classifier.observe(edge)
                     if named is not None:
                         submit_mark(named)
@@ -605,6 +633,8 @@ class AcquisitionEngine:
                 last_frame_monotonic_s = time.monotonic()
                 marks = tuple(new_marks)
                 new_marks.clear()
+                edges = tuple(new_edges)
+                new_edges.clear()
                 if on_progress is not None:
                     on_progress(
                         AcquisitionProgress(
@@ -621,6 +651,7 @@ class AcquisitionEngine:
                             ),
                             camera_index=packet.exposure.camera_index,
                             event_marks=marks,
+                            ttl_edges=edges,
                         )
                     )
                 # After stop(), keep reading until the source ends so that it can hand

@@ -142,6 +142,16 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   on the latest frame in its top-right corner, with its wavelength and any saturated
   fraction, in live view, preview, and recording.
 
+- TTL input edges are drawn on the live traces as thin dashed lines, one colour per
+  input, as in DriftlessFLIP. A **TTL** switch and one switch per input above the
+  traces hide or show them; notes and named events always stay visible. The display
+  keeps the latest 2000 edges; the NWB keeps every edge.
+- Timestamped operator notes: while recording, choose an ROI (or *All ROIs*), type
+  a note and press Return or **Add timestamped note**. Notes are timed at submission
+  through the latest camera frame, drawn on that ROI's trace row, listed under **Show
+  notes**, and stored in the `event_marks` table as source `note` with a new
+  `fiber_id` column. Each ROI's NWB keeps its own notes and the all-ROI ones.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller

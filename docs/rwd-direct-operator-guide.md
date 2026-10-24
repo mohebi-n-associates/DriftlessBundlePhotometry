@@ -137,6 +137,16 @@ camera.
    ended on the current powers and nothing else changed. Any later change to the
    settings or circles needs a new preview before **Record** is enabled.
 
+## Markers and notes while recording
+
+- TTL input edges appear on the traces as thin dashed lines, one colour per input.
+  The **TTL** switch above the traces hides them all; the numbered switches hide one
+  input each.
+- To note something, pick the ROI it is about (or *All ROIs*) under the traces, type
+  the note and press Return. It is timed when you press Return, drawn on that ROI's
+  row, and listed under **Show notes**. Each ROI's NWB file keeps its own notes and
+  the all-ROI ones in its `event_marks` table.
+
 ## Measure LED power
 
 With a Thorlabs PM100 or PM400 connected, point the fiber tip at the meter's sensor

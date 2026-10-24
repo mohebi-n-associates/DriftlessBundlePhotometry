@@ -135,7 +135,8 @@ class SystemEvent:
             raise ValueError("system-event classification is required")
 
 
-EVENT_MARK_SOURCES = frozenset({"key", "button", "ttl", "output"})
+EVENT_MARK_SOURCES = frozenset({"key", "button", "ttl", "output", "note"})
+NOTE_MAX_CHARACTERS = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +146,9 @@ class EventMark:
     Keyboard and button marks are timed on the host clock, mapped onto session time
     through the most recent camera frame. TTL marks take their pulse's rising edge.
     Output marks are the trains DBF drove on a TTL output, such as optogenetic
-    stimulation, host-timed; ``duration_s`` is the train's planned length.
+    stimulation, host-timed; ``duration_s`` is the train's planned length. Notes are
+    the operator's timestamped text, host-timed like markers, for one ROI
+    (``fiber_id``) or, when ``fiber_id`` is empty, for every ROI.
     """
 
     timestamp_s: float
@@ -153,6 +156,7 @@ class EventMark:
     source: str
     detail: str = ""
     duration_s: float = 0.0
+    fiber_id: str = ""
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.timestamp_s) or self.timestamp_s < 0:
@@ -163,6 +167,13 @@ class EventMark:
             raise ValueError(f"event-mark source must be one of {sorted(EVENT_MARK_SOURCES)}")
         if not np.isfinite(self.duration_s) or self.duration_s < 0:
             raise ValueError("event-mark duration must be finite and non-negative")
+        if self.source == "note" and len(self.name) > NOTE_MAX_CHARACTERS:
+            raise ValueError(f"notes hold at most {NOTE_MAX_CHARACTERS} characters")
+
+    def applies_to(self, fiber_id: str) -> bool:
+        """Whether this mark belongs with ``fiber_id``'s data (all marks but other ROIs' notes)."""
+
+        return not self.fiber_id or self.fiber_id == fiber_id
 
 
 def _or_nan(value: float | None) -> float:
