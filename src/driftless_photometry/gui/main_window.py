@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -71,7 +72,7 @@ from driftless_photometry.config import (
     profile_for,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
-from driftless_photometry.domain import EventMark
+from driftless_photometry.domain import NOTE_MAX_CHARACTERS, EventMark, TTLEdge
 from driftless_photometry.hardware import StartCondition
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
 from driftless_photometry.roi import extract_circular_rois, rois_for_camera
@@ -721,6 +722,24 @@ class MainWindow(QMainWindow):
         self.trace_baseline_spin.setEnabled(False)
         self.trace_baseline_hint.setEnabled(False)
         trace_options.addWidget(self.trace_baseline_hint)
+        trace_options.addSpacing(12)
+        self.ttl_marker_check = QCheckBox("TTL")
+        self.ttl_marker_check.setChecked(True)
+        self.ttl_marker_check.setToolTip(
+            "Show TTL input edges on the traces as dashed lines, one colour per input. "
+            "Notes and named events always stay visible."
+        )
+        self.ttl_marker_check.toggled.connect(self._apply_ttl_marker_visibility)
+        trace_options.addWidget(self.ttl_marker_check)
+        self.ttl_line_checks: dict[int, QCheckBox] = {}
+        for line, color in _TTL_LINE_COLORS.items():
+            check = QCheckBox(str(line))
+            check.setChecked(True)
+            check.setStyleSheet(f"color: {color}; font-weight: 700;")
+            check.setToolTip(f"Show TTL input {line}'s edges")
+            check.toggled.connect(self._apply_ttl_marker_visibility)
+            trace_options.addWidget(check)
+            self.ttl_line_checks[line] = check
         trace_options.addStretch(1)
         live_layout.addLayout(trace_options)
         status_row = QHBoxLayout()
@@ -743,6 +762,12 @@ class MainWindow(QMainWindow):
         self.trace_scroll = self._scrollable(self._build_trace_workspace())
         self.trace_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         live_layout.addWidget(self.trace_scroll, stretch=1)
+        live_layout.addLayout(self._build_notes_row())
+        self.notes_history = QPlainTextEdit()
+        self.notes_history.setReadOnly(True)
+        self.notes_history.setMaximumHeight(110)
+        self.notes_history.setVisible(False)
+        live_layout.addWidget(self.notes_history)
 
         self.preview_status = QLabel(
             "Preview required - validate the current acquisition settings before recording"
@@ -766,6 +791,7 @@ class MainWindow(QMainWindow):
             self._marker_shortcuts.append(shortcut)
         self._event_marks_shown: list[EventMark] = []
         self._event_graphics: list[list[tuple[object, object]]] = []
+        self._ttl_graphics: list[tuple[int, list[tuple[object, object]]]] = []
 
         action_row = QHBoxLayout()
         self.preview_button = QPushButton("Run preview")
@@ -2113,6 +2139,9 @@ class MainWindow(QMainWindow):
 
     def _update_marker_buttons(self) -> None:
         recording = self._operation_kind == "recording" and self._worker is not None
+        if hasattr(self, "note_edit"):
+            for widget in (self.note_roi_combo, self.note_edit, self.note_button):
+                widget.setEnabled(recording)
         fire_buttons = getattr(self, "output_fire_buttons", {})
         for button in (*self.marker_buttons.values(), *fire_buttons.values()):
             button.setEnabled(recording)
@@ -2141,8 +2170,16 @@ class MainWindow(QMainWindow):
 
     def _draw_event_mark(self, mark: EventMark) -> None:
         graphics = []
-        color = {"ttl": "#ffd166", "output": "#7bdff2"}.get(mark.source, "#f78fb3")
+        color = {"ttl": "#ffd166", "output": "#7bdff2", "note": _NOTE_COLOR}.get(
+            mark.source, "#f78fb3"
+        )
+        if mark.source == "note":
+            self.notes_history.appendPlainText(self._note_history_line(mark))
+        note_row = self._trace_roi_indices.get(mark.fiber_id) if mark.fiber_id else None
         for row, plot in self.trace_plots.items():
+            if note_row is not None and row != note_row:
+                continue
+            label_row = note_row if note_row is not None else 0
             if mark.duration_s > 0:
                 region = pg.LinearRegionItem(
                     values=(mark.timestamp_s, mark.timestamp_s + mark.duration_s),
@@ -2158,13 +2195,98 @@ class MainWindow(QMainWindow):
                 angle=90,
                 movable=False,
                 pen=pg.mkPen(color, width=1.2, style=Qt.PenStyle.DashLine),
-                label=mark.name if row == 0 else None,
+                label=(mark.name[:24] + ("…" if len(mark.name) > 24 else ""))
+                if row == label_row
+                else None,
                 labelOpts={"position": 0.92, "color": color, "movable": False},
             )
             line.setZValue(20)
             plot.addItem(line)
             graphics.append((plot, line))
         self._event_graphics.append(graphics)
+
+    def _build_notes_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        title = QLabel("Note")
+        title.setObjectName("hint")
+        row.addWidget(title)
+        self.note_roi_combo = QComboBox()
+        self.note_roi_combo.addItem("All ROIs", "")
+        self.note_roi_combo.setToolTip("The ROI the note is about, or every ROI")
+        row.addWidget(self.note_roi_combo)
+        self.note_edit = QLineEdit()
+        self.note_edit.setMaxLength(NOTE_MAX_CHARACTERS)
+        self.note_edit.setPlaceholderText(
+            "e.g. saline injection, animal moving, fiber bumped - Return adds it at this moment"
+        )
+        self.note_edit.returnPressed.connect(self.add_note)
+        row.addWidget(self.note_edit, stretch=1)
+        self.note_button = QPushButton("Add timestamped note")
+        self.note_button.clicked.connect(self.add_note)
+        row.addWidget(self.note_button)
+        self.notes_toggle = QPushButton("Show notes")
+        self.notes_toggle.setCheckable(True)
+        self.notes_toggle.toggled.connect(self._toggle_notes_history)
+        row.addWidget(self.notes_toggle)
+        for widget in (self.note_roi_combo, self.note_edit, self.note_button):
+            widget.setEnabled(False)
+            widget.setToolTip(widget.toolTip() or "Notes can be added while recording")
+        return row
+
+    def _toggle_notes_history(self, shown: bool) -> None:
+        self.notes_history.setVisible(shown)
+        self.notes_toggle.setText("Hide notes" if shown else "Show notes")
+
+    def add_note(self) -> None:
+        """Add the typed note to the running recording, timed now."""
+
+        text = self.note_edit.text().strip()
+        if not text or self._operation_kind != "recording" or self._worker is None:
+            return
+        self._worker.add_note(text, self.note_roi_combo.currentData() or "")
+        self.note_edit.clear()
+        self.statusBar().showMessage("Note added")
+
+    def _show_ttl_edges(self, edges: Sequence[TTLEdge]) -> None:
+        for edge in edges:
+            color = _TTL_LINE_COLORS.get(edge.line, "#d3e8f2")
+            graphics = []
+            for plot in self.trace_plots.values():
+                line = pg.InfiniteLine(
+                    pos=edge.timestamp_s,
+                    angle=90,
+                    movable=False,
+                    pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
+                )
+                line.setZValue(15)
+                line.setVisible(self._ttl_line_visible(edge.line))
+                plot.addItem(line)
+                graphics.append((plot, line))
+            self._ttl_graphics.append((edge.line, graphics))
+            if len(self._ttl_graphics) > _MAX_TTL_GRAPHICS:
+                _line, oldest = self._ttl_graphics.pop(0)
+                for plot, item in oldest:
+                    plot.removeItem(item)
+
+    def _ttl_line_visible(self, line: int) -> bool:
+        check = self.ttl_line_checks.get(line)
+        return self.ttl_marker_check.isChecked() and (check is None or check.isChecked())
+
+    def _apply_ttl_marker_visibility(self, *_args: object) -> None:
+        for check in self.ttl_line_checks.values():
+            check.setEnabled(self.ttl_marker_check.isChecked())
+        for line, graphics in self._ttl_graphics:
+            visible = self._ttl_line_visible(line)
+            for _plot, item in graphics:
+                item.setVisible(visible)
+
+    def _note_history_line(self, mark: EventMark) -> str:
+        target = "all ROIs"
+        if mark.fiber_id:
+            index = self._trace_roi_indices.get(mark.fiber_id)
+            target = f"ROI {index + 1}" if index is not None else mark.fiber_id
+        tenths = int(mark.timestamp_s * 10) % 10
+        return f"{format_minutes(mark.timestamp_s)}.{tenths} · {target} · {mark.name}"
 
     def _build_start_row(self) -> QWidget:
         self.start_mode_combo = QComboBox()
@@ -3291,6 +3413,12 @@ class MainWindow(QMainWindow):
         self._active_config = config
         self._event_marks_shown = []
         self._event_graphics = []
+        self._ttl_graphics = []
+        self.notes_history.clear()
+        self.note_roi_combo.clear()
+        self.note_roi_combo.addItem("All ROIs", "")
+        for index, roi in enumerate(config.enabled_rois):
+            self.note_roi_combo.addItem(f"ROI {index + 1} - {roi.label}", roi.fiber_id)
         self._configure_trace_plots(config.enabled_rois)
         self._active_trace_wavelengths = tuple(
             int(channel.wavelength_nm) for channel in config.enabled_channels
@@ -3633,6 +3761,8 @@ class MainWindow(QMainWindow):
             self._append_live_trace_points(batch.points)
         if batch.marks:
             self._show_event_marks(batch.marks)
+        if batch.edges:
+            self._show_ttl_edges(batch.edges)
         if batch.aggregated:
             self.frame_counter.setToolTip(
                 "Display backlog was aggregated to extrema; "
@@ -4044,3 +4174,10 @@ def _gain_control() -> tuple[QWidget, QSlider, QDoubleSpinBox]:
     layout.addWidget(slider, stretch=1)
     layout.addWidget(spin)
     return row, slider, spin
+
+
+_TTL_LINE_COLORS = {1: "#ffb454", 2: "#b98cf2", 3: "#ff8c42", 4: "#5ad1c9"}
+"""One colour per TTL input, distinct from the wavelength trace colours."""
+_NOTE_COLOR = "#d3e8f2"
+_MAX_TTL_GRAPHICS = 2000
+"""The most recent TTL edges drawn; older lines are removed (the NWB keeps every edge)."""

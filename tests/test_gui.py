@@ -1012,7 +1012,12 @@ def test_gui_records_markers_and_named_ttl_events_and_draws_them(qtbot, tmp_path
     assert ttl["timestamp"].round(6).tolist() == [0.0, 1.0, 2.0]
     assert set(ttl["event_name"]) == {"Lever"}
     assert "pulse of 100 ms" in ttl["detail"].iloc[0]
-    drawn = [item for item in window.trace_plots[0].items if isinstance(item, pg.InfiniteLine)]
+    # Event marks, not the thinner TTL edge lines drawn beside them.
+    drawn = [
+        item
+        for item in window.trace_plots[0].items
+        if isinstance(item, pg.InfiniteLine) and item.pen.widthF() != 1
+    ]
     assert len(drawn) == len(window._event_marks_shown) >= 4
     assert not window.marker_buttons["1"].isEnabled()
 
@@ -1300,3 +1305,61 @@ def test_gui_live_view_draws_traces_and_roi_readouts(qtbot, tmp_path: Path) -> N
     window.stop_recording()
     qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
     benches[-1].assert_all_off()
+
+
+def test_gui_draws_ttl_edges_with_toggles_and_keeps_per_roi_notes(qtbot, tmp_path: Path) -> None:
+    import pyqtgraph as pg
+    from pynwb import NWBHDF5IO
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2, default_duration_s=2.5)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+    run_preview_until_checked(window, qtbot)
+
+    window.start_recording()
+    qtbot.waitUntil(lambda: window._trace_latest_s is not None, timeout=10_000)
+    assert window.note_edit.isEnabled()
+    window.note_roi_combo.setCurrentIndex(2)  # ROI 2
+    window.note_edit.setText("fiber 2 bumped")
+    window.add_note()
+    window.note_edit.setText("saline injection")
+    window.note_roi_combo.setCurrentIndex(0)
+    window.add_note()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=30_000)
+    assert window.last_error is None, window.last_error
+    assert not window.note_edit.isEnabled()
+
+    def ttl_lines(row):
+        items = window.trace_plots[row].items
+        return [
+            i
+            for i in items
+            if isinstance(i, pg.InfiniteLine)
+            and i.pen.style() == Qt.PenStyle.DashLine
+            and i.pen.widthF() == 1
+        ]
+
+    assert window._ttl_graphics and ttl_lines(0)
+    window.ttl_line_checks[1].setChecked(False)
+    assert all(
+        not item.isVisible()
+        for line, graphics in window._ttl_graphics
+        if line == 1
+        for _plot, item in graphics
+    )
+    window.ttl_marker_check.setChecked(False)
+    assert all(not item.isVisible() for _l, g in window._ttl_graphics for _p, item in g)
+    history = window.notes_history.toPlainText()
+    assert "ROI 2 · fiber 2 bumped" in history and "all ROIs · saline injection" in history
+
+    paths = [report.path for report in window.last_result.reports]
+    tables = []
+    for path in paths:
+        with NWBHDF5IO(path, mode="r", load_namespaces=True) as io:
+            marks = io.read().events["event_marks"].to_dataframe()
+        tables.append(marks[marks["source"] == "note"][["event_name", "fiber_id"]].values.tolist())
+    assert tables[0] == [["saline injection", ""]]
+    assert sorted(map(tuple, tables[1])) == [
+        ("fiber 2 bumped", "fiber_02"),
+        ("saline injection", ""),
+    ]
