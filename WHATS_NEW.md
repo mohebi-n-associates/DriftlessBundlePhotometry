@@ -134,6 +134,14 @@ clean-machine test was run; the bench and finalization-memory gates above remain
 - On Windows, DBF sets its own taskbar identity, so the taskbar shows the DBF logo
   rather than Python's icon when it runs from a Python environment.
 
+- Live view also draws the live traces on *Acquire*, from the circles' current
+  positions, so moving a circle or changing gain or LED power shows in the traces while
+  you switch tabs. It stays display-only: nothing is recorded, and each camera and
+  wavelength is drawn at most 15 times a second.
+- Each camera panel on *Camera & fiber ROIs* shows every ROI's mean intensity (counts)
+  on the latest frame in its top-right corner, with its wavelength and any saturated
+  fraction, in live view, preview, and recording.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller

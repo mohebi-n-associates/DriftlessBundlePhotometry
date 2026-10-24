@@ -1266,3 +1266,37 @@ def test_gui_sets_its_own_windows_taskbar_identity(monkeypatch) -> None:
     app._set_windows_app_id()
 
     assert calls == [app.WINDOWS_APP_ID]
+
+
+def test_gui_live_view_draws_traces_and_roi_readouts(qtbot, tmp_path: Path) -> None:
+    benches = []
+
+    def rig_factory(config):
+        bench = Bench(config)
+        benches.append(bench)
+        return bench.rig
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, rig_factory=rig_factory)
+    qtbot.addWidget(window)
+    window.show()
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+
+    window.start_live_view()
+    qtbot.waitUntil(
+        lambda: all(len(window._trace_times[(w, 0)]) >= 2 for w in (410, 470, 560)),
+        timeout=15_000,
+    )
+    readout = window.calibration_readouts[1].text()
+    assert readout.startswith("Fiber 1: ") and " counts @ 4" in readout
+    assert "@ 560 nm" in window.calibration_readouts[2].text()
+    _, values = window._curves[(470, 0)].getData()
+    assert values is not None and len(values) >= 1
+
+    # Moving a circle changes what the traces measure straight away.
+    before = window._current_live_rois()
+    circle = window._roi_items[0]
+    circle.setPos([circle.pos()[0] + 30, circle.pos()[1]])
+    assert window._current_live_rois() != before
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    benches[-1].assert_all_off()
