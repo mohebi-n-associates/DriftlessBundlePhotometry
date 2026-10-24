@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt, QThread, QTimer
+from PySide6.QtCore import QEvent, QRectF, QSignalBlocker, QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -1698,6 +1698,10 @@ class MainWindow(QMainWindow):
             # A subset fills the visible trace area; more rows than fit still scroll.
             height = max(height, self.trace_scroll.viewport().height() - 4)
         self.trace_workspace.setFixedHeight(height)
+        # Re-adding rows shrinks the layout to its preferred size, and a same-height change
+        # sends no resize to restore it: stretch it over the whole workspace again.
+        workspace = self.trace_workspace
+        workspace.ci.setGeometry(QRectF(0.0, 0.0, workspace.width(), workspace.height()))
 
     def eventFilter(self, watched, event) -> bool:
         if (
