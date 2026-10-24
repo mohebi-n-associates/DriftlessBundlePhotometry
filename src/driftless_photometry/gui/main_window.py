@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QSignalBlocker, QSize, Qt, QThread, QTimer
+from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -684,6 +684,16 @@ class MainWindow(QMainWindow):
         self.trace_smoothing_spin.valueChanged.connect(self._refresh_all_trace_curves)
         trace_options.addWidget(self.trace_smoothing_spin)
         trace_options.addSpacing(12)
+        trace_options.addWidget(QLabel("Rows"))
+        self.trace_focus_combo = QComboBox()
+        self.trace_focus_combo.addItem("All ROIs", None)
+        self.trace_focus_combo.setToolTip(
+            "Show one ROI's trace across the whole trace area to inspect it; choose All "
+            "ROIs to bring the others back. Display only."
+        )
+        self.trace_focus_combo.currentIndexChanged.connect(self._apply_trace_focus)
+        trace_options.addWidget(self.trace_focus_combo)
+        trace_options.addSpacing(12)
         trace_options.addWidget(QLabel("Y axis"))
         self.trace_mode_combo = QComboBox()
         self.trace_mode_combo.addItem("Absolute", "absolute")
@@ -763,6 +773,9 @@ class MainWindow(QMainWindow):
         live_layout.addWidget(self.progress_bar)
         self.trace_scroll = self._scrollable(self._build_trace_workspace())
         self.trace_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # A focused row follows the trace area's height as the window resizes.
+        self._trace_viewport = self.trace_scroll.viewport()
+        self._trace_viewport.installEventFilter(self)
         live_layout.addWidget(self.trace_scroll, stretch=1)
         live_layout.addLayout(self._build_notes_row())
         self.notes_history = QPlainTextEdit()
@@ -1590,6 +1603,61 @@ class MainWindow(QMainWindow):
             plot.setClipToView(True)
             self.trace_plots[row] = plot
             self.trace_view_boxes[row] = view_box
+        self._trace_rows_in_layout = set(self.trace_plots)
+        self._fill_trace_focus_choices(rois)
+
+    def _fill_trace_focus_choices(self, rois: Sequence[ROIConfig]) -> None:
+        combo = self.trace_focus_combo
+        previous = combo.currentData()
+        blocker = QSignalBlocker(combo)
+        combo.clear()
+        combo.addItem("All ROIs", None)
+        for row, roi in enumerate(rois):
+            combo.addItem(f"ROI {row + 1} - {roi.label}", row)
+        index = combo.findData(previous) if previous is not None else 0
+        combo.setCurrentIndex(max(0, index))
+        del blocker
+        self._apply_trace_focus()
+
+    def _apply_trace_focus(self, *_args: object) -> None:
+        """Give one ROI's row the whole trace area, or lay every row out again."""
+
+        focus = self.trace_focus_combo.currentData()
+        if focus not in self.trace_plots:
+            focus = None
+        # Rows leave the layout while another is focused, keeping their curves and marks.
+        layout_rows = self._trace_rows_in_layout
+        last = len(self.trace_plots) - 1
+        for row, plot in self.trace_plots.items():
+            shown = focus is None or row == focus
+            if shown and row not in layout_rows:
+                self.trace_workspace.ci.addItem(plot, row=row, col=0)
+                layout_rows.add(row)
+            elif not shown and row in layout_rows:
+                self.trace_workspace.ci.removeItem(plot)
+                layout_rows.discard(row)
+            plot.setVisible(shown)
+            if row == (focus if focus is not None else last):
+                plot.setLabel("bottom", "Session time", units="s")
+            else:
+                plot.getAxis("bottom").showLabel(False)
+        if focus is None:
+            height = _TRACE_ROW_HEIGHT_PX * max(1, len(self.trace_plots))
+        else:
+            height = max(_TRACE_ROW_HEIGHT_PX, self.trace_scroll.viewport().height() - 4)
+        self.trace_workspace.setFixedHeight(height)
+        self._focused_trace_row = focus
+
+    def eventFilter(self, watched, event) -> bool:
+        if (
+            watched is getattr(self, "_trace_viewport", None)
+            and event.type() == QEvent.Type.Resize
+            and getattr(self, "_focused_trace_row", None) is not None
+        ):
+            self.trace_workspace.setFixedHeight(
+                max(_TRACE_ROW_HEIGHT_PX, self.trace_scroll.viewport().height() - 4)
+            )
+        return super().eventFilter(watched, event)
 
     def _build_wavelength_images_tab(self) -> QWidget:
         page = QWidget()
