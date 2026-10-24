@@ -359,6 +359,7 @@ class AcquisitionEngine:
         self._stop_requested = threading.Event()
         self._marks_lock = threading.Lock()
         self._pending_marks: list[tuple[float, str, str]] = []
+        self._pending_system_events: list[SystemEvent] = []
         self.recovery_path: Path | None = None
 
     @property
@@ -422,6 +423,14 @@ class AcquisitionEngine:
         with self._marks_lock:
             for fiber_id in targets:
                 self._pending_marks.append((submitted_s, text, "note", fiber_id))
+
+    def log_signal_warning(self, timestamp_s: float, fiber_id: str, detail: str) -> None:
+        """Log a live signal-check warning for one ROI at session time (thread-safe)."""
+
+        with self._marks_lock:
+            self._pending_system_events.append(
+                SystemEvent(max(0.0, timestamp_s), "roi_signal_warning", f"{fiber_id}: {detail}")
+            )
 
     def run(
         self,
@@ -523,6 +532,10 @@ class AcquisitionEngine:
                 with self._marks_lock:
                     pending = self._pending_marks[:]
                     self._pending_marks.clear()
+                    system_events = self._pending_system_events[:]
+                    self._pending_system_events.clear()
+                for event in system_events:
+                    spool.submit_system_event(event)
                 for pressed_s, name, mark_source, fiber_id in pending:
                     if last_frame_monotonic_s is None:
                         submit_mark(

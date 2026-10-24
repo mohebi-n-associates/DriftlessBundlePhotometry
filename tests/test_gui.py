@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.2"
+    assert __version__ == "0.3.3"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1547,3 +1547,33 @@ def test_gui_bleach_runs_the_leds_for_a_set_time_then_logs_it(qtbot, tmp_path: P
     assert event == "patch_cord_bleach"
     assert "of 0.025 min at 80 % LED power" in detail
     assert "Patch-cord bleach finished" in window.statusBar().currentMessage()
+
+
+def test_gui_flags_a_dark_roi_on_its_trace_row(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.live_trace import LiveTracePoint
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    config = demo_config(tmp_path, fiber_count=2)
+    window._prepare_trace_curves(config)
+    fibers = [roi.fiber_id for roi in config.enabled_rois]
+    wavelength = window._active_trace_wavelengths[0]
+    for index in range(80):
+        t = index / 20
+        window._append_live_trace_points(
+            [
+                LiveTracePoint(t, fibers[0], wavelength, 1500.0),
+                LiveTracePoint(t, fibers[1], wavelength, 12.0),
+            ]
+        )
+    assert window._signal_warnings == {1: f"dark at {wavelength} nm (12 counts)"}
+    assert "⚠ dark" in window.trace_plots[1].titleLabel.text
+    assert "⚠" not in window.trace_plots[0].titleLabel.text
+    for index in range(80, 600):  # reconnected; the brief jump clears after 15 s
+        window._append_live_trace_points(
+            [
+                LiveTracePoint(index / 20, fibers[0], wavelength, 1500.0),
+                LiveTracePoint(index / 20, fibers[1], wavelength, 1500.0),
+            ]
+        )
+    assert "⚠" not in window.trace_plots[1].titleLabel.text
