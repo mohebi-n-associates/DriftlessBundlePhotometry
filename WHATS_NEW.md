@@ -176,6 +176,12 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   reloading them does not nest recordings. Recovery finds spools in recording folders
   (`<id>/<id>.photometry-spool`) as well as directly under the root.
 
+- Saving is faster: each NWB file's per-frame `camera_frames` and `excitation_events`
+  tables are now filled column by column instead of row by row. The stored data are
+  identical (the round-trip check still compares every value); a simulated 30 s,
+  5-ROI, 120 Hz recording saves in 18.7 s instead of 24.6 s, and the gain grows with
+  recording length.
+
 - Every ROI circle in calibration and live view (both cameras) is named beside it
   ("ROI 2 - NAc left") in its colour; the name follows the circle as it is dragged and
   the ROI label as it is edited. The Live wavelength images tab outlines and names the
