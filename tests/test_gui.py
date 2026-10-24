@@ -1383,3 +1383,38 @@ def test_gui_assigns_ttl_inputs_to_rois(qtbot, tmp_path: Path) -> None:
     window._apply_configuration(config)
     assert window.ttl_roi_buttons[1].text() == "ROI 2"
     assert window._build_config().ttl_inputs == config.ttl_inputs
+
+
+def test_gui_focuses_one_roi_trace_and_restores_all(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=6)
+    qtbot.addWidget(window)
+    window.resize(1400, 900)
+    window.show()
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=6))
+    assert window.trace_workspace.height() == 6 * 230
+    assert window.trace_focus_combo.count() == 7
+
+    window.trace_focus_combo.setCurrentIndex(window.trace_focus_combo.findData(3))  # ROI 4
+    qtbot.wait(50)
+    assert [plot.isVisible() for plot in window.trace_plots.values()] == [
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+    ]
+    viewport = window.trace_scroll.viewport().height()
+    assert window.trace_workspace.height() >= viewport - 4
+    assert window.trace_plots[3].height() >= viewport - 30 > 230
+    assert window.trace_plots[3].getAxis("bottom").labelText == "Session time"
+
+    window.trace_focus_combo.setCurrentIndex(0)
+    qtbot.wait(50)
+    assert all(plot.isVisible() for plot in window.trace_plots.values())
+    assert window.trace_workspace.height() == 6 * 230
+
+    window.trace_focus_combo.setCurrentIndex(window.trace_focus_combo.findData(1))
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=6))  # next run keeps it
+    assert window.trace_focus_combo.currentData() == 1
+    assert not window.trace_plots[0].isVisible()

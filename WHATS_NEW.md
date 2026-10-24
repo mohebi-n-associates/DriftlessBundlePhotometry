@@ -176,6 +176,11 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   reloading them does not nest recordings. Recovery finds spools in recording folders
   (`<id>/<id>.photometry-spool`) as well as directly under the root.
 
+- A **Rows** menu above the live traces shows one ROI's trace across the whole trace
+  area, for a closer look; *All ROIs* brings the others back. The time span, zoom,
+  Y-axis mode, smoothing, TTL switches, and marks all keep working, and the choice
+  carries over to the next preview or recording. Display only.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller
