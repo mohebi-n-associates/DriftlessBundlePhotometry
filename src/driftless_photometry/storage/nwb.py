@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from hdmf.backends.hdf5.h5_utils import H5DataIO
-from hdmf.common import DynamicTable
+from hdmf.common import DynamicTable, VectorData
 from hdmf.data_utils import DataChunkIterator
 from ndx_fiber_photometry import (
     CommandedVoltageSeries,
@@ -35,6 +35,7 @@ from nwbinspector import Importance, inspect_nwbfile
 from pynwb import NWBHDF5IO, NWBFile, TimeSeries, validate
 from pynwb.base import Images
 from pynwb.epoch import TimeIntervals
+from pynwb.event import TimestampVectorData
 from pynwb.file import EventsTable, Subject
 from pynwb.image import GrayscaleImage, ImageSeries, RGBImage
 
@@ -153,20 +154,52 @@ def _safe_filename(value: str) -> str:
     return safe
 
 
+_EVENTS_TIMESTAMP_DESCRIPTION = next(
+    column["description"] for column in EventsTable.__columns__ if column["name"] == "timestamp"
+)
+
+
 def _make_events_table(
     name: str,
     description: str,
     source_description: str,
     columns: tuple[tuple[str, str], ...],
+    values: Mapping[str, list] | None = None,
 ) -> EventsTable:
-    table = EventsTable(
+    """An empty events table, or with ``values`` (every column plus ``timestamp``) filled.
+
+    Filling columns at once stores exactly what ``add_row`` would, without its per-row
+    argument checking, which dominated saving long recordings.
+    """
+
+    if values is None:
+        table = EventsTable(
+            name=name,
+            description=description,
+            source_description=source_description,
+        )
+        for column_name, column_description in columns:
+            table.add_column(name=column_name, description=column_description)
+        return table
+    lengths = {len(values[column]) for column in ("timestamp", *(c for c, _ in columns))}
+    if len(lengths) != 1:
+        raise ValueError(f"{name} columns have different lengths: {sorted(lengths)}")
+    return EventsTable(
         name=name,
         description=description,
         source_description=source_description,
+        columns=[
+            TimestampVectorData(
+                name="timestamp",
+                description=_EVENTS_TIMESTAMP_DESCRIPTION,
+                data=list(values["timestamp"]),
+            ),
+            *(
+                VectorData(name=column, description=text, data=list(values[column]))
+                for column, text in columns
+            ),
+        ],
     )
-    for column_name, column_description in columns:
-        table.add_column(name=column_name, description=column_description)
-    return table
 
 
 def _validate_inputs(
@@ -783,24 +816,24 @@ def _add_events(
             ("raw_saved", "Whether the original frame is embedded in camera_frames ImageSeries."),
             ("raw_image_index", "Index into camera_frames ImageSeries, or -1 when not saved."),
         ),
+        values={
+            "timestamp": data.frame_timestamps_s,
+            "camera_frame_id": data.frame_ids,
+            "camera_index": data.frame_camera_indices,
+            "camera_timestamp_ns": data.frame_camera_timestamps_ns,
+            "controller_sequence": data.frame_sequences,
+            "wavelength_nm": data.frame_wavelengths_nm,
+            "wavelength_source": data.frame_wavelength_sources,
+            "controller_tick_us": data.frame_ticks_us,
+            intensity.column: intensities,
+            "host_received_s": data.frame_host_received_s,
+            "roi_saturation_fraction": [
+                float(fractions[roi_index]) for fractions in data.frame_saturation_fractions
+            ],
+            "raw_saved": [saved >= 0 for saved in data.frame_saved_indices],
+            "raw_image_index": data.frame_saved_indices,
+        },
     )
-    for index in range(len(data.frame_ids)):
-        saved_index = data.frame_saved_indices[index]
-        frames.add_row(
-            timestamp=data.frame_timestamps_s[index],
-            camera_frame_id=data.frame_ids[index],
-            camera_index=data.frame_camera_indices[index],
-            camera_timestamp_ns=data.frame_camera_timestamps_ns[index],
-            controller_sequence=data.frame_sequences[index],
-            wavelength_nm=data.frame_wavelengths_nm[index],
-            wavelength_source=data.frame_wavelength_sources[index],
-            controller_tick_us=data.frame_ticks_us[index],
-            **{intensity.column: intensities[index]},
-            host_received_s=data.frame_host_received_s[index],
-            roi_saturation_fraction=float(data.frame_saturation_fractions[index][roi_index]),
-            raw_saved=saved_index >= 0,
-            raw_image_index=saved_index,
-        )
     nwbfile.add_events_table(frames)
 
     excitation = _make_events_table(
@@ -814,16 +847,15 @@ def _add_events(
             ("controller_tick_us", _tick_description(config)),
             (intensity.column, intensity.description),
         ),
+        values={
+            "timestamp": data.frame_timestamps_s,
+            "controller_sequence": data.frame_sequences,
+            "wavelength_nm": data.frame_wavelengths_nm,
+            "wavelength_source": data.frame_wavelength_sources,
+            "controller_tick_us": data.frame_ticks_us,
+            intensity.column: intensities,
+        },
     )
-    for index in range(len(data.frame_ids)):
-        excitation.add_row(
-            timestamp=data.frame_timestamps_s[index],
-            controller_sequence=data.frame_sequences[index],
-            wavelength_nm=data.frame_wavelengths_nm[index],
-            wavelength_source=data.frame_wavelength_sources[index],
-            controller_tick_us=data.frame_ticks_us[index],
-            **{intensity.column: intensities[index]},
-        )
     nwbfile.add_events_table(excitation)
 
     roi_edges = _edges_for_roi(config, data, config.enabled_rois[roi_index].fiber_id)
