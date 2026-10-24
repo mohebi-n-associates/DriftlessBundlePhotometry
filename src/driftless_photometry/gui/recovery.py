@@ -21,7 +21,11 @@ from PySide6.QtWidgets import (
 )
 
 from driftless_photometry.storage import inspect_session_spool, recover_session_spool
-from driftless_photometry.storage.recovery import RecoveryReport, SpoolInspection
+from driftless_photometry.storage.recovery import (
+    RecoveryReport,
+    SpoolInspection,
+    session_spool_candidates,
+)
 
 from .worker import BoardTaskWorker
 
@@ -29,7 +33,7 @@ from .worker import BoardTaskWorker
 def inspect_recovery_folder(root: Path) -> list[tuple[Path, SpoolInspection | None, str]]:
     """A corrupt spool must not hide the other recoverable sessions in a folder."""
     results = []
-    for path in sorted(root.glob("*.photometry-spool")):
+    for path in session_spool_candidates(root):
         if not path.is_dir():
             continue
         try:

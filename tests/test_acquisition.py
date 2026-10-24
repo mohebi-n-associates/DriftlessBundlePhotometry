@@ -119,7 +119,7 @@ def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Pat
         AcquisitionState.DRAINING,
         AcquisitionState.READY,
     ]
-    assert not list(tmp_path.glob("*.photometry-spool"))
+    assert not list(tmp_path.glob("*/*.photometry-spool"))
     for roi_index, report in enumerate(result.reports):
         with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
             nwbfile = io.read()
@@ -245,7 +245,7 @@ def test_non_increasing_sequence_enters_error_and_preserves_spool(tmp_path: Path
     with pytest.raises(RuntimeError, match="not strictly increasing"):
         engine.run(config, _DuplicateSequenceRig(config), duration_s=0.2)
     assert engine.state is AcquisitionState.ERROR
-    assert len(list(tmp_path.glob("*.photometry-spool"))) == 1
+    assert len(list(tmp_path.glob("*/*.photometry-spool"))) == 1
     engine.reset_error()
     assert engine.state is AcquisitionState.READY
 
@@ -299,7 +299,7 @@ def test_non_increasing_controller_tick_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="controller ticks are not strictly increasing"):
         engine.run(config, _BadTickRig(config), duration_s=0.2)
     assert engine.state is AcquisitionState.ERROR
-    loaded = load_session_spool(next(tmp_path.glob("*.photometry-spool")))
+    loaded = load_session_spool(next(tmp_path.glob("*/*.photometry-spool")))
     assert loaded.data.system_events[-1].event == "acquisition_fault:clock_discontinuity"
     assert loaded.data.invalid_times[-1].source_event == "clock_discontinuity"
 
@@ -338,7 +338,7 @@ def test_source_fault_is_committed_before_incomplete_spool_is_closed(
     with pytest.raises(AcquisitionFault, match="simulated"):
         engine.run(config, source, duration_s=0.2)
 
-    loaded = load_session_spool(next(tmp_path.glob("*.photometry-spool")))
+    loaded = load_session_spool(next(tmp_path.glob("*/*.photometry-spool")))
     assert loaded.complete is False
     assert loaded.data.frame_ids == [1]
     assert loaded.data.system_events[-1].event == f"acquisition_fault:{fault_code.value}"
@@ -365,7 +365,7 @@ def test_insufficient_storage_fails_before_arming_or_creating_a_spool(
 
     assert source.stop_called is True
     assert engine.state is AcquisitionState.ERROR
-    assert not list(tmp_path.glob("*.photometry-spool"))
+    assert not list(tmp_path.glob("*/*.photometry-spool"))
 
 
 def test_finalizer_failure_preserves_complete_spool(
@@ -389,7 +389,7 @@ def test_finalizer_failure_preserves_complete_spool(
     with pytest.raises(OSError, match="simulated finalizer disk failure"):
         engine.run(config, SimulatedRig(config), duration_s=0.1)
 
-    spools = list(tmp_path.glob("*.photometry-spool"))
+    spools = list(tmp_path.glob("*/*.photometry-spool"))
     assert len(spools) == 1
     from driftless_photometry.storage import load_session_spool
 
@@ -548,8 +548,8 @@ def test_stopping_while_waiting_for_the_start_records_nothing(tmp_path: Path) ->
     timer.join()
     assert AcquisitionState.RECORDING not in states
     assert engine.state is AcquisitionState.READY
-    assert not list(tmp_path.glob("*.photometry-spool"))
-    assert not list(tmp_path.glob("*.nwb"))
+    assert not list(tmp_path.glob("*/*.photometry-spool"))
+    assert not list(tmp_path.rglob("*.nwb"))
 
 
 def test_delayed_and_ttl_starts_reach_the_source_and_are_recorded(tmp_path: Path) -> None:
@@ -710,3 +710,33 @@ def test_each_roi_file_keeps_only_its_assigned_ttl_inputs(tmp_path: Path) -> Non
     with pytest.raises(ValidationError, match="unknown ROI"):
         payload["ttl_inputs"][0]["fiber_ids"] = ["fiber_99"]
         SessionConfig.model_validate(payload)
+
+
+def test_each_recording_gets_a_folder_with_its_nwbs_log_and_roi_maps(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=2, width_px=48, height_px=24)
+    engine = AcquisitionEngine()
+
+    def note_once(progress) -> None:
+        if progress.frame_count == 5:
+            engine.add_note("saline injection", ("fiber_02",))
+
+    result = engine.run(config, SimulatedRig(config), duration_s=1.0, on_progress=note_once)
+
+    folder = tmp_path / config.session_id
+    assert {report.path.parent for report in result.reports} == {folder}
+    names = sorted(path.name for path in folder.iterdir())
+    assert "session_log.txt" in names and "settings.json" in names
+    assert {"roi_map_405nm.png", "roi_map_470nm.png", "roi_map_565nm.png"} <= set(names)
+    assert (folder / "roi_map_470nm.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert not list(folder.glob("*.photometry-spool"))
+    log = (folder / "session_log.txt").read_text(encoding="utf-8")
+    assert "saline injection [fiber_02]" in log and "NWB files" in log
+    with NWBHDF5IO(result.reports[0].path, mode="r", load_namespaces=True) as io:
+        nwb = io.read()
+        embedded = nwb.get_scratch("driftless_session_log")
+        images = nwb.processing["photometry"]["wavelength_roi_images"].images
+        assert "roi_map_470nm" in images
+    assert str(embedded).startswith("Driftless Bundle Photometry session log")
+    assert "saline injection [fiber_02]" in str(embedded)
+    restored, _warnings = configuration_from_nwb(result.reports[0].path)
+    assert restored.output_directory == config.output_directory  # the root, not the folder
