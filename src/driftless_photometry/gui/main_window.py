@@ -97,6 +97,7 @@ from .branding import logo_path
 from .crosstalk import CrosstalkDialog
 from .output_program import OutputProgramDialog, describe_program
 from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
+from .theme import PLOT_COLORS, load_theme, save_theme, stylesheet
 from .timing_diagram import TimingDiagram
 from .timing_diagram import plan_for as timing_plan_for
 from .trace_display import (
@@ -340,11 +341,12 @@ class MainWindow(QMainWindow):
         self._device_worker: DeviceCheckWorker | None = None
         self.last_device_report = None
         self._devices_checked_for_mode = False
+        self._theme = load_theme()
         pg.setConfigOptions(
             imageAxisOrder="row-major",
             antialias=True,
-            background="#081a2b",
-            foreground="#9fc4dc",
+            background=PLOT_COLORS[self._theme].background,
+            foreground=PLOT_COLORS[self._theme].foreground,
         )
         self.setWindowTitle(f"Driftless Bundle Photometry {__version__}")
         with logo_path() as icon_path:
@@ -482,6 +484,11 @@ class MainWindow(QMainWindow):
         self.version_badge.setObjectName("versionBadge")
         self.version_badge.setToolTip("Application version")
         header.addWidget(self.version_badge)
+        self.theme_button = QPushButton()
+        self.theme_button.setToolTip("Switch between the dark and light themes")
+        self.theme_button.setText("☀ Light" if self._theme == "dark" else "☾ Dark")
+        self.theme_button.clicked.connect(self._toggle_theme)
+        header.addWidget(self.theme_button)
         self.system_status = QLabel("READY")
         self.system_status.setObjectName("systemStatus")
         self.system_status.setProperty("state", "ready")
@@ -1665,7 +1672,7 @@ class MainWindow(QMainWindow):
             plot = self.trace_workspace.addPlot(row=row, col=0, viewBox=view_box)
             title = f"ROI {row + 1} - {roi.label} / {roi.animal_id}"
             self._trace_titles[row] = title
-            plot.setTitle(title, color="#e8f7fa", size="10pt")
+            plot.setTitle(title, color=PLOT_COLORS[self._theme].title, size="10pt")
             plot.showGrid(x=True, y=True, alpha=0.22)
             _label_trace_axis(plot, dff=display_mode in _DFF_MODES)
             if row == len(rois) - 1:
@@ -1963,142 +1970,39 @@ class MainWindow(QMainWindow):
         self._rebuild_roi_metadata(fiber_count)
         return page
 
-    def _apply_theme(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow, QWidget { background: #081521; color: #e8f7fa; }
-            QWidget#appHeader {
-                background: #0d2132; border: 1px solid #203e52; border-radius: 12px;
-            }
-            QWidget#appHeader QWidget { background: transparent; border: none; }
-            QLabel#brandMark { background: transparent; }
-            QLabel#wordmark {
-                color: #f4fcfd; font-weight: 800; font-size: 12pt; letter-spacing: 1px;
-            }
-            QLabel#strapline { color: #6f91a6; font-size: 9pt; }
-            QLabel#eyebrow {
-                color: #43d6df; font-size: 8pt; font-weight: 800; letter-spacing: 2px;
-            }
-            QLabel#sectionTitle { color: #f4fcfd; font-size: 18pt; font-weight: 700; }
-            QLabel#versionBadge {
-                background: #102a3e; border: 1px solid #2b5167; border-radius: 10px;
-                color: #8cabbc; padding: 5px 10px; font-weight: 700;
-            }
-            QGroupBox {
-                background: #0c1d2b; border: 1px solid #203c50; border-radius: 10px;
-                margin-top: 13px; padding: 12px; font-weight: 700;
-            }
-            QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; }
-            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-                background: #10283a; border: 1px solid #31566d; border-radius: 6px;
-                padding: 7px; color: #f4fcfd; selection-background-color: #00aeba;
-            }
-            QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled,
-            QDoubleSpinBox:disabled {
-                background: #0d1f31; border-color: #22394d; color: #5f7387;
-            }
-            QLabel:disabled, QCheckBox:disabled, QGroupBox:disabled { color: #5f7387; }
-            QPushButton {
-                background: #15374d; border: 1px solid #315b71; border-radius: 7px;
-                padding: 8px 14px;
-            }
-            QPushButton:hover { background: #205170; }
-            QPushButton#preview { background: #00aeba; color: #04151e; font-weight: 700; }
-            QPushButton#preview:hover { background: #20c3ce; }
-            QPushButton#record { background: #4fd18b; color: #05261a; font-weight: 700; }
-            QPushButton#record:hover { background: #66dd9c; }
-            QPushButton#horizon { padding: 6px 12px; }
-            QPushButton#horizon:checked {
-                background: #00aeba; color: #071628; border-color: #43d6df;
-                font-weight: 800;
-            }
-            QPushButton#attention { background: #d98324; color: #1a0f02; font-weight: 700; }
-            QPushButton#attention:hover { background: #eb9438; }
-            QPushButton:disabled { color: #61778a; background: #13283a; }
-            QPushButton#preview:disabled, QPushButton#record:disabled,
-            QPushButton#attention:disabled {
-                color: #61778a; background: #13283a; border-color: #22394d;
-            }
-            QLabel#hint { color: #7694aa; }
-            QLabel#roiReadout { color: #e8f7fa; font-family: Consolas, monospace; }
-            QLabel#roiReadout[state="saturated"] { color: #ff8791; font-weight: 700; }
-            QLabel#deviceStatus[state="ok"] { color: #4fd18b; }
-            QLabel#deviceStatus[state="failed"] { color: #ff8791; font-weight: 700; }
-            QLabel#deviceStatus[state="unknown"] { color: #7694aa; }
-            QLabel#safetyWarning {
-                background: #3a1820; color: #ffb3b9; border-radius: 6px; padding: 8px;
-                font-weight: 700;
-            }
-            QLabel#liveStatus { font-weight: 700; color: #f2b134; }
-            QLabel#previewStatus {
-                border: 1px solid #315570; border-radius: 6px; padding: 7px 10px;
-                font-weight: 700;
-            }
-            QLabel#previewStatus[state="required"] { background: #2b2316; color: #f2b134; }
-            QLabel#previewStatus[state="running"] { background: #102b43; color: #66c2ff; }
-            QLabel#previewStatus[state="passed"] { background: #103226; color: #4fd18b; }
-            QLabel#previewStatus[state="failed"] { background: #3a1820; color: #ff8791; }
-            QWidget#summaryCard {
-                background: #102638; border: 1px solid #23465b; border-radius: 8px;
-            }
-            QLabel#summaryValue { color: #f4fcfd; font-size: 15pt; font-weight: 800; }
-            QLabel#summaryCaption { color: #6f91a6; font-size: 7pt; font-weight: 700; }
-            QLabel#voltageReadout { color: #43d6df; font-weight: 800; }
-            QSlider::groove:horizontal {
-                height: 6px; background: #17384d; border: 1px solid #31566d;
-                border-radius: 3px;
-            }
-            QSlider::sub-page:horizontal { background: #00aeba; border-radius: 3px; }
-            QSlider::handle:horizontal {
-                background: #e8f7fa; border: 2px solid #00aeba; width: 16px;
-                margin: -6px 0; border-radius: 8px;
-            }
-            QLabel#badge { border-radius: 10px; padding: 5px 12px; font-weight: 800; }
-            QLabel#badge[hardware="false"] { background: #b7e532; color: #0b1d31; }
-            QLabel#systemStatus {
-                border-radius: 10px; padding: 5px 14px; font-weight: 800; font-size: 13pt;
-            }
-            QLabel#systemStatus[state="ready"] { background: #13283a; color: #7694aa; }
-            QLabel#systemStatus[state="preview"] { background: #102b43; color: #66c2ff; }
-            QLabel#systemStatus[state="recording"] { background: #e04450; color: #fff5f5; }
-            QLabel#systemStatus[state="saving"] { background: #d98324; color: #1a0f02; }
-            QLabel#systemStatus[state="complete"] { background: #00aeba; color: #04151e; }
-            QLabel#systemStatus[state="error"] { background: #e04450; color: #fff5f5; }
-            QTabWidget::pane {
-                border: 1px solid #203c50; border-radius: 9px; top: -1px;
-            }
-            QTabBar::tab {
-                background: #0d2132; border: 1px solid #203c50; padding: 10px 20px;
-                margin-right: 4px; border-top-left-radius: 7px; border-top-right-radius: 7px;
-            }
-            QTabBar::tab:selected {
-                background: #00aeba; color: #071628; font-weight: 800;
-            }
-            QProgressBar {
-                border: 1px solid #315570; border-radius: 5px; text-align: center;
-                background: #102b43;
-            }
-            QProgressBar::chunk { background: #00bfd1; }
-            QStatusBar { color: #7694aa; border-top: 1px solid #203c50; }
-            QScrollArea { border: none; }
-            QScrollBar:vertical {
-                background: #0d1f31; width: 12px; margin: 0; border-radius: 6px;
-            }
-            QScrollBar::handle:vertical {
-                background: #315570; min-height: 28px; border-radius: 5px; margin: 2px;
-            }
-            QScrollBar::handle:vertical:hover { background: #4c7893; }
-            QScrollBar:horizontal {
-                background: #0d1f31; height: 12px; margin: 0; border-radius: 6px;
-            }
-            QScrollBar::handle:horizontal {
-                background: #315570; min-width: 28px; border-radius: 5px; margin: 2px;
-            }
-            QScrollBar::handle:horizontal:hover { background: #4c7893; }
-            QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-            QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-            """
-        )
+    def _toggle_theme(self) -> None:
+        theme = "light" if self._theme == "dark" else "dark"
+        self._apply_theme(theme)
+        save_theme(theme)
+
+    def _apply_theme(self, theme: str | None = None) -> None:
+        """Apply the dark or light theme to the window and every plot."""
+
+        self._theme = theme or getattr(self, "_theme", None) or load_theme()
+        colors = PLOT_COLORS[self._theme]
+        self.setStyleSheet(stylesheet(self._theme))
+        pg.setConfigOptions(background=colors.background, foreground=colors.foreground)
+        for view in self.findChildren(pg.GraphicsView):
+            view.setBackground(colors.background)
+        plots = [w.getPlotItem() for w in self.findChildren(pg.PlotWidget)]
+        plots += list(getattr(self, "trace_plots", {}).values())
+        for plot in plots:
+            for name in ("left", "bottom", "right", "top"):
+                axis = plot.getAxis(name)
+                axis.setPen(colors.foreground)
+                axis.setTextPen(colors.foreground)
+        for row, plot in getattr(self, "trace_plots", {}).items():
+            warning = getattr(self, "_signal_warnings", {}).get(row)
+            title = self._trace_titles.get(row, "")
+            if warning:
+                plot.setTitle(f"{title}   ⚠ {warning}", color=_SIGNAL_WARNING_COLOR, size="10pt")
+            else:
+                plot.setTitle(title, color=colors.title, size="10pt")
+        for _plot, label in getattr(self, "_roi_labels", ()):
+            label.fill = pg.mkBrush(*colors.label_fill)
+            label.update()
+        if hasattr(self, "theme_button"):
+            self.theme_button.setText("☀ Light" if self._theme == "dark" else "☾ Dark")
 
     def _set_system_status(self, text: str, state: str) -> None:
         self.system_status.setText(text)
@@ -3132,7 +3036,7 @@ class MainWindow(QMainWindow):
     def _roi_label_item(self, plot: pg.PlotWidget, index: int) -> pg.TextItem:
         label = pg.TextItem(
             color=_FIBER_COLORS[index % len(_FIBER_COLORS)],
-            fill=pg.mkBrush(4, 14, 22, 170),
+            fill=pg.mkBrush(*PLOT_COLORS[self._theme].label_fill),
         )
         label.setZValue(11)
         plot.addItem(label)
@@ -3191,7 +3095,7 @@ class MainWindow(QMainWindow):
                 label = pg.TextItem(
                     self._roi_display_name(index),
                     color=color,
-                    fill=pg.mkBrush(4, 14, 22, 170),
+                    fill=pg.mkBrush(*PLOT_COLORS[self._theme].label_fill),
                 )
                 label.setZValue(11)
                 label.setOpacity(circle.opacity())
@@ -4254,7 +4158,7 @@ class MainWindow(QMainWindow):
                     self._worker.log_signal_warning(now_s, fiber_ids[row], text)
                 self.statusBar().showMessage(f"Signal check, ROI {row + 1}: {text}")
             else:
-                plot.setTitle(title, color="#e8f7fa", size="10pt")
+                plot.setTitle(title, color=PLOT_COLORS[self._theme].title, size="10pt")
         self._signal_warnings = current
 
     def _append_live_trace_points(self, points: Sequence[LiveTracePoint]) -> None:

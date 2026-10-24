@@ -8,6 +8,17 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.6 - 2026-10-24
+
+### Added
+
+- **Dark and light themes**, switched with the **☀ Light / ☾ Dark** button in the
+  header. The dark theme is unchanged; the light theme turns backgrounds, borders,
+  text, and the plots (background, axes, titles) light while keeping the accent,
+  status, and wavelength colours, with darker shades where those would be hard to read
+  on white. Camera images and the ROI names on them stay dark. DBF remembers the
+  choice in `ui_preferences.json` in the settings folder. Display only.
+
 ## 0.3.5 - 2026-10-24
 
 ### Added

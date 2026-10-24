@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.5"
+    assert __version__ == "0.3.6"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1625,3 +1625,28 @@ def test_gui_previews_the_rwd_led_and_camera_timing(qtbot, tmp_path: Path) -> No
         check.setChecked(int(wavelength) == 470)
     assert list(dict(window.timing_diagram.rows())) == ["470 nm", "Camera 1"]
     assert "470 nm is lit continuously" in window.timing_summary.text()
+
+
+def test_gui_switches_between_dark_and_light_themes_and_remembers(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.gui.theme import PLOT_COLORS, load_theme
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=2))
+    assert window._theme == "dark" and window.theme_button.text() == "☀ Light"
+    assert "#081521" in window.styleSheet()
+
+    window.theme_button.click()
+    assert window._theme == "light" and window.theme_button.text() == "☾ Dark"
+    assert "#081521" not in window.styleSheet() and "#f3f6f9" in window.styleSheet()
+    light = PLOT_COLORS["light"]
+    assert window.trace_workspace.backgroundBrush().color().name() == light.background
+    axis = window.trace_plots[0].getAxis("left")
+    assert axis.textPen().color().name() == light.foreground
+    assert load_theme() == "light"  # remembered for the next start
+
+    again = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(again)
+    assert again._theme == "light" and "#f3f6f9" in again.styleSheet()
+    again.theme_button.click()
+    assert load_theme() == "dark" and "#081521" in again.styleSheet()
