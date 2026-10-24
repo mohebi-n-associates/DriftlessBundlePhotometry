@@ -9,6 +9,7 @@ import queue
 import shutil
 import threading
 import time
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -20,11 +21,14 @@ import numpy as np
 from driftless_photometry.config import SessionConfig, Wavelength
 from driftless_photometry.diagnostics import SpoolDiagnostics
 from driftless_photometry.domain import (
+    MEAN_REFERENCE_FRAMES,
+    MEAN_REFERENCE_START_S,
     AcquisitionData,
     DroppedFrameEvent,
     EventMark,
     FramePacket,
     InvalidTimeInterval,
+    MeanReferenceImage,
     SystemEvent,
     TraceSample,
     TTLEdge,
@@ -95,6 +99,12 @@ class _EventMarkWork:
 
 
 @dataclass(frozen=True, slots=True)
+class _MeanImageWork:
+    wavelength_nm: int
+    mean: MeanReferenceImage
+
+
+@dataclass(frozen=True, slots=True)
 class _StopWork:
     complete: bool
 
@@ -161,6 +171,11 @@ class SessionSpool:
         self._closed = False
         self._last_manifest_write_s = 0.0
         self._wavelengths_submitted: set[Wavelength] = set()
+        # Mean reference images: accumulate MEAN_REFERENCE_FRAMES frames per wavelength
+        # from MEAN_REFERENCE_START_S; short recordings average their latest frames.
+        self._mean_sums: dict[Wavelength, tuple[np.ndarray, int, float, float]] = {}
+        self._mean_done: set[Wavelength] = set()
+        self._recent: dict[Wavelength, deque[tuple[float, np.ndarray]]] = {}
         self._manifest = {
             "schema_version": _SPOOL_SCHEMA_VERSION,
             "complete": False,
@@ -199,6 +214,7 @@ class SessionSpool:
         retain_reference = wavelength not in self._wavelengths_submitted
         image = packet.image.copy() if self.config.camera.raw_capture or retain_reference else None
         self._wavelengths_submitted.add(wavelength)
+        self._collect_mean(wavelength, sample.timestamp_s, packet.image)
         work = _FrameWork(
             frame_id=packet.frame_id,
             timestamp_s=sample.timestamp_s,
@@ -255,9 +271,48 @@ class SessionSpool:
                 maximum_write_latency_s=self._maximum_write_latency_s,
             )
 
+    def _collect_mean(self, wavelength: Wavelength, timestamp_s: float, image) -> None:
+        if wavelength in self._mean_done:
+            return
+        if timestamp_s < MEAN_REFERENCE_START_S:
+            recent = self._recent.setdefault(wavelength, deque(maxlen=MEAN_REFERENCE_FRAMES))
+            recent.append((timestamp_s, image.copy()))
+            return
+        total, count, first_s, _last = self._mean_sums.get(
+            wavelength, (np.zeros(image.shape, dtype=np.float64), 0, timestamp_s, timestamp_s)
+        )
+        total += image
+        count += 1
+        self._mean_sums[wavelength] = (total, count, first_s, timestamp_s)
+        if count == MEAN_REFERENCE_FRAMES:
+            self._finish_mean(wavelength, total, count, first_s, timestamp_s)
+
+    def _finish_mean(self, wavelength, total, count, first_s, last_s) -> None:
+        self._mean_done.add(wavelength)
+        self._mean_sums.pop(wavelength, None)
+        self._recent.pop(wavelength, None)
+        mean = MeanReferenceImage(
+            np.rint(total / count).astype(np.uint16), float(first_s), float(last_s), count
+        )
+        self._enqueue_critical(_MeanImageWork(int(wavelength), mean))
+
     def close(self, *, complete: bool = True) -> None:
         if self._closed:
             return
+        if complete:
+            # A recording too short to reach the start averages what it has.
+            for wavelength in list(self._recent):
+                if wavelength in self._mean_done:
+                    continue
+                pending = self._mean_sums.get(wavelength)
+                if pending is not None:
+                    self._finish_mean(wavelength, *pending)
+                    continue
+                recent = self._recent[wavelength]
+                total = np.sum([image.astype(np.float64) for _t, image in recent], axis=0)
+                self._finish_mean(wavelength, total, len(recent), recent[0][0], recent[-1][0])
+            for wavelength in list(self._mean_sums):
+                self._finish_mean(wavelength, *self._mean_sums[wavelength])
         self._enqueue_stop(_StopWork(complete=complete))
         self._thread.join()
         self._closed = True
@@ -351,6 +406,8 @@ class SessionSpool:
                         self._write_invalid_time(invalid_file, work.interval)
                     elif isinstance(work, _SystemEventWork):
                         self._write_system_event(system_file, work.event)
+                    elif isinstance(work, _MeanImageWork):
+                        self._commit_mean_image(work.wavelength_nm, work.mean)
                     elif isinstance(work, _EventMarkWork):
                         self._write_line(mark_file, asdict(work.mark), "event_mark_count")
                     elif isinstance(work, _StartTimeWork):
@@ -517,6 +574,23 @@ class SessionSpool:
             "sha256": _sha256(image_path),
         }
 
+    def _commit_mean_image(self, wavelength_nm: int, mean: MeanReferenceImage) -> None:
+        image_path = self.path / f"wavelength_{wavelength_nm}_mean.npy"
+        temporary = image_path.with_suffix(".npy.tmp")
+        with temporary.open("wb") as stream:
+            np.save(stream, mean.image, allow_pickle=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, image_path)
+        self._manifest.setdefault("mean_reference_images", {})[str(wavelength_nm)] = {
+            "file": image_path.name,
+            "sha256": _sha256(image_path),
+            "first_s": mean.first_s,
+            "last_s": mean.last_s,
+            "frames": mean.frames,
+        }
+        self._write_manifest()
+
     def _write_manifest(self) -> None:
         _atomic_write_json(self.path / "manifest.json", self._manifest)
 
@@ -680,6 +754,16 @@ def load_session_spool(path: Path) -> LoadedSpool:
         if _sha256(image_path) != image_entry["sha256"]:
             raise SpoolError(f"{int(wavelength)} nm reference image checksum mismatch")
         wavelength_images[wavelength] = np.load(image_path, allow_pickle=False)
+    for wavelength_text, entry in manifest.get("mean_reference_images", {}).items():
+        mean_path = path / entry["file"]
+        if _sha256(mean_path) != entry["sha256"]:
+            raise SpoolError(f"{wavelength_text} nm mean reference image checksum mismatch")
+        data.mean_reference_images[Wavelength(int(wavelength_text))] = MeanReferenceImage(
+            np.load(mean_path, allow_pickle=False),
+            float(entry["first_s"]),
+            float(entry["last_s"]),
+            int(entry["frames"]),
+        )
     if not wavelength_images and data.frame_wavelengths_nm:
         wavelength_images[Wavelength(data.frame_wavelengths_nm[0])] = calibration_image.copy()
     frames = None

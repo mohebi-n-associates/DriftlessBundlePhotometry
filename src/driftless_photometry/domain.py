@@ -180,6 +180,27 @@ def _or_nan(value: float | None) -> float:
     return float("nan") if value is None else float(value)
 
 
+MEAN_REFERENCE_START_S = 5.0
+"""Mean reference images start this far into a recording, once the LEDs have settled."""
+MEAN_REFERENCE_FRAMES = 10
+
+
+@dataclass(frozen=True, slots=True)
+class MeanReferenceImage:
+    """The mean of ``frames`` consecutive camera frames of one wavelength (derived)."""
+
+    image: NDArray[np.uint16]
+    first_s: float
+    last_s: float
+    frames: int
+
+    def describe(self, wavelength_nm: int) -> str:
+        return (
+            f"Mean of {self.frames} consecutive {wavelength_nm} nm frames from "
+            f"{self.first_s:.3f} to {self.last_s:.3f} s, rounded to uint16; derived."
+        )
+
+
 @dataclass(slots=True)
 class AcquisitionData:
     """Completed non-frame session data used by the NWB finalizer."""
@@ -192,6 +213,7 @@ class AcquisitionData:
     invalid_times: list[InvalidTimeInterval] = field(default_factory=list)
     system_events: list[SystemEvent] = field(default_factory=list)
     event_marks: list[EventMark] = field(default_factory=list)
+    mean_reference_images: dict[Wavelength, MeanReferenceImage] = field(default_factory=dict)
     frame_ids: list[int] = field(default_factory=list)
     frame_timestamps_s: list[float] = field(default_factory=list)
     frame_sequences: list[int] = field(default_factory=list)

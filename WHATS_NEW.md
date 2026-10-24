@@ -153,6 +153,11 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   notes**, and stored in the `event_marks` table as source `note` with a new
   `fiber_id` column. Each ROI's NWB keeps its own notes and the all-ROI ones.
 
+- Each NWB file now also holds, per wavelength, a mean reference image: the mean of
+  10 consecutive frames from 5 s into the recording (`mean_reference_{nm}nm`), and the
+  ROI drawn on it (`mean_roi_overlay_{nm}nm`). Recordings shorter than that average
+  their latest frames. The original single raw frame stays as `raw_reference_{nm}nm`.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller
