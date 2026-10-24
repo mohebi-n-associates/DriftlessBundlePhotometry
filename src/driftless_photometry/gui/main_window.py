@@ -74,6 +74,7 @@ from driftless_photometry.diagnostics import FinalizationProgress, FinalizationS
 from driftless_photometry.domain import EventMark
 from driftless_photometry.hardware import StartCondition
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
+from driftless_photometry.roi import extract_circular_rois, rois_for_camera
 from driftless_photometry.settings import (
     SETTINGS_SUFFIX,
     configuration_from_nwb,
@@ -368,6 +369,7 @@ class MainWindow(QMainWindow):
         self._custom_camera = self._session_template.camera
         self._default_system = default_system
         self._preview_started_config: SessionConfig | None = None
+        self._live_rois: tuple[ROIConfig, ...] | None = None
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -1694,13 +1696,26 @@ class MainWindow(QMainWindow):
         self.calibration_panel_titles: dict[int, QLabel] = {}
         self.calibration_panels: dict[int, QWidget] = {}
         plots: dict[int, pg.PlotWidget] = {}
+        self.calibration_readouts: dict[int, QLabel] = {}
         for camera, title in ((1, "CAMERA"), (2, "CAMERA 2 — 560 NM")):
             panel = QWidget()
             panel_layout = QVBoxLayout(panel)
             panel_layout.setContentsMargins(0, 0, 0, 0)
             heading = QLabel(title)
             heading.setObjectName("eyebrow")
-            panel_layout.addWidget(heading)
+            readout = QLabel()
+            readout.setObjectName("roiReadout")
+            readout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+            readout.setToolTip(
+                "Mean raw pixel value inside each ROI circle on this camera's latest frame "
+                "(0-4095 for 12-bit pixels), with the fraction of saturated pixels"
+            )
+            heading_row = QHBoxLayout()
+            heading_row.addWidget(heading)
+            heading_row.addStretch(1)
+            heading_row.addWidget(readout)
+            panel_layout.addLayout(heading_row)
+            self.calibration_readouts[camera] = readout
             plot = pg.PlotWidget()
             plot.setAspectLocked(True)
             plot.invertY(True)
@@ -1780,6 +1795,8 @@ class MainWindow(QMainWindow):
                 color: #61778a; background: #13283a; border-color: #22394d;
             }
             QLabel#hint { color: #7694aa; }
+            QLabel#roiReadout { color: #e8f7fa; font-family: Consolas, monospace; }
+            QLabel#roiReadout[state="saturated"] { color: #ff8791; font-weight: 700; }
             QLabel#deviceStatus[state="ok"] { color: #4fd18b; }
             QLabel#deviceStatus[state="failed"] { color: #ff8791; font-weight: 700; }
             QLabel#deviceStatus[state="unknown"] { color: #7694aa; }
@@ -2712,6 +2729,7 @@ class MainWindow(QMainWindow):
         return (low, high)
 
     def _on_roi_geometry_changed(self) -> None:
+        self._live_rois = None
         self._enforce_diameter_limits()
         self._sync_diameter_controls()
         self._update_roi_summary()
@@ -3067,6 +3085,10 @@ class MainWindow(QMainWindow):
         self._operation_kind = "live"
         self._operation_uses_leds = isinstance(config.source, RWDSourceConfig)
         self._camera_frame_counts = {}
+        # Live view also draws the traces, from the circles as they are now, so the
+        # operator can switch tabs and watch placement, gain, and power changes.
+        self._prepare_trace_curves(config)
+        self._live_rois = None
         self._prepare_wavelength_images(config)
         self.frame_counter.setText("0 live frames")
         self.live_status.setText(
@@ -3158,10 +3180,80 @@ class MainWindow(QMainWindow):
             f"Live · camera {frame.camera_index} · {frame.timestamp_s:.1f} s"
         )
         self._show_calibration_frame(frame.camera_index, frame.image)
+        self._trace_live_frame(frame)
         self.frame_counter.setText(f"{frame.frame_count:,} live frames")
         self.live_status.setText(
             f"Live view - camera {frame.camera_index}, {int(frame.wavelength_nm)} nm"
         )
+
+    def _current_live_rois(self) -> tuple[ROIConfig, ...]:
+        """The traced ROIs with their circles' current geometry (cached until moved)."""
+
+        if self._live_rois is None:
+            traced = set(self._trace_roi_indices)
+            try:
+                current = self._roi_configs_from_controls()
+            except Exception:
+                current = ()
+            self._live_rois = tuple(roi for roi in current if roi.fiber_id in traced)
+        return self._live_rois
+
+    def _trace_live_frame(self, frame: LiveFrame) -> None:
+        """Add a displayed live frame's ROI means to the traces and the panel readout.
+
+        Display only: live view records nothing, and it draws each camera and wavelength
+        at most 15 times a second.
+        """
+
+        config = self._active_config
+        if config is None or int(frame.wavelength_nm) not in self._active_trace_wavelengths:
+            return
+        rois = rois_for_camera(self._current_live_rois(), frame.camera_index)
+        if not rois:
+            return
+        extracted = extract_circular_rois(frame.image, rois, bit_depth=config.camera.bit_depth)
+        self._show_roi_readout(
+            frame.camera_index,
+            int(frame.wavelength_nm),
+            rois,
+            extracted.values,
+            extracted.saturation_fractions,
+        )
+        points = []
+        for roi, value in zip(rois, extracted.values, strict=True):
+            key = (int(frame.wavelength_nm), self._trace_roi_indices[roi.fiber_id])
+            times = self._trace_times.get(key)
+            if times is None or (times and frame.timestamp_s <= times[-1]):
+                continue
+            points.append(
+                LiveTracePoint(
+                    frame.timestamp_s, roi.fiber_id, int(frame.wavelength_nm), float(value)
+                )
+            )
+        if points:
+            self._append_live_trace_points(points)
+
+    def _show_roi_readout(
+        self,
+        camera: int,
+        wavelength: int,
+        rois: Sequence[ROIConfig],
+        values: Sequence[float],
+        saturation: Sequence[float],
+    ) -> None:
+        label = self.calibration_readouts.get(camera)
+        if label is None:
+            return
+        lines = []
+        for roi, value, saturated in zip(rois, values, saturation, strict=True):
+            line = f"{roi.label}: {value:,.0f} counts @ {wavelength} nm"
+            if saturated > 0:
+                line += f" · {saturated:.1%} saturated"
+            lines.append(line)
+        label.setText("\n".join(lines))
+        label.setProperty("state", "saturated" if any(s > 0 for s in saturation) else "ok")
+        label.style().unpolish(label)
+        label.style().polish(label)
 
     def _on_live_completed(self, frame_count: int) -> None:
         self._drain_display()
@@ -3574,6 +3666,13 @@ class MainWindow(QMainWindow):
         self._camera_frame_counts[progress.camera_index] = camera_count
         self._last_camera_images[progress.camera_index] = progress.image
         self._show_calibration_frame(progress.camera_index, progress.image)
+        self._show_roi_readout(
+            progress.camera_index,
+            wavelength,
+            rois_for_camera(self._active_config.enabled_rois, progress.camera_index),
+            sample.values,
+            sample.saturation_fractions,
+        )
         fraction = min(1.0, (sample.timestamp_s + 1 / 30) / self._progress_duration_s)
         open_ended = self._operation_kind == "preview" or (
             self._operation_kind == "recording" and self._active_config.recording.stop != "duration"
