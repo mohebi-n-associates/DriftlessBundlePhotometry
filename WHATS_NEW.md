@@ -131,6 +131,9 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   first frame took about 11 ms at 120 Hz against a 13.7 ms limit, so busy hosts failed.
   410 + 470 nm alone at high rates still fails closed.
 
+- On Windows, DBF sets its own taskbar identity, so the taskbar shows the DBF logo
+  rather than Python's icon when it runs from a Python environment.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller
