@@ -69,7 +69,7 @@ class RWDCameraSource(Protocol):
 
     def get(self, timeout_s: float) -> AlviumFrame | None: ...
 
-    def set_gain(self, gain_db: float) -> None: ...
+    def set_gain(self, gain_db: float, user_id: str | None = None) -> None: ...
 
 
 RWDCameraFactory = Callable[[AlviumSettings, tuple[str, ...]], RWDCameraSource]
@@ -152,7 +152,7 @@ class RWDRig:
         self._stop = threading.Event()
         self._recording_stop = False
         self._gain_lock = threading.Lock()
-        self._pending_gain_db: float | None = None
+        self._pending_gains: dict[int | None, float] = {}
         self._pending_power: dict[Wavelength, float] = {}
         self._output_triggers: list[tuple[int, str]] = []
         self.identity: RWDControllerIdentity | None = None
@@ -170,16 +170,19 @@ class RWDRig:
 
         self._recording_stop = True
 
-    def request_gain(self, gain_db: float) -> None:
-        """Ask the running session to change both cameras' gain (thread-safe).
+    def request_gain(self, gain_db: float, camera: int | None = None) -> None:
+        """Ask the running session to change camera 1's or 2's gain, or both (thread-safe).
 
-        For live view: gain changes the recorded scale, so recordings keep one gain.
+        For live view and preview: gain changes the recorded scale, so recordings keep the
+        gains they started with.
         """
 
         if gain_db < 0:
             raise ValueError("gain must be non-negative")
         with self._gain_lock:
-            self._pending_gain_db = float(gain_db)
+            if camera is None:
+                self._pending_gains.clear()
+            self._pending_gains[camera] = float(gain_db)
 
     def trigger_output(self, port: int, reason: str = "manual") -> None:
         """Start ``port``'s output program in the running session (thread-safe).
@@ -214,10 +217,10 @@ class RWDRig:
             power, self._pending_power = self._pending_power, {}
         return power
 
-    def _take_pending_gain(self) -> float | None:
+    def _take_pending_gain(self) -> dict[int | None, float]:
         with self._gain_lock:
-            gain, self._pending_gain_db = self._pending_gain_db, None
-        return gain
+            gains, self._pending_gains = self._pending_gains, {}
+        return gains
 
     def packets(
         self,
@@ -241,6 +244,7 @@ class RWDRig:
             settings = AlviumSettings(
                 exposure_us=float(self._config.camera.exposure_us),
                 gain_db=float(self._config.camera.gain),
+                camera2_gain_db=self._config.camera.camera2_gain,
             )
             user_ids = tuple(str(camera) for camera in self._plan.cameras)
             cameras = self._camera_factory(settings, user_ids)
@@ -333,7 +337,7 @@ class _RWDSession:
         stop: threading.Event,
         identity: RWDControllerIdentity | None,
         port: str,
-        pending_gain: Callable[[], float | None] = lambda: None,
+        pending_gain: Callable[[], dict[int | None, float]] = dict,
         output_triggers: Callable[[], list[tuple[int, str]]] = list,
         pending_power: Callable[[], dict[Wavelength, float]] = dict,
         recording_stop: bool = False,
@@ -439,10 +443,10 @@ class _RWDSession:
                 )
             finished = False
             while not finished and not self._stop.is_set():
-                gain = self._pending_gain()
-                if gain is not None:
-                    self._cameras.set_gain(gain)
-                    self._event("rwd_camera_gain_changed", f"{gain:g} dB on both cameras")
+                for camera, gain in self._pending_gain().items():
+                    self._cameras.set_gain(gain, None if camera is None else str(camera))
+                    which = "both cameras" if camera is None else f"camera {camera}"
+                    self._event("rwd_camera_gain_changed", f"{gain:g} dB on {which}")
                 power = self._pending_power()
                 if power and self._pause is None:
                     self._change_led_power(power)

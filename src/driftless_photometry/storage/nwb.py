@@ -504,22 +504,36 @@ def _add_photometry_metadata_and_traces(
 def _add_photodetectors(nwbfile: NWBFile, config: SessionConfig) -> dict[int, Photodetector]:
     profile = profile_for(config.source)
     if profile is RWD_PROFILE:
-        model = PhotodetectorModel(
-            name="alvium_1800_u_040m_photodetector_model",
-            manufacturer="Allied Vision",
-            model_number="Alvium 1800 U-040m",
-            description=(
-                "Monochrome CMOS camera (Sony IMX287) of an RWD photometry system, triggered "
-                "by the RWD controller and imaging the proximal fiber-bundle face."
-            ),
-            detector_type="CMOS",
-            wavelength_range_in_nm=[300.0, 1100.0],
-            gain=config.camera.gain,
-            gain_unit="dB",
-        )
-        nwbfile.add_device_model(model)
+        names = _camera_device_names(config)
+        gains = {camera: config.camera.gain_for(camera) for camera in names}
+        # One shared model while both cameras use the same gain; otherwise one per camera,
+        # since the model carries the gain.
+        models: dict[int, PhotodetectorModel] = {}
+        for camera in names:
+            gain = gains[camera]
+            shared = next((models[c] for c in models if gains[c] == gain), None)
+            if shared is not None:
+                models[camera] = shared
+                continue
+            suffix = "" if len(set(gains.values())) == 1 else f"_camera{camera}"
+            models[camera] = PhotodetectorModel(
+                name=f"alvium_1800_u_040m_photodetector_model{suffix}",
+                manufacturer="Allied Vision",
+                model_number="Alvium 1800 U-040m",
+                description=(
+                    "Monochrome CMOS camera (Sony IMX287) of an RWD photometry system, "
+                    "triggered by the RWD controller and imaging the proximal fiber-bundle "
+                    "face."
+                ),
+                detector_type="CMOS",
+                wavelength_range_in_nm=[300.0, 1100.0],
+                gain=gain,
+                gain_unit="dB",
+            )
+            nwbfile.add_device_model(models[camera])
         cameras = {}
-        for camera, name in _camera_device_names(config).items():
+        for camera, name in names.items():
+            model = models[camera]
             wavelengths = ", ".join(
                 f"{int(w)} nm" for w in profile.wavelengths if profile.camera_for(w) == camera
             )

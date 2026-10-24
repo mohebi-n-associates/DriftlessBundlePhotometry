@@ -118,6 +118,11 @@ clean-machine test was run; the bench and finalization-memory gates above remain
 - The live trace y axis reads *Mean pixel intensity (counts)*, without pyqtgraph's
   automatic SI prefix, which showed values above 1000 as "kcounts".
 
+- Each RWD camera has its own gain: camera 1 (410/470 nm) and camera 2 (560 nm) get
+  separate sliders, both adjustable live in Live view. Settings store camera 2's gain
+  only when it differs (`camera.camera2_gain`), and NWB files carry one camera model
+  per gain when they differ.
+
 ### Added
 
 - Started the RWD direct-control track, which will let DBF drive the RWD controller

@@ -226,12 +226,12 @@ class LiveViewWorker(QObject):
         if request is not None:
             request(wavelength, percent)
 
-    def request_gain(self, gain_db: float) -> None:
-        """Change camera gain while streaming, if the source supports it."""
+    def request_gain(self, gain_db: float, camera: int | None = None) -> None:
+        """Change a camera's gain (or both) while streaming, if the source supports it."""
 
         request = getattr(self._source, "request_gain", None)
         if request is not None:
-            request(gain_db)
+            request(gain_db, camera)
 
 
 class DeviceCheckWorker(QObject):

@@ -44,14 +44,21 @@ class AlviumSDKUnavailable(RuntimeError):
 class AlviumSettings:
     exposure_us: float
     gain_db: float = 0.0
+    camera2_gain_db: float | None = None
+    """Camera 2's own gain; None uses ``gain_db``."""
     reverse_x_user_ids: tuple[str, ...] = ("2",)
     """OFRS mirrors camera 2 so both cameras show the fiber face the same way round."""
 
     def __post_init__(self) -> None:
         if self.exposure_us <= 0:
             raise ValueError("exposure must be positive")
-        if self.gain_db < 0:
+        if self.gain_db < 0 or (self.camera2_gain_db or 0.0) < 0:
             raise ValueError("gain must be non-negative")
+
+    def gain_for(self, user_id: str) -> float:
+        if user_id == "2" and self.camera2_gain_db is not None:
+            return self.camera2_gain_db
+        return self.gain_db
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,13 +184,14 @@ class AlviumTriggeredCameras:
             finally:
                 self._system = None
 
-    def set_gain(self, gain_db: float) -> None:
-        """Change both cameras' gain while streaming; call from the owning thread."""
+    def set_gain(self, gain_db: float, user_id: str | None = None) -> None:
+        """Change one camera's gain, or both, while streaming; call from the owner thread."""
 
         if gain_db < 0:
             raise ValueError("gain must be non-negative")
-        for camera in self._cameras.values():
-            camera.get_feature_by_name("Gain").set(float(gain_db))
+        for camera_id, camera in self._cameras.items():
+            if user_id is None or camera_id == user_id:
+                camera.get_feature_by_name("Gain").set(float(gain_db))
 
     def get(self, timeout_s: float) -> AlviumFrame | None:
         """Return the next frame from either camera, or None if none arrives in time."""
@@ -245,7 +253,7 @@ class AlviumTriggeredCameras:
             ("GainAuto", "Off"),
             ("ExposureMode", "Timed"),
             ("ExposureTime", float(self._settings.exposure_us)),
-            ("Gain", float(self._settings.gain_db)),
+            ("Gain", float(self._settings.gain_for(user_id))),
             ("ReverseX", user_id in self._settings.reverse_x_user_ids),
             ("AcquisitionFrameRateEnable", False),
             ("TriggerSource", "Line0"),

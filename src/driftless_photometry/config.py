@@ -208,8 +208,17 @@ class CameraConfig(BaseModel):
     bit_depth: int = Field(default=12, ge=8, le=16)
     exposure_us: int = Field(default=10_000, gt=0)
     gain: float = Field(default=0.0, ge=0)
+    camera2_gain: float | None = Field(default=None, ge=0)
+    """RWD camera 2's gain in dB; None gives it ``gain``, like camera 1."""
     requested_fps: float = Field(default=30.0, gt=0)
     raw_capture: bool = False
+
+    def gain_for(self, camera: int) -> float:
+        """The gain of camera 1 or 2."""
+
+        if camera == 2 and self.camera2_gain is not None:
+            return self.camera2_gain
+        return self.gain
 
 
 class TraceDisplayConfig(BaseModel):
@@ -585,6 +594,8 @@ class SessionConfig(BaseModel):
             names = ", ".join(str(w) for w in sorted(shown))
             raise ValueError(f"{name} cannot display {names} nm traces")
         camera = self.camera
+        if camera.camera2_gain is not None and profile.camera_count < 2:
+            raise ValueError(f"{name} has one camera, so it takes no camera-2 gain")
         if profile.sensor_size_px is not None and (
             (camera.width_px, camera.height_px) != profile.sensor_size_px
         ):

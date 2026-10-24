@@ -248,3 +248,17 @@ def test_rwd_preview_with_power_changes_still_checks_each_first_frame(tmp_path: 
         on_progress=change_after_first_frames,
     )
     assert dict(result.final_power_percent)[W470] == 20.0
+
+
+def test_rwd_nwb_records_each_cameras_gain(tmp_path: Path) -> None:
+    config = rwd_config(tmp_path, (W410, W470, W560), gain=12.0, camera2_gain=3.0)
+
+    result = AcquisitionEngine().run(config, Bench(config).rig, duration_s=0.5)
+
+    with NWBHDF5IO(result.reports[0].path, mode="r", load_namespaces=True) as io:
+        models = io.read().device_models
+        gains = {name: m.gain for name, m in models.items() if "photodetector" in name}
+    assert gains == {
+        "alvium_1800_u_040m_photodetector_model_camera1": 12.0,
+        "alvium_1800_u_040m_photodetector_model_camera2": 3.0,
+    }
