@@ -77,6 +77,7 @@ from driftless_photometry.config import (
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
 from driftless_photometry.domain import NOTE_MAX_CHARACTERS, EventMark, TTLEdge
 from driftless_photometry.hardware import StartCondition
+from driftless_photometry.hardware.rwd_controller_protocol import trigger_period_s
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
 from driftless_photometry.roi import extract_circular_rois, rois_for_camera
 from driftless_photometry.settings import (
@@ -96,6 +97,8 @@ from .branding import logo_path
 from .crosstalk import CrosstalkDialog
 from .output_program import OutputProgramDialog, describe_program
 from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
+from .timing_diagram import TimingDiagram
+from .timing_diagram import plan_for as timing_plan_for
 from .trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
@@ -1355,6 +1358,7 @@ class MainWindow(QMainWindow):
             row_layout.addLayout(heading)
             row_layout.addWidget(slider)
             layout.addWidget(row)
+            check.toggled.connect(self._update_timing_preview)
             checks[wavelength] = check
             sliders[wavelength] = slider
             readouts[wavelength] = readout
@@ -1455,6 +1459,12 @@ class MainWindow(QMainWindow):
         self.camera_settings_hint.setObjectName("hint")
         self.camera_settings_hint.setWordWrap(True)
         form.addRow(self.camera_settings_hint)
+        self.timing_diagram = TimingDiagram(_WAVELENGTH_COLORS)
+        form.addRow(self.timing_diagram)
+        self.timing_summary = QLabel()
+        self.timing_summary.setObjectName("hint")
+        self.timing_summary.setWordWrap(True)
+        form.addRow(self.timing_summary)
         self.fps_spin.valueChanged.connect(self._on_camera_timing_changed)
         self.exposure_spin.valueChanged.connect(self._on_camera_timing_changed)
         self.gain_spin.valueChanged.connect(lambda db: self._on_gain_changed(db, 1))
@@ -1514,6 +1524,28 @@ class MainWindow(QMainWindow):
         self.camera_settings_hint.setText(
             text + " Raise the gain to find and focus the fiber face, then record at 0 dB."
         )
+        self._update_timing_preview()
+
+    def _update_timing_preview(self, *_args: object) -> None:
+        """Draw the RWD LED and camera timing for the current settings (RWD only)."""
+
+        if not hasattr(self, "timing_diagram"):
+            return
+        rwd = self._is_rwd_mode() and RWD_PROFILE.kind in self._channel_controls
+        self.timing_diagram.setVisible(rwd)
+        self.timing_summary.setVisible(rwd)
+        if not rwd:
+            return
+        checks = self._channel_controls[RWD_PROFILE.kind][0]
+        wavelengths = [int(w) for w, check in checks.items() if check.isChecked()]
+        plan = timing_plan_for(
+            wavelengths,
+            trigger_period_s(self.fps_spin.value()),
+            self.exposure_spin.value() / 1000,
+            {int(w): RWD_PROFILE.camera_for(w) for w in RWD_PROFILE.wavelengths},
+        )
+        self.timing_diagram.set_plan(plan)
+        self.timing_summary.setText(plan.summary())
 
     def _camera_from_controls(self) -> CameraConfig:
         camera = self._session_template.camera
@@ -1570,6 +1602,7 @@ class MainWindow(QMainWindow):
         self._use_profile_camera(profile)
         self._sync_camera2_items()
         self._rebuild_marker_buttons()
+        self._update_timing_preview()
         self._enforce_diameter_limits()
         self._sync_diameter_controls()
         two_cameras = profile.camera_count > 1

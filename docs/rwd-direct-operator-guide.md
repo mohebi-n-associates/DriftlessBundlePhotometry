@@ -72,6 +72,9 @@ before starting DBF, because only one program can use the controller's port.
      560 nm, which can be much brighter, so set it separately. Raise gain to find and
      focus the fiber face, then record at 0 dB; gain does not improve the
      signal-to-noise ratio.
+   - **Timing preview:** below the camera settings, a diagram shows two LED cycles
+     (each LED's pulses and each camera's exposures) and a summary gives every
+     wavelength's sampling rate and how long each LED is lit.
 4. **RWD hardware panel:**
    - **Controller port:** *Auto* works when the controller is the only FTDI device.
      Otherwise choose its COM port. Use *Refresh* after plugging it in.

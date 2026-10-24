@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.4"
+    assert __version__ == "0.3.5"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1601,3 +1601,27 @@ def test_gui_crosstalk_test_reads_live_view_and_is_logged(qtbot, tmp_path: Path)
     assert ("crosstalk_test", "470 nm max 1.0 % (fiber_01 -> fiber_02)") in (
         window._preparation_events()
     )
+
+
+def test_gui_previews_the_rwd_led_and_camera_timing(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    assert window.timing_diagram.isHidden()  # Custom system: no RWD timing
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    assert not window.timing_diagram.isHidden()
+    window.fps_spin.setValue(120)
+    window.exposure_max_button.click()
+    rows = dict(window.timing_diagram.rows())
+    assert list(rows) == ["410 nm", "470 nm", "560 nm", "Camera 1", "Camera 2"]
+    assert [w for _start, _stop, w in rows["Camera 1"]] == [410, 470, 410, 470]
+    assert [w for _start, _stop, w in rows["Camera 2"]] == [560, 560]
+    start, stop, _w = rows["470 nm"][0]
+    assert start == pytest.approx(1 / 120, abs=1e-5)
+    assert stop - start == pytest.approx(window.exposure_spin.value() / 1000)
+    assert "sampled at 40.00 Hz" in window.timing_summary.text()
+
+    checks = window._channel_controls["rwd"][0]
+    for wavelength, check in checks.items():
+        check.setChecked(int(wavelength) == 470)
+    assert list(dict(window.timing_diagram.rows())) == ["470 nm", "Camera 1"]
+    assert "470 nm is lit continuously" in window.timing_summary.text()

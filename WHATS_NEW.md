@@ -8,6 +8,23 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.5 - 2026-10-24
+
+### Added
+
+- **LED and camera timing preview** in Camera settings (RWD): a diagram of two LED
+  cycles for the current frame rate, exposure, and enabled LEDs, with one row per LED
+  pulse and one per camera's exposures (camera 2 only for 560 nm), and the board's
+  triggers as dotted lines. Below it, a summary gives the trigger period, exposure,
+  readout gap, each wavelength's sampling rate, and how much of the time each LED is
+  lit. One LED alone is shown lit continuously, as the board drives it. It updates as
+  the settings change; display only.
+
+### Fixed
+
+- The patch-cord bleach dialog now says a single LED is lit all the time; it had
+  counted it as pulsed, although the board drives one LED alone continuously.
+
 ## 0.3.4 - 2026-10-24
 
 ### Added

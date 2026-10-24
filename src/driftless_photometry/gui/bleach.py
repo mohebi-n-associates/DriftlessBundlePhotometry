@@ -27,10 +27,15 @@ BLEACH_DEFAULT_PERCENT = 80
 
 
 def led_duty_fraction(exposure_us: float, frame_rate_hz: float, led_count: int) -> float:
-    """Fraction of time each LED is lit: it fires once per cycle, for one exposure."""
+    """Fraction of time each LED is lit: it fires once per cycle, for one exposure.
+
+    One LED alone is driven continuously by the RWD board (bench, 2026-10-20).
+    """
 
     if led_count <= 0 or frame_rate_hz <= 0:
         return 0.0
+    if led_count == 1:
+        return 1.0
     return min(1.0, exposure_us * 1e-6 * frame_rate_hz / led_count)
 
 
