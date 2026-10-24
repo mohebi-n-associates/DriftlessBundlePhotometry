@@ -65,10 +65,12 @@ class AcquisitionWorker(QObject):
         config: SessionConfig,
         duration_s: float,
         rig_factory: RigFactory = default_rig_factory,
+        preparation_events: tuple[tuple[str, str], ...] = (),
     ) -> None:
         super().__init__()
         self._config = config
         self._duration_s = duration_s
+        self._preparation_events = preparation_events
         self._engine = AcquisitionEngine()
         self._rig_factory = rig_factory
         self.display_mailbox = DisplayMailbox(config)
@@ -89,6 +91,7 @@ class AcquisitionWorker(QObject):
                 on_progress=self._emit_progress,
                 on_state=self._emit_state,
                 on_finalization=self.finalization_progress.emit,
+                preparation_events=self._preparation_events,
             )
         except AcquisitionCancelled as cancelled:
             self.cancelled.emit(str(cancelled))
@@ -195,10 +198,14 @@ class LiveViewWorker(QObject):
     failed = Signal(str)
 
     def __init__(
-        self, config: SessionConfig, rig_factory: RigFactory = default_rig_factory
+        self,
+        config: SessionConfig,
+        rig_factory: RigFactory = default_rig_factory,
+        duration_s: float | None = None,
     ) -> None:
         super().__init__()
         self._config = config
+        self._duration_s = duration_s
         self.display_mailbox = DisplayMailbox(config)
         self._source = rig_factory(config)
 
@@ -211,7 +218,8 @@ class LiveViewWorker(QObject):
 
     def _work(self) -> None:
         try:
-            count = run_live_view(self._config, self._source, on_frame=self._emit_frame)
+            limit = {} if self._duration_s is None else {"duration_s": self._duration_s}
+            count = run_live_view(self._config, self._source, on_frame=self._emit_frame, **limit)
         except BaseException:
             self.failed.emit(traceback.format_exc())
         else:

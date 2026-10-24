@@ -772,3 +772,18 @@ def test_saved_roi_maps_use_auto_contrast_and_nwb_keeps_fixed_scale(tmp_path: Pa
     width = 48 * 3 + 1
     pixels = np.frombuffer(rows, dtype=np.uint8).reshape(24, width)[:, 1:].reshape(24, 48, 3)
     assert np.array_equal(pixels, stretched)
+
+
+def test_preparation_events_are_logged_at_session_start(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1)
+    result = AcquisitionEngine().run(
+        config,
+        SimulatedRig(config),
+        duration_s=0.5,
+        preparation_events=(("patch_cord_bleach", "10 of 10 min at 80 % LED power"),),
+    )
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        nwbfile = io.read()
+        assert "patch_cord_bleach" in str(nwbfile.scratch["driftless_session_log"].data)
+    log = (tmp_path / config.session_id / "session_log.txt").read_text(encoding="utf-8")
+    assert "patch_cord_bleach: 10 of 10 min at 80 % LED power" in log

@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.1"
+    assert __version__ == "0.3.2"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1510,3 +1510,40 @@ def test_gui_locks_roi_circles_and_applies_one_diameter_to_all(qtbot, tmp_path: 
     window.roi_lock_check.setChecked(False)
     assert all(circle.translatable for circle in window._roi_items)
     assert window._roi_metadata_editors[3].diameter_spins[1].isEnabled()
+
+
+def test_gui_bleach_runs_the_leds_for_a_set_time_then_logs_it(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.gui.bleach import BleachDialog, BleachPlan, led_duty_fraction
+
+    benches = []
+
+    def rig_factory(config):
+        bench = Bench(config)
+        benches.append(bench)
+        return bench.rig
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1, rig_factory=rig_factory)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    assert window._preparation_events() == ()
+
+    dialog = BleachDialog(window, wavelengths_nm=(410, 470), duty_fraction=0.3, uses_percent=True)
+    assert not dialog.start_button.isEnabled()  # safety confirmation first
+    dialog.safety_check.setChecked(True)
+    assert dialog.start_button.isEnabled() and dialog.plan().duration_s == 600.0
+    assert led_duty_fraction(47_370, 20, 3) == pytest.approx(0.3158, abs=1e-4)
+
+    window.start_bleach(BleachPlan(duration_s=1.5, percent=80))
+    assert window.live_button.text() == "Stop bleaching"
+    assert not window.bleach_button.isEnabled()
+    assert all(c.power_percent == 80 for c in window._bleach["config"].channels if c.power_percent)
+    # It stops by itself; the record exists only if frames arrived with the LEDs lit.
+    qtbot.waitUntil(lambda: window._thread is None, timeout=30_000)
+
+    assert window.last_error is None, window.last_error
+    benches[-1].assert_all_off()
+    assert window.live_button.text() == "Live view" and window.bleach_button.isEnabled()
+    ((event, detail),) = window._preparation_events()
+    assert event == "patch_cord_bleach"
+    assert "of 0.025 min at 80 % LED power" in detail
+    assert "Patch-cord bleach finished" in window.statusBar().currentMessage()

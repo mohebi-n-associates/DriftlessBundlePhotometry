@@ -177,6 +177,13 @@ settles. Live view counts, so keep it running while you place the circles until
 up to 3 minutes between Live view and **Record** keeps the warm-up. With less warm-up,
 **Record** asks before it starts.
 
+To bleach the patch cords' autofluorescence first, cap the fiber ends (or put them on
+a non-fluorescent target, with no animal attached) and press **Bleach patch cords…**
+beside Live view. Choose the time and LED power; the LEDs switch off by themselves when
+it ends, or press **Stop bleaching**. The LEDs pulse with the camera exposures, so set
+the exposure to Max for the strongest bleach. A bleach also warms the LEDs up, and the
+next recordings log it.
+
 Choose when the recording starts and stops in the *Recording* group:
 
 - **Start:** *Immediately*, *After a delay* (0.1 s to 24 h), or *On a TTL input*
