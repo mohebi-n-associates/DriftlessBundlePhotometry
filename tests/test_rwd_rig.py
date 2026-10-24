@@ -657,3 +657,18 @@ def test_rwd_rig_holds_output_triggers_until_an_armed_recording_starts(tmp_path:
     assert _output_switches(bench.board, 4)[:2] == [False, True]
     assert recorded.start_s > edge_at
     bench.assert_all_off()
+
+
+def test_rwd_rig_gives_each_camera_its_own_gain(tmp_path: Path) -> None:
+    config = _config(tmp_path, (W410, W470, W560), gain=12.0, camera2_gain=3.0)
+    bench = Bench(config)
+    packets = bench.rig.packets(1.0)
+    next(packets)
+    assert bench.cameras.gains == {"1": 12.0, "2": 3.0}
+
+    bench.rig.request_gain(6.0, camera=2)
+    rest = list(packets)
+
+    assert bench.cameras.gains == {"1": 12.0, "2": 6.0}
+    events = [event.detail for event in events_of(rest) if event.event == "rwd_camera_gain_changed"]
+    assert events == ["6 dB on camera 2"]

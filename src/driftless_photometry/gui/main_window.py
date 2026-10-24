@@ -1363,44 +1363,33 @@ class MainWindow(QMainWindow):
         exposure_layout.setContentsMargins(0, 0, 0, 0)
         exposure_layout.addWidget(self.exposure_spin, stretch=1)
         exposure_layout.addWidget(self.exposure_max_button)
-        self.gain_spin = QDoubleSpinBox()
-        self.gain_spin.setRange(0.0, _MAX_GAIN_DB)
-        self.gain_spin.setDecimals(1)
-        self.gain_spin.setSingleStep(1.0)
-        self.gain_spin.setSuffix(" dB")
-        self.gain_spin.setMaximumWidth(90)
-        gain_tip = (
-            "Camera gain. Raise it to find and focus the fiber face; record at 0 dB, "
-            "since gain does not improve the signal-to-noise ratio."
-        )
-        self.gain_spin.setToolTip(gain_tip)
-        self.gain_slider = QSlider(Qt.Orientation.Horizontal)
-        self.gain_slider.setRange(0, round(_MAX_GAIN_DB * 10))
-        self.gain_slider.setSingleStep(1)
-        self.gain_slider.setPageStep(10)
-        self.gain_slider.setToolTip(gain_tip)
-        self.gain_slider.valueChanged.connect(lambda tenths: self.gain_spin.setValue(tenths / 10))
-        self.gain_spin.valueChanged.connect(lambda db: self.gain_slider.setValue(round(db * 10)))
-        gain_row = QWidget()
-        gain_layout = QHBoxLayout(gain_row)
-        gain_layout.setContentsMargins(0, 0, 0, 0)
-        gain_layout.addWidget(self.gain_slider, stretch=1)
-        gain_layout.addWidget(self.gain_spin)
+        gain_row, self.gain_slider, self.gain_spin = _gain_control()
+        gain2_row, self.gain2_slider, self.gain2_spin = _gain_control()
+        self._gain2_row = gain2_row
         form.addRow("Frame rate", self.fps_spin)
         form.addRow("Exposure", exposure_row)
         form.addRow("Gain", gain_row)
+        form.addRow("Gain, camera 2", gain2_row)
+        self._camera_form = form
         self.camera_settings_hint = QLabel()
         self.camera_settings_hint.setObjectName("hint")
         self.camera_settings_hint.setWordWrap(True)
         form.addRow(self.camera_settings_hint)
         self.fps_spin.valueChanged.connect(self._on_camera_timing_changed)
         self.exposure_spin.valueChanged.connect(self._on_camera_timing_changed)
-        self.gain_spin.valueChanged.connect(self._on_gain_changed)
+        self.gain_spin.valueChanged.connect(lambda db: self._on_gain_changed(db, 1))
+        self.gain2_spin.valueChanged.connect(lambda db: self._on_gain_changed(db, 2))
         return group
 
     def _configure_camera_controls(self, profile: SystemProfile) -> None:
         if not hasattr(self, "fps_spin"):
             return
+        # Each RWD camera images different wavelengths, so each has its own gain.
+        two = profile.camera_count > 1
+        self._camera_form.setRowVisible(self._gain2_row, two)
+        self._camera_form.labelForField(self.gain_slider.parentWidget()).setText(
+            "Gain, camera 1" if two else "Gain"
+        )
         blockers = [QSignalBlocker(w) for w in (self.fps_spin, self.exposure_spin)]
         low, high = profile.frame_rate_range_hz or (1.0, 500.0)
         self.fps_spin.setRange(int(low), int(high))
@@ -1412,11 +1401,20 @@ class MainWindow(QMainWindow):
     def _load_camera_controls(self, camera: CameraConfig) -> None:
         if not hasattr(self, "fps_spin"):
             return
-        blockers = [QSignalBlocker(w) for w in (self.fps_spin, self.exposure_spin, self.gain_spin)]
+        widgets = (self.fps_spin, self.exposure_spin, self.gain_spin, self.gain2_spin)
+        blockers = [QSignalBlocker(w) for w in widgets]
         self.fps_spin.setValue(round(camera.requested_fps))
         self._update_exposure_limits()
         self.exposure_spin.setValue(camera.exposure_us / 1000)
         self.gain_spin.setValue(camera.gain)
+        self.gain2_spin.setValue(camera.gain_for(2))
+        for spin, slider in (
+            (self.gain_spin, self.gain_slider),
+            (self.gain2_spin, self.gain2_slider),
+        ):
+            slider_blocker = QSignalBlocker(slider)
+            slider.setValue(round(spin.value() * 10))
+            del slider_blocker
         del blockers
         self._update_exposure_limits()
 
@@ -1447,6 +1445,13 @@ class MainWindow(QMainWindow):
                 requested_fps=float(self.fps_spin.value()),
                 exposure_us=max(1, round(self.exposure_spin.value() * 1000)),
                 gain=float(self.gain_spin.value()),
+                # None means "same as camera 1", so matching gains round-trip unchanged.
+                camera2_gain=(
+                    float(self.gain2_spin.value())
+                    if self._active_profile.camera_count > 1
+                    and self.gain2_spin.value() != self.gain_spin.value()
+                    else None
+                ),
             )
         return camera.model_copy(update=update)
 
@@ -1458,10 +1463,13 @@ class MainWindow(QMainWindow):
             self._restart_live_view = True
             self.stop_recording()
 
-    def _on_gain_changed(self, value: float) -> None:
+    def _on_gain_changed(self, value: float, camera: int = 1) -> None:
         self._invalidate_preview()
         if self._operation_kind == "live" and isinstance(self._worker, LiveViewWorker):
-            self._worker.request_gain(value)
+            # On a one-camera system the single gain applies to its only camera.
+            self._worker.request_gain(
+                value, camera if self._active_profile.camera_count > 1 else None
+            )
 
     def _is_rwd_mode(self) -> bool:
         return hasattr(self, "source_combo") and self.source_combo.currentData() == "rwd"
@@ -3908,3 +3916,32 @@ def _label_trace_axis(plot: pg.PlotItem, *, dff: bool) -> None:
         plot.setLabel("left", "dF/F", units="%")
     else:
         plot.setLabel("left", "Mean pixel intensity", units="counts")
+
+
+def _gain_control() -> tuple[QWidget, QSlider, QDoubleSpinBox]:
+    """A gain slider in 0.1 dB steps with its typed value beside it, kept in sync."""
+
+    tip = (
+        "Camera gain. Raise it to find and focus the fiber face; record at 0 dB, since "
+        "gain does not improve the signal-to-noise ratio."
+    )
+    spin = QDoubleSpinBox()
+    spin.setRange(0.0, _MAX_GAIN_DB)
+    spin.setDecimals(1)
+    spin.setSingleStep(1.0)
+    spin.setSuffix(" dB")
+    spin.setMaximumWidth(90)
+    spin.setToolTip(tip)
+    slider = QSlider(Qt.Orientation.Horizontal)
+    slider.setRange(0, round(_MAX_GAIN_DB * 10))
+    slider.setSingleStep(1)
+    slider.setPageStep(10)
+    slider.setToolTip(tip)
+    slider.valueChanged.connect(lambda tenths: spin.setValue(tenths / 10))
+    spin.valueChanged.connect(lambda db: slider.setValue(round(db * 10)))
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(slider, stretch=1)
+    layout.addWidget(spin)
+    return row, slider, spin

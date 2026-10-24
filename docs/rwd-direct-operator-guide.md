@@ -68,8 +68,10 @@ before starting DBF, because only one program can use the controller's port.
      per second.
    - **Exposure:** at most (1000 ÷ frame rate, rounded down) ms minus 2.63 ms, and at
      least 0.5 ms. **Max** sets the longest exposure, which RWD recommends.
-   - **Gain:** the cameras' gain in dB (0–48). Raise it to find and focus the fiber
-     face, then record at 0 dB; gain does not improve the signal-to-noise ratio.
+   - **Gain, camera 1 / camera 2:** each camera's gain in dB (0–48). Camera 2 images
+     560 nm, which can be much brighter, so set it separately. Raise gain to find and
+     focus the fiber face, then record at 0 dB; gain does not improve the
+     signal-to-noise ratio.
 4. **RWD hardware panel:**
    - **Controller port:** *Auto* works when the controller is the only FTDI device.
      Otherwise choose its COM port. Use *Refresh* after plugging it in.

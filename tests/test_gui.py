@@ -1234,3 +1234,19 @@ def test_gui_trace_axis_shows_plain_pixel_intensity(qtbot, tmp_path: Path) -> No
     assert not axis.autoSIPrefix
     window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff"))
     assert axis.labelText == "dF/F" and not axis.autoSIPrefix
+
+
+def test_gui_sets_a_separate_gain_for_rwd_camera_2(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("custom"))
+    assert window._build_config().camera.camera2_gain is None
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    window.gain_slider.setValue(118)
+    window.gain2_slider.setValue(20)
+    camera = window._build_config().camera
+    assert (camera.gain, camera.camera2_gain) == (11.8, 2.0)
+
+    window._load_camera_controls(camera.model_copy(update={"camera2_gain": 4.5}))
+    assert window.gain2_spin.value() == 4.5 and window.gain2_slider.value() == 45

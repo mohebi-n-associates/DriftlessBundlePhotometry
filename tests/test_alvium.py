@@ -253,3 +253,18 @@ def test_streams_with_enough_buffers_for_high_frame_rates() -> None:
         assert green.buffer_count == 8
     with pytest.raises(ValueError, match="two stream buffers"):
         _cameras(FakeSystem([green, red]), buffer_count=1)
+
+
+def test_each_camera_is_opened_with_its_own_gain() -> None:
+    green, red = FakeCamera("1"), FakeCamera("2")
+    settings = AlviumSettings(exposure_us=10_000, gain_db=12.0, camera2_gain_db=3.0)
+    cameras = AlviumTriggeredCameras(
+        settings, vmbpy_loader=lambda: _module(FakeSystem([green, red])), discovery_timeout_s=0.0
+    )
+
+    with cameras:
+        assert (green.values["Gain"], red.values["Gain"]) == (12.0, 3.0)
+        cameras.set_gain(5.0, "2")
+        assert (green.values["Gain"], red.values["Gain"]) == (12.0, 5.0)
+        cameras.set_gain(1.0)
+        assert (green.values["Gain"], red.values["Gain"]) == (1.0, 1.0)
