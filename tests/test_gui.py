@@ -1462,3 +1462,25 @@ def test_gui_names_each_roi_beside_its_circle(qtbot, tmp_path: Path) -> None:
     ]
     assert len(texts) == 3 * len(shown)
     assert "ROI 2 - NAc left" in {item.toPlainText() for item in texts}
+
+
+@pytest.mark.parametrize("kind", ["preview", "recording"])
+def test_gui_rows_ticked_back_after_none_fill_the_trace_area(qtbot, tmp_path: Path, kind) -> None:
+    # Ticking rows back keeps the workspace height, so no resize re-lays them out.
+    window = MainWindow(output_directory=tmp_path, default_fibers=5)
+    qtbot.addWidget(window)
+    window.resize(2000, 1400)
+    window.show()
+    window._operation_kind = kind
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=5))
+    window.trace_rows_menu.actions()[1].trigger()  # Select none
+    viewport = window.trace_scroll.viewport().height()
+    assert viewport > 2 * 230
+    window.trace_row_actions[0].setChecked(True)
+    qtbot.wait(50)
+    assert window.trace_plots[0].height() >= viewport - 40
+    window.trace_row_actions[1].setChecked(True)
+    qtbot.wait(50)
+    heights = [window.trace_plots[row].height() for row in (0, 1)]
+    assert sum(heights) >= viewport - 40
+    assert min(heights) > viewport / 2 - 60

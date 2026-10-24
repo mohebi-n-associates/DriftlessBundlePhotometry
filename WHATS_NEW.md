@@ -185,7 +185,8 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   *Select none*; only checked ROIs' traces are shown, sharing the whole trace area, so
   one checked ROI fills it for a closer look. The menu stays open while you tick. The time span, zoom,
   Y-axis mode, smoothing, TTL switches, and marks all keep working, and the choice
-  carries over to the next preview or recording. Display only.
+  carries over to the next preview or recording. Display only. Rows ticked back after
+  *Select none* fill the trace area again instead of staying squashed at the top.
 
 ### Added
 
