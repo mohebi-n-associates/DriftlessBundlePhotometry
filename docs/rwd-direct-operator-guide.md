@@ -146,6 +146,10 @@ camera.
 - TTL input edges appear on the traces as thin dashed lines, one colour per input.
   The **TTL** switch above the traces hides them all; the numbered switches hide one
   input each.
+- DBF checks each ROI's signal as it arrives. A row's title turns amber with a ⚠
+  warning when a wavelength goes dark (below 50 counts for 2 s), changes suddenly by
+  30 % or more (fiber moved?), or drifts 30 % from its first 10 s. Recordings log each
+  warning with its time.
 - The **Rows** menu above the traces picks which ROIs' traces are shown. Untick the
   others (or *Select none*, then tick one) to give one ROI the whole trace area;
   *Select all* brings every row back.

@@ -89,6 +89,7 @@ from driftless_photometry.settings import (
     save_default_settings,
     settings_root,
 )
+from driftless_photometry.signal_quality import SignalQualityMonitor
 
 from .bleach import BleachDialog, BleachPlan, BleachRecord, led_duty_fraction
 from .branding import logo_path
@@ -255,6 +256,9 @@ class ROIMetadataEditor(QWidget):
         self.sex_combo.setCurrentText(str(values["subject_sex"]))
 
 
+_SIGNAL_WARNING_COLOR = "#ffb454"
+
+
 class _StayOpenMenu(QMenu):
     """A menu that stays open as its items are clicked; click outside to close it."""
 
@@ -396,6 +400,9 @@ class MainWindow(QMainWindow):
         self._live_rois: tuple[ROIConfig, ...] | None = None
         self._bleach: dict | None = None
         self._last_bleach: BleachRecord | None = None
+        self._signal_monitor = SignalQualityMonitor()
+        self._signal_warnings: dict[int, str] = {}
+        self._signal_checked_s = -np.inf
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -1607,6 +1614,7 @@ class MainWindow(QMainWindow):
         self.trace_workspace.setFixedHeight(_TRACE_ROW_HEIGHT_PX * max(1, len(rois)))
         self.trace_plots = {}
         self.trace_view_boxes = {}
+        self._trace_titles: dict[int, str] = {}
         self._trace_manual_x_range = None
         self._trace_roi_count = len(rois)
         self._curves.clear()
@@ -1620,6 +1628,7 @@ class MainWindow(QMainWindow):
             )
             plot = self.trace_workspace.addPlot(row=row, col=0, viewBox=view_box)
             title = f"ROI {row + 1} - {roi.label} / {roi.animal_id}"
+            self._trace_titles[row] = title
             plot.setTitle(title, color="#e8f7fa", size="10pt")
             plot.showGrid(x=True, y=True, alpha=0.22)
             _label_trace_axis(plot, dff=display_mode in _DFF_MODES)
@@ -3865,6 +3874,9 @@ class MainWindow(QMainWindow):
 
     def _prepare_trace_curves(self, config: SessionConfig) -> None:
         self._active_config = config
+        self._signal_monitor = SignalQualityMonitor()
+        self._signal_warnings: dict[int, str] = {}
+        self._signal_checked_s = -np.inf
         self._event_marks_shown = []
         self._event_graphics = []
         self._ttl_graphics = []
@@ -4143,12 +4155,42 @@ class MainWindow(QMainWindow):
                 "Waiting for first frame" if wavelength in enabled else "Channel disabled"
             )
 
+    def _check_signals(self, now_s: float) -> None:
+        """Show each ROI's signal warnings on its row, at most once a second."""
+
+        if now_s - self._signal_checked_s < 1.0:
+            return
+        self._signal_checked_s = now_s
+        current = {
+            row: "; ".join(texts) for row, texts in self._signal_monitor.warnings(now_s).items()
+        }
+        if current == self._signal_warnings:
+            return
+        recording = self._operation_kind == "recording" and self._worker is not None
+        fiber_ids = {row: fiber for fiber, row in self._trace_roi_indices.items()}
+        for row, plot in self.trace_plots.items():
+            text = current.get(row)
+            if text == self._signal_warnings.get(row):
+                continue
+            title = self._trace_titles.get(row, "")
+            if text:
+                plot.setTitle(f"{title}   ⚠ {text}", color=_SIGNAL_WARNING_COLOR, size="10pt")
+                if recording and row in fiber_ids:
+                    self._worker.log_signal_warning(now_s, fiber_ids[row], text)
+                self.statusBar().showMessage(f"Signal check, ROI {row + 1}: {text}")
+            else:
+                plot.setTitle(title, color="#e8f7fa", size="10pt")
+        self._signal_warnings = current
+
     def _append_live_trace_points(self, points: Sequence[LiveTracePoint]) -> None:
         affected_wavelengths: set[int] = set()
+        latest_s = -np.inf
         for point in points:
             roi_index = self._trace_roi_indices.get(point.fiber_id)
             if roi_index is None:
                 raise ValueError(f"live trace references unknown fiber_id {point.fiber_id!r}")
+            self._signal_monitor.add(roi_index, point.wavelength_nm, point.timestamp_s, point.value)
+            latest_s = max(latest_s, point.timestamp_s)
             key = (point.wavelength_nm, roi_index)
             if key not in self._trace_times:
                 raise ValueError(
@@ -4181,6 +4223,8 @@ class MainWindow(QMainWindow):
                 else max(self._trace_latest_s, point.timestamp_s)
             )
             affected_wavelengths.add(point.wavelength_nm)
+        if points:
+            self._check_signals(latest_s)
         if self._trace_first_s is not None and self._trace_latest_s is not None:
             available_span = self._trace_latest_s - self._trace_first_s + 1 / 30
             self._update_trace_horizon_availability(available_span)

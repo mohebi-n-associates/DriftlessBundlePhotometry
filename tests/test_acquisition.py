@@ -787,3 +787,16 @@ def test_preparation_events_are_logged_at_session_start(tmp_path: Path) -> None:
         assert "patch_cord_bleach" in str(nwbfile.scratch["driftless_session_log"].data)
     log = (tmp_path / config.session_id / "session_log.txt").read_text(encoding="utf-8")
     assert "patch_cord_bleach: 10 of 10 min at 80 % LED power" in log
+
+
+def test_signal_warnings_are_logged_as_system_events(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1)
+    engine = AcquisitionEngine()
+
+    def on_progress(progress):
+        if progress.frame_count == 5:
+            engine.log_signal_warning(0.2, "fiber_01", "dark at 470 nm (12 counts)")
+
+    engine.run(config, SimulatedRig(config), duration_s=0.5, on_progress=on_progress)
+    log = (tmp_path / config.session_id / "session_log.txt").read_text(encoding="utf-8")
+    assert "roi_signal_warning: fiber_01: dark at 470 nm (12 counts)" in log

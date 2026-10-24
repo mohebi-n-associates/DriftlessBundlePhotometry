@@ -8,6 +8,24 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.3 - 2026-10-24
+
+### Added
+
+- **Signal checks per ROI** on the live traces (live view, preview, and recording). A
+  ROI's row title turns amber with a ⚠ warning, and the status bar says so, when one of
+  its wavelengths is:
+  - **dark**: below 50 counts for 2 s (fiber disconnected, or LED too low);
+  - **sudden change**: a 1 s mean at least 30 % away from the 5 s before it (fiber
+    moved or bumped), shown for 15 s;
+  - **drifting**: the last 10 s at least 30 % away from the first 10 s after the fiber
+    was lit (heavy bleaching or a slipping fiber).
+
+  The warning clears when the signal recovers. Checks read the displayed ROI means only
+  and never change recorded data. A recording also logs each new warning as a
+  `roi_signal_warning` event (session time, ROI, text) in the session log and every NWB
+  file.
+
 ## 0.3.2 - 2026-10-24
 
 ### Added

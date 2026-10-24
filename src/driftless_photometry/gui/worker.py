@@ -124,6 +124,11 @@ class AcquisitionWorker(QObject):
 
         self._engine.trigger_output(port)
 
+    def log_signal_warning(self, timestamp_s: float, fiber_id: str, detail: str) -> None:
+        """Thread-safe: log a live signal-check warning in the recording."""
+
+        self._engine.log_signal_warning(timestamp_s, fiber_id, detail)
+
     def _emit_progress(self, progress: AcquisitionProgress) -> None:
         if self.display_mailbox.publish(progress):
             self.progress.emit(None)
