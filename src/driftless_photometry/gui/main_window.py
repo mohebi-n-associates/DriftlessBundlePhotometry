@@ -93,6 +93,7 @@ from driftless_photometry.signal_quality import SignalQualityMonitor
 
 from .bleach import BleachDialog, BleachPlan, BleachRecord, led_duty_fraction
 from .branding import logo_path
+from .crosstalk import CrosstalkDialog
 from .output_program import OutputProgramDialog, describe_program
 from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
 from .trace_display import (
@@ -400,6 +401,8 @@ class MainWindow(QMainWindow):
         self._live_rois: tuple[ROIConfig, ...] | None = None
         self._bleach: dict | None = None
         self._last_bleach: BleachRecord | None = None
+        self._crosstalk_dialog: CrosstalkDialog | None = None
+        self._crosstalk_summary: str | None = None
         self._signal_monitor = SignalQualityMonitor()
         self._signal_warnings: dict[int, str] = {}
         self._signal_checked_s = -np.inf
@@ -1856,6 +1859,14 @@ class MainWindow(QMainWindow):
         )
         self.bleach_button.clicked.connect(self._ask_bleach)
         camera_row.addWidget(self.bleach_button)
+        self.crosstalk_button = QPushButton("Crosstalk test…")
+        self.crosstalk_button.setMinimumHeight(38)
+        self.crosstalk_button.setToolTip(
+            "Measure how much one lit fiber's signal appears in the other ROIs, using "
+            "Live view; later recordings log the result"
+        )
+        self.crosstalk_button.clicked.connect(self._open_crosstalk)
+        camera_row.addWidget(self.crosstalk_button)
         self.auto_contrast_check = QCheckBox("Auto contrast")
         self.auto_contrast_check.setChecked(True)
         self.auto_contrast_check.setToolTip(
@@ -3626,8 +3637,33 @@ class MainWindow(QMainWindow):
         )
 
     def _preparation_events(self) -> tuple[tuple[str, str], ...]:
-        bleach = getattr(self, "_last_bleach", None)
-        return () if bleach is None else (("patch_cord_bleach", bleach.describe()),)
+        events = []
+        if self._last_bleach is not None:
+            events.append(("patch_cord_bleach", self._last_bleach.describe()))
+        if self._crosstalk_summary is not None:
+            events.append(("crosstalk_test", self._crosstalk_summary))
+        return tuple(events)
+
+    def _open_crosstalk(self) -> None:
+        try:
+            rois = [roi for roi in self._roi_configs_from_controls() if roi.enabled]
+        except Exception as error:
+            QMessageBox.critical(self, "Invalid ROIs", str(error))
+            return
+        if self._crosstalk_dialog is not None:
+            self._crosstalk_dialog.close()
+        dialog = CrosstalkDialog(
+            self,
+            fibers=[(roi.fiber_id, self._roi_display_name(i)) for i, roi in enumerate(rois)],
+            on_save=self._set_crosstalk_summary,
+        )
+        dialog.set_live(self._operation_kind == "live" and self._worker is not None)
+        self._crosstalk_dialog = dialog
+        dialog.show()
+
+    def _set_crosstalk_summary(self, summary: str) -> None:
+        self._crosstalk_summary = summary
+        self.statusBar().showMessage("Crosstalk result saved; the next recordings log it")
 
     def start_live_view(
         self, *, config: SessionConfig | None = None, duration_s: float | None = None
@@ -3781,6 +3817,12 @@ class MainWindow(QMainWindow):
         if not rois:
             return
         extracted = extract_circular_rois(frame.image, rois, bit_depth=config.camera.bit_depth)
+        if self._crosstalk_dialog is not None and self._crosstalk_dialog.capturing:
+            self._crosstalk_dialog.add_frame(
+                int(frame.wavelength_nm),
+                frame.timestamp_s,
+                {roi.fiber_id: float(v) for roi, v in zip(rois, extracted.values, strict=True)},
+            )
         self._show_roi_readout(
             frame.camera_index,
             int(frame.wavelength_nm),
@@ -4569,6 +4611,8 @@ class MainWindow(QMainWindow):
                 "Stop bleaching" if bleaching else "Stop live view" if live else "Live view"
             )
             self.bleach_button.setEnabled(not busy)
+        if getattr(self, "_crosstalk_dialog", None) is not None:
+            self._crosstalk_dialog.set_live(live)
         self.preview_button.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self._preview_signature is not None)
         if hasattr(self, "camera_settings_group"):

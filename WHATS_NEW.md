@@ -8,6 +8,20 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.4 - 2026-10-24
+
+### Added
+
+- **Crosstalk test…** beside Live view measures how much one lit fiber's signal shows
+  up in the other ROIs. With Live view running, cap every fiber end and press
+  **Capture dark**; then put a fluorescent target on one fiber (the others stay capped),
+  choose it, and press **Capture fiber**, for each fiber in turn. Each capture averages
+  2 s of the live ROI means. The table shows, per wavelength, every other ROI's rise
+  above dark as a percentage of the lit fiber's own rise ("too dim" when the lit fiber
+  rose less than 20 counts). **Log in next recordings** adds the result (worst pair per
+  wavelength and the full table) as a `crosstalk_test` event in the session log and
+  every NWB file. Captures stop if Live view stops.
+
 ## 0.3.3 - 2026-10-24
 
 ### Added

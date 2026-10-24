@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.3"
+    assert __version__ == "0.3.4"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1577,3 +1577,27 @@ def test_gui_flags_a_dark_roi_on_its_trace_row(qtbot, tmp_path: Path) -> None:
             ]
         )
     assert "⚠" not in window.trace_plots[1].titleLabel.text
+
+
+def test_gui_crosstalk_test_reads_live_view_and_is_logged(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.show()
+    window._open_crosstalk()
+    dialog = window._crosstalk_dialog
+    assert dialog is not None and not dialog.dark_button.isEnabled()
+
+    window.start_live_view()
+    assert dialog.dark_button.isEnabled()
+    dialog.dark_button.click()
+    qtbot.waitUntil(lambda: dialog.dark is not None, timeout=20_000)
+    assert set(dialog.dark) == set(window._active_trace_wavelengths)
+    assert all(len(means) == 2 for means in dialog.dark.values())
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    assert not dialog.dark_button.isEnabled()
+
+    window._set_crosstalk_summary("470 nm max 1.0 % (fiber_01 -> fiber_02)")
+    assert ("crosstalk_test", "470 nm max 1.0 % (fiber_01 -> fiber_02)") in (
+        window._preparation_events()
+    )
