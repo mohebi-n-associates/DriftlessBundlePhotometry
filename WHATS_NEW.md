@@ -167,8 +167,8 @@ clean-machine test was run; the bench and finalization-memory gates above remain
     counts, and a timeline of system events, markers, notes, TTL events, stimulation,
     invalid spans, and dropped frames) with the NWB file list;
   - `settings.json`;
-  - `roi_map_{nm}nm.png`: the mean reference with every ROI on that camera outlined,
-    auto-contrasted like the live view (0.5-99.9th percentile; the log gives the levels).
+  - `roi_map_{nm}nm.png`: the mean reference with every ROI on that camera outlined
+    and named ("ROI 1 - Fiber 1") in its colour, auto-contrasted like the live view (0.5-99.9th percentile; the log gives the levels).
 
   Each NWB file carries the same log (scratch `driftless_session_log`) and the
   all-ROI maps: fixed-scale `roi_map_{nm}nm`, as the data contract requires for
@@ -176,8 +176,9 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   reloading them does not nest recordings. Recovery finds spools in recording folders
   (`<id>/<id>.photometry-spool`) as well as directly under the root.
 
-- A **Rows** menu above the live traces shows one ROI's trace across the whole trace
-  area, for a closer look; *All ROIs* brings the others back. The time span, zoom,
+- A **Rows** menu above the live traces has a checkbox per ROI, plus *Select all* and
+  *Select none*; only checked ROIs' traces are shown, sharing the whole trace area, so
+  one checked ROI fills it for a closer look. The menu stays open while you tick. The time span, zoom,
   Y-axis mode, smoothing, TTL switches, and marks all keep working, and the choice
   carries over to the next preview or recording. Display only.
 

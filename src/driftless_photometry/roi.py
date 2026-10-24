@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .config import ROIConfig
+from .text_stamp import stamp_text, text_mask
 
 _ANNOTATION_COLORS: tuple[tuple[int, int, int], ...] = (
     (67, 214, 223),
@@ -144,8 +145,12 @@ def render_annotated_rois(
     *,
     bit_depth: int,
     levels: tuple[float, float] | None = None,
+    labeled: bool = False,
 ) -> NDArray[np.uint8]:
     """Render fixed-scale RGB diagnostic imagery with colored circular ROI outlines.
+
+    With ``labeled``, each circle is named "ROI n - label" (n is its position in
+    ``rois``) in its outline colour, above the circle or below it near the top edge.
 
     The source frame is never mutated or normalized per frame. Counts are mapped to
     8-bit grayscale using the configured camera bit depth, then the derived RGB copy
@@ -173,4 +178,33 @@ def render_annotated_rois(
         outer_radius = roi.radius_px + 1.5
         outline = (distance_sq >= inner_radius**2) & (distance_sq <= outer_radius**2)
         annotated[outline] = _ANNOTATION_COLORS[index % len(_ANNOTATION_COLORS)]
+    if labeled:
+        _label_rois(annotated, rois)
     return annotated
+
+
+def roi_map_label(index: int, roi: ROIConfig) -> str:
+    return f"ROI {index + 1} - {roi.label}"
+
+
+def _label_rois(annotated: NDArray[np.uint8], rois: tuple[ROIConfig, ...]) -> None:
+    height, width = annotated.shape[:2]
+    scale = max(1, round(min(height, width) / 300))
+    margin = 3 * scale
+    for index, roi in enumerate(rois):
+        text = roi_map_label(index, roi)
+        text_height, text_width = text_mask(text, scale).shape
+        top = round(roi.center_y_px - roi.radius_px) - margin - text_height
+        if top < 1:
+            top = round(roi.center_y_px + roi.radius_px) + margin
+        top = min(max(1, top), max(1, height - text_height - 1))
+        left = round(roi.center_x_px - text_width / 2)
+        left = min(max(1, left), max(1, width - text_width - 1))
+        stamp_text(
+            annotated,
+            text,
+            top=top,
+            left=left,
+            color=_ANNOTATION_COLORS[index % len(_ANNOTATION_COLORS)],
+            scale=scale,
+        )

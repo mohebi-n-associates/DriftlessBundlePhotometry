@@ -142,6 +142,9 @@ camera.
 - TTL input edges appear on the traces as thin dashed lines, one colour per input.
   The **TTL** switch above the traces hides them all; the numbered switches hide one
   input each.
+- The **Rows** menu above the traces picks which ROIs' traces are shown. Untick the
+  others (or *Select none*, then tick one) to give one ROI the whole trace area;
+  *Select all* brings every row back.
 - To note something, tick the ROIs it is about under the traces (all are ticked by
   default), type the note and press Return. It is timed when you press Return, drawn
   on those ROIs' rows, listed under **Show notes**, and saved in each ticked ROI's
@@ -218,7 +221,7 @@ every recorded wavelength correct.
 Each recording gets its own folder inside the output root, named after the session:
 its ROI NWB files, `session_log.txt` (a readable account of the session, with every
 event, marker, note, and stimulation in time order), `settings.json`, and one
-`roi_map_{nm}nm.png` per wavelength with every ROI outlined. The NWB files contain the
+`roi_map_{nm}nm.png` per wavelength with every ROI outlined and named in its colour. The NWB files contain the
 same log and maps.
 
 ## What each NWB file records

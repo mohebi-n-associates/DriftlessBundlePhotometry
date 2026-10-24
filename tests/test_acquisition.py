@@ -759,7 +759,11 @@ def test_saved_roi_maps_use_auto_contrast_and_nwb_keeps_fixed_scale(tmp_path: Pa
     assert np.array_equal(
         stretched,
         render_annotated_rois(
-            mean, config.enabled_rois, bit_depth=12, levels=auto_contrast_levels(mean)
+            mean,
+            config.enabled_rois,
+            bit_depth=12,
+            levels=auto_contrast_levels(mean),
+            labeled=True,
         ),
     )
     png = (tmp_path / config.session_id / "roi_map_470nm.png").read_bytes()

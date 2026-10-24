@@ -668,12 +668,15 @@ def _add_rois_and_calibration(
                         RGBImage(
                             name=f"roi_map_{int(wavelength)}nm",
                             data=render_annotated_rois(
-                                mean.image, every_roi, bit_depth=config.camera.bit_depth
+                                mean.image,
+                                every_roi,
+                                bit_depth=config.camera.bit_depth,
+                                labeled=True,
                             ),
                             description=(
                                 f"Derived fixed-scale RGB view of the {int(wavelength)} nm "
-                                "mean reference with every ROI on this camera outlined, in "
-                                "ROI order."
+                                "mean reference with every ROI on this camera outlined and "
+                                "named, in ROI order."
                             ),
                         ),
                         RGBImage(
@@ -683,11 +686,13 @@ def _add_rois_and_calibration(
                                 every_roi,
                                 bit_depth=config.camera.bit_depth,
                                 levels=auto_contrast_levels(mean.image),
+                                labeled=True,
                             ),
                             description=(
                                 f"Derived auto-contrast RGB view of the {int(wavelength)} nm "
                                 "mean reference (display stretch between its 0.5th and "
-                                "99.9th percentile) with every ROI on this camera outlined; "
+                                "99.9th percentile) with every ROI on this camera outlined "
+                                "and named; "
                                 f"the same image as roi_map_{int(wavelength)}nm.png in the "
                                 "recording's folder."
                             ),

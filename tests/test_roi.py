@@ -124,3 +124,33 @@ def test_rois_for_camera_uses_each_cameras_own_circle() -> None:
         rois_for_camera((_roi(),), 2)
     with pytest.raises(ValueError, match="no ROI geometry for camera 3"):
         rois_for_camera((roi,), 3)
+
+
+def test_labeled_roi_maps_name_each_circle_in_its_colour() -> None:
+    from driftless_photometry.text_stamp import text_mask
+
+    rois = tuple(
+        ROIConfig(
+            fiber_id=f"fiber_0{index + 1}",
+            label=f"Fiber {index + 1}",
+            animal_id="mouse",
+            brain_region="VTA",
+            sensor_type="GCaMP",
+            center_x_px=x,
+            center_y_px=y,
+            radius_px=20,
+        )
+        for index, (x, y) in enumerate(((150, 120), (450, 15)))
+    )
+    frame = np.full((300, 600), 1000, dtype=np.uint16)
+    plain = render_annotated_rois(frame, rois, bit_depth=12)
+    labeled = render_annotated_rois(frame, rois, bit_depth=12, labeled=True)
+    np.testing.assert_array_equal(frame, np.full((300, 600), 1000, dtype=np.uint16))
+
+    changed = np.any(labeled != plain, axis=2)
+    text_height = text_mask("ROI 1 - Fiber 1").shape[0]
+    # ROI 1's name sits above its circle; ROI 2 is at the top edge, so below it.
+    assert changed[: 120 - 20, 100:200].any()
+    assert (labeled[:100, 100:200] == (67, 214, 223)).all(axis=2).any()
+    assert (labeled[15 + 20 :, 350:550] == (183, 229, 50)).all(axis=2).any()
+    assert not changed[: max(0, 15 - 20 - text_height), :].any()
