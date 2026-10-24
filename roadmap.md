@@ -41,7 +41,10 @@ operator recovery controls. Their automated evidence does not close hardware gat
 
 - Work phases in dependency order. Do not bypass a failing exit criterion.
 - Put user-visible changes in the `Unreleased` section of `WHATS_NEW.md` as they
-  land; move them to a version section only when that version is released.
+  land; move them to a version section only when that version is released. Since
+  0.3.0 each feature or fix the operator tests gets its own patch version (0.3.1,
+  0.3.2, …) and dated section; versions are bumped locally and are not published
+  (tagged, released, or uploaded to PyPI) without the owner's approval.
 - Split each deliverable into an issue with an owner, acceptance tests, and links to
   any design decision or bench report it requires.
 - Mark an item complete only after code, tests, documentation, and failure behavior
@@ -329,9 +332,79 @@ the agent contract. Setup offers exactly two systems: Custom and RWD.
      with manual and dF/F triggers, stimulation marking, and an output test.
      A Thorlabs PM100/PM400 **Measure power** button (pyvisa), not yet tried with
      a physical meter.
+   - Also done (0.3.0): ROI names on circles and saved maps; a Rows menu to choose
+     which traces are shown; TTL markers and per-ROI notes; TTL inputs assigned to
+     ROIs; mean reference images and auto-contrast ROI maps; one folder per recording
+     with a session log; separate gain per camera; faster NWB saving.
    - Needs the bench: sequential excitation's pause and relight on the R821; output
-     program timing against a looped-back input.
-   - Out of scope by the user's choice: behavior video and OFRS's analysis module.
+     program timing against a looped-back input; **Measure power** with a physical
+     PM100/PM400.
+   - Out of scope by the user's choice (2026-10-21): behavior video and OFRS's
+     analysis module. The 2026-10-24 review in item 9 suggests reconsidering both.
+8. **Setup and quality features 0.3.1–0.3.7 — implemented and simulator-tested
+   (2026-10-24); bench validation pending**
+   - Done in simulation: ROI lock and apply-diameter-to-all (0.3.1); patch-cord
+     bleach (0.3.2); per-ROI signal checks for dark, sudden change, and drift (0.3.3);
+     fiber crosstalk test (0.3.4); LED and camera timing preview (0.3.5); dark and
+     light themes (0.3.6); per-ROI spectral SNR per wavelength (0.3.7). Bleach and
+     crosstalk results, signal warnings, and SNR are logged in recordings.
+   - Needs the bench, before any of these are relied on:
+     - **Bleach:** run it on the R821 with the fiber ends capped; confirm the LEDs
+       switch off when it ends and when it is stopped early, and measure the
+       autofluorescence drop it gives (for example 470 nm counts before and after
+       10 min at 80 %).
+     - **Crosstalk:** run the test on a real bundle with a fluorescent target and
+       record the table per wavelength; agree an acceptance limit.
+     - **Signal checks:** tune the first-guess thresholds (dark below 50 counts for
+       2 s; 30 % sudden change; 30 % drift from the first 10 s) on real recordings,
+       including a deliberately disconnected and a bumped fiber.
+     - **SNR:** record at 120 Hz (40 Hz per wavelength) and compare DBF's live SNR
+       with `compute_snr` in `dataAnalysis/fiberphotometry` on the same NWB. DBF's
+       numpy Welch has not been compared with scipy on real data, and DBF detrends
+       with a quadratic over 2 min where the analysis code subtracts its
+       photobleaching fit. Decide whether 410 nm SNR is useful; the analysis code
+       skips it.
+     - **Timing preview:** check the drawn pulse and exposure timing against a
+       measured trigger and LED trace.
+     - **Themes:** check the light theme on the rig's monitor at 100/125/150 %
+       scaling.
+9. **Feature backlog — from the 2026-10-24 review of Doric, Neurophotometrics, TDT,
+   Plexon, and pyPhotometry, and from operator requests; not started**
+   Ranked by expected value for a multi-animal bundle lab:
+   1. **Behavior video recorded in sync:** one or two USB cameras, with frame times
+      on DBF's session clock, stored in the NWB (TDT, Neurophotometrics, Doric). Needs
+      a decision on cameras and triggering, and reverses the 2026-10-21 scope choice.
+   2. **Live event-triggered average:** dF/F around each TTL event or marker, per ROI,
+      updating during the session (pyPhotometry). Builds on the existing TTL event
+      classification.
+   3. **Offline analysis or export:** bleach correction, z-score, event-triggered
+      averages and heatmaps across animals, or a CSV and GuPPy/pMAT-compatible export
+      from the NWB files (all vendors and GuPPy/pMAT). Phase 7 covers the analysis
+      side.
+   4. **Named presets per rig or bundle:** a list of saved settings, including ROI
+      layouts, that loads in one click (Neurophotometrics, Doric). DBF has Save/Load
+      JSON and a default only.
+   5. **Recording in repeating periods, each saved as its own file,** for long
+      sessions (Neurophotometrics, RWD).
+   6. **Controlling several rigs from one window** (pyPhotometry).
+   7. **A searchable session database** built from the NWB metadata (TDT).
+   8. **A live per-fiber heatmap** for many ROIs (Plexon).
+   9. **An optional raw camera video** for re-extracting ROIs later (Doric,
+      Neurophotometrics); DBF saves reference images only.
+   10. **A sync output with random pulse intervals** for aligning with ephys or
+       behavior rigs (pyPhotometry).
+   11. **A scripting API** for automated protocols (TDT, Neurophotometrics).
+   12. **A pop-out trace window** for a second monitor, beside the in-place Rows
+       view (operator request, 2026-10-24).
+   - Smaller items left from 2026-10-24:
+     - Record the git commit (and whether the tree had uncommitted edits) in the
+       session log and NWB provenance, so a recording names its exact build.
+     - Saving speed: each ROI file still takes about 2-3 s to write and validate,
+       and stores 19 uncompressed reference and map images (about 23 MB). Consider
+       compressing images and reusing the loaded NWB schema across files; see the
+       storage-scale gate above.
+     - Publish 0.3.x: tag and GitHub release (which uploads to PyPI) once the owner
+       approves; see Phase 8.
 
 ### Deliverables
 
@@ -748,6 +821,7 @@ dependencies and do not have a one-to-one relationship with version numbers.
 | 0.2.0 | Reliability closure, CI matrix, versioned configuration, recovery UX |
 | 0.2.1 | Windows installer and synchronized GitHub/PyPI automation |
 | 0.3.0 | Controller and camera prototypes with separate bench reports |
+| 0.3.x | RWD setup and quality features, one patch version per tested feature (0.3.1–0.3.7 on 2026-10-24) |
 | 0.4.0 | Integrated Windows rig and shared-clock validation |
 | 0.5.0 | Operator workflow, replay, analysis, and QC preview |
 | 0.9.0 | Clean-machine, documentation, and release-candidate qualification |
