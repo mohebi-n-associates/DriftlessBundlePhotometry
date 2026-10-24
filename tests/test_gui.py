@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.7"
+    assert __version__ == "0.3.8"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1694,3 +1694,36 @@ def test_gui_shows_each_rois_snr_per_wavelength_once_a_minute(qtbot, tmp_path: P
     assert window._snr_values[0] == first  # steady until a minute has passed
     feed(100, 122)
     assert window._snr_values[0] != first
+
+
+def test_gui_locks_roi_circles_while_recording_but_not_in_preview(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(
+        output_directory=tmp_path, default_duration_s=1.0, default_fibers=2, default_raw=False
+    )
+    qtbot.addWidget(window)
+    window.show()
+
+    def editable():
+        circles = window._roi_items
+        return all(c.isEnabled() and c.translatable for c in circles) and all(
+            h.isVisible() for c in circles for h in c.getHandles()
+        )
+
+    window.start_preview()
+    qtbot.waitUntil(lambda: window._trace_latest_s is not None, timeout=10_000)
+    assert window._operation_kind == "preview" and editable()
+    window.stop_recording()
+    qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
+    run_preview_until_checked(window, qtbot)  # recording needs a preview of these circles
+
+    window.start_recording()
+    qtbot.waitUntil(lambda: window._trace_latest_s is not None, timeout=10_000)
+    assert window._operation_kind == "recording" and window._thread is not None
+    circles = window._roi_items
+    assert not any(c.isEnabled() or c.translatable for c in circles)
+    assert not any(h.isVisible() for c in circles for h in c.getHandles())
+    assert not window.roi_lock_check.isChecked()  # the operator's own lock is unchanged
+    qtbot.waitUntil(lambda: window._thread is None, timeout=30_000)
+    assert window.last_error is None, window.last_error
+    assert editable()  # unlocked again after the recording
+    assert window._roi_metadata_editors[0].diameter_spins[1].isEnabled()
