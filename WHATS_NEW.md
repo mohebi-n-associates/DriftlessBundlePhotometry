@@ -8,6 +8,22 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.9 - 2026-10-24
+
+### Fixed
+
+- **Trace lines stop at gaps.** After a sequencer restart or any other pause in a
+  trace (longer than 0.25 s and four sample periods), the line now breaks instead of
+  joining the samples on either side with a straight line, which looked like zigzags
+  at the end of a disturbed recording. Gaps are found in the samples themselves, not in
+  the downsampled display points.
+
+### Added
+
+- **Invalid spans are shaded** in red on every trace row as they happen, such as each
+  sequencer restart; hovering shows the reason. They are the same spans the NWB files
+  record in `invalid_times`. Display only.
+
 ## 0.3.8 - 2026-10-24
 
 ### Changed

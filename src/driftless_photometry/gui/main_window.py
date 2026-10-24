@@ -76,7 +76,7 @@ from driftless_photometry.config import (
     profile_for,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
-from driftless_photometry.domain import NOTE_MAX_CHARACTERS, EventMark, TTLEdge
+from driftless_photometry.domain import NOTE_MAX_CHARACTERS, EventMark, InvalidTimeInterval, TTLEdge
 from driftless_photometry.hardware import StartCondition
 from driftless_photometry.hardware.rwd_controller_protocol import trigger_period_s
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
@@ -110,6 +110,7 @@ from .trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
     MAX_HISTORY_POINTS,
+    break_at_gaps,
     compact_duration,
     compact_history,
     downsample_min_max,
@@ -268,6 +269,8 @@ class ROIMetadataEditor(QWidget):
 
 
 _SIGNAL_WARNING_COLOR = "#ffb454"
+_INVALID_SPAN_RGBA = (224, 68, 80, 45)
+_MAX_INVALID_GRAPHICS = 500
 
 
 class _StayOpenMenu(QMenu):
@@ -2469,6 +2472,27 @@ class MainWindow(QMainWindow):
                 for plot, item in oldest:
                     plot.removeItem(item)
 
+    def _show_invalid_times(self, intervals: Sequence[InvalidTimeInterval]) -> None:
+        """Shade each invalid span (such as a sequencer restart) on every trace row."""
+
+        for interval in intervals:
+            graphics = []
+            for plot in self.trace_plots.values():
+                region = pg.LinearRegionItem(
+                    values=(interval.start_time_s, interval.stop_time_s),
+                    movable=False,
+                    brush=pg.mkBrush(_INVALID_SPAN_RGBA),
+                    pen=pg.mkPen(None),
+                )
+                region.setZValue(-5)
+                region.setToolTip(f"Invalid: {interval.reason}")
+                plot.addItem(region)
+                graphics.append((plot, region))
+            self._invalid_graphics.append(graphics)
+            if len(self._invalid_graphics) > _MAX_INVALID_GRAPHICS:
+                for plot, item in self._invalid_graphics.pop(0):
+                    plot.removeItem(item)
+
     def _ttl_line_visible(self, line: int) -> bool:
         check = self.ttl_line_checks.get(line)
         return self.ttl_marker_check.isChecked() and (check is None or check.isChecked())
@@ -3891,6 +3915,7 @@ class MainWindow(QMainWindow):
         self._event_marks_shown = []
         self._event_graphics = []
         self._ttl_graphics = []
+        self._invalid_graphics: list[list[tuple[pg.PlotItem, pg.LinearRegionItem]]] = []
         self.notes_history.clear()
         self._note_entries: list[list] = []
         self._rebuild_note_roi_checks(config.enabled_rois)
@@ -4109,6 +4134,10 @@ class MainWindow(QMainWindow):
                 values,
                 first_index=first_index,
                 max_points=budget,
+            )
+            # A restart or other pause leaves a break in the line, not a straight join.
+            display_times, display_values = break_at_gaps(
+                selected_times, display_times, display_values
             )
             self._curves[key].setData(
                 display_times,
@@ -4363,6 +4392,8 @@ class MainWindow(QMainWindow):
             self._show_event_marks(batch.marks)
         if batch.edges:
             self._show_ttl_edges(batch.edges)
+        if batch.invalid_times:
+            self._show_invalid_times(batch.invalid_times)
         if batch.aggregated:
             self.frame_counter.setToolTip(
                 "Display backlog was aggregated to extrema; "

@@ -187,3 +187,39 @@ def test_recovery_dialog_defers_close_without_blocking_gui(qtbot, tmp_path: Path
     release.set()
     qtbot.waitUntil(lambda: dialog._thread is None)
     assert not dialog.isVisible()
+
+
+def test_invalid_spans_reach_the_display_and_are_shaded_on_every_row(qtbot, tmp_path: Path):
+    from driftless_photometry.domain import InvalidTimeInterval
+    from driftless_photometry.live_trace import LiveTracePoint
+
+    config = demo_config(tmp_path, fiber_count=2, width_px=32, height_px=24)
+    mailbox = DisplayMailbox(config)
+    wavelength = config.enabled_channels[0].wavelength_nm
+    span = InvalidTimeInterval(2.0, 4.0, "RWD sequencer restart", "rwd_sequencer_restart")
+    sample = TraceSample(
+        1.0, 1, 1, 1000, wavelength, np.ones(2, dtype=np.float32), np.zeros(2, np.float32)
+    )
+    image = np.zeros((24, 32), dtype=np.uint16)
+    mailbox.publish(AcquisitionProgress(1, sample, image, invalid_times=(span,)))
+    assert mailbox.take().invalid_times == (span,)
+    assert mailbox.take().invalid_times == ()
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(config)
+    window._show_invalid_times((span,))
+    assert len(window._invalid_graphics) == 1
+    for plot in window.trace_plots.values():
+        regions = [i for i in plot.items if i.__class__.__name__ == "LinearRegionItem"]
+        assert [r.getRegion() for r in regions] == [(2.0, 4.0)]
+
+    fiber = config.enabled_rois[0].fiber_id
+    times = [t / 40 for t in range(80)] + [4 + t / 40 for t in range(80)]
+    window._append_live_trace_points([LiveTracePoint(t, fiber, wavelength, 100.0) for t in times])
+    window._refresh_trace_wavelength(wavelength)
+    _x, y = window._curves[(wavelength, 0)].getData()
+    assert np.isnan(y).sum() == 1  # no line drawn across the restart
+
+    window._prepare_trace_curves(config)  # a new run starts clean
+    assert window._invalid_graphics == []

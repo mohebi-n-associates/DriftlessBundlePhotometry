@@ -150,3 +150,26 @@ def test_rolling_f0_follows_drift_but_not_a_brief_transient() -> None:
     dff = (values - f0) / f0 * 100
     assert dff[times == 90.5][0] > 15.0
     assert np.isfinite(f0).all()
+
+
+def test_trace_lines_break_where_the_raw_samples_pause() -> None:
+    import numpy as np
+
+    from driftless_photometry.gui.trace_display import break_at_gaps
+
+    raw = np.concatenate((np.arange(0, 2, 1 / 40), np.arange(4, 6, 1 / 40)))
+    values = np.ones(len(raw))
+    times, shown = break_at_gaps(raw, raw, values)
+    assert len(times) == len(raw) + 1
+    (gap,) = np.flatnonzero(np.isnan(shown))
+    assert times[gap - 1] < times[gap] < times[gap + 1]
+    assert times[gap] == (raw[79] + raw[80]) / 2
+
+    steady = np.arange(0, 10, 1 / 40)
+    same_times, same = break_at_gaps(steady, steady, np.ones(len(steady)))
+    assert len(same_times) == len(steady) and not np.isnan(same).any()
+
+    # Downsampled display points may be sparse; only raw pauses break the line.
+    coarse = steady[::40]
+    _coarse_times, coarse_values = break_at_gaps(steady, coarse, np.ones(len(coarse)))
+    assert not np.isnan(coarse_values).any()

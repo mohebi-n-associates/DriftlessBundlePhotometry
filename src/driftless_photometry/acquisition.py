@@ -56,6 +56,8 @@ class AcquisitionProgress:
     event_marks: tuple[EventMark, ...] = ()
     """Marks recorded since the previous progress report, for live display."""
     ttl_edges: tuple[TTLEdge, ...] = ()
+    invalid_times: tuple[InvalidTimeInterval, ...] = ()
+    """Spans found invalid since the previous progress, such as sequencer restarts."""
     """TTL edges recorded since the previous progress report, for live display."""
 
 
@@ -476,6 +478,7 @@ class AcquisitionEngine:
         last_frame_monotonic_s: float | None = None
         new_marks: list[EventMark] = []
         new_edges: list[TTLEdge] = []
+        new_invalid: list[InvalidTimeInterval] = []
         classifier = TTLPulseClassifier(config.ttl_events)
         dff_watchers = DffThresholdWatcher.for_config(config)
         trigger_output = getattr(source, "trigger_output", None)
@@ -600,6 +603,7 @@ class AcquisitionEngine:
                         spool.submit_system_event(SystemEvent(0.0, event, detail))
                 for interval in rig_packet.invalid_times:
                     spool.submit_invalid_time(interval)
+                    new_invalid.append(interval)
                 for event in rig_packet.system_events:
                     spool.submit_system_event(event)
                 for mark in rig_packet.event_marks:
@@ -676,6 +680,8 @@ class AcquisitionEngine:
                 new_marks.clear()
                 edges = tuple(new_edges)
                 new_edges.clear()
+                invalid = tuple(new_invalid)
+                new_invalid.clear()
                 if on_progress is not None:
                     on_progress(
                         AcquisitionProgress(
@@ -693,6 +699,7 @@ class AcquisitionEngine:
                             camera_index=packet.exposure.camera_index,
                             event_marks=marks,
                             ttl_edges=edges,
+                            invalid_times=invalid,
                         )
                     )
                 # After stop(), keep reading until the source ends so that it can hand
