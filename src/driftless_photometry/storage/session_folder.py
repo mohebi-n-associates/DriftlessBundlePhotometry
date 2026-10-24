@@ -69,8 +69,8 @@ def roi_maps(
     """Every enabled ROI outlined on each wavelength's mean reference (or first frame).
 
     Fixed bit-depth scaling by default, as for the NWB diagnostic images; with
-    ``auto_contrast``, the live view's Auto contrast stretch. ROI colours follow ROI
-    order (listed in the session log).
+    ``auto_contrast``, the live view's Auto contrast stretch. Each circle is named
+    "ROI n - label" in its colour; colours follow ROI order (listed in the session log).
     """
 
     profile = profile_for(config.source)
@@ -82,7 +82,7 @@ def roi_maps(
         rois = rois_for_camera(config.enabled_rois, profile.camera_for(wavelength))
         levels = auto_contrast_levels(image) if auto_contrast else None
         maps[wavelength] = render_annotated_rois(
-            image, rois, bit_depth=config.camera.bit_depth, levels=levels
+            image, rois, bit_depth=config.camera.bit_depth, levels=levels, labeled=True
         )
     return maps
 

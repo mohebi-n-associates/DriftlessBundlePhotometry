@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QEvent, QSignalBlocker, QSize, Qt, QThread, QTimer
-from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -246,6 +246,17 @@ class ROIMetadataEditor(QWidget):
         self.sensor_type_edit.setText(str(values["sensor_type"]))
         self.age_edit.setText(str(values["subject_age"]))
         self.sex_combo.setCurrentText(str(values["subject_sex"]))
+
+
+class _StayOpenMenu(QMenu):
+    """A menu that stays open as its items are clicked; click outside to close it."""
+
+    def mouseReleaseEvent(self, event) -> None:
+        action = self.activeAction()
+        if action is not None and action.isEnabled() and action.menu() is None:
+            action.trigger()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -685,14 +696,18 @@ class MainWindow(QMainWindow):
         trace_options.addWidget(self.trace_smoothing_spin)
         trace_options.addSpacing(12)
         trace_options.addWidget(QLabel("Rows"))
-        self.trace_focus_combo = QComboBox()
-        self.trace_focus_combo.addItem("All ROIs", None)
-        self.trace_focus_combo.setToolTip(
-            "Show one ROI's trace across the whole trace area to inspect it; choose All "
-            "ROIs to bring the others back. Display only."
+        # Row indices hidden from the trace area; kept across runs. Display only.
+        self._hidden_trace_rows: set[int] = set()
+        self.trace_rows_button = QToolButton()
+        self.trace_rows_button.setText("All ROIs")
+        self.trace_rows_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.trace_rows_button.setToolTip(
+            "Choose which ROIs' traces to show; fewer rows share the whole trace area, so "
+            "one checked ROI fills it. Display only."
         )
-        self.trace_focus_combo.currentIndexChanged.connect(self._apply_trace_focus)
-        trace_options.addWidget(self.trace_focus_combo)
+        self.trace_rows_menu = _StayOpenMenu(self.trace_rows_button)
+        self.trace_rows_button.setMenu(self.trace_rows_menu)
+        trace_options.addWidget(self.trace_rows_button)
         trace_options.addSpacing(12)
         trace_options.addWidget(QLabel("Y axis"))
         self.trace_mode_combo = QComboBox()
@@ -1607,29 +1622,49 @@ class MainWindow(QMainWindow):
         self._fill_trace_focus_choices(rois)
 
     def _fill_trace_focus_choices(self, rois: Sequence[ROIConfig]) -> None:
-        combo = self.trace_focus_combo
-        previous = combo.currentData()
-        blocker = QSignalBlocker(combo)
-        combo.clear()
-        combo.addItem("All ROIs", None)
+        menu = self.trace_rows_menu
+        menu.clear()
+        self._hidden_trace_rows &= set(range(len(rois)))
+        every = menu.addAction("Select all")
+        every.triggered.connect(lambda: self._set_hidden_trace_rows(set()))
+        none = menu.addAction("Select none")
+        none.triggered.connect(lambda: self._set_hidden_trace_rows(set(range(len(rois)))))
+        menu.addSeparator()
+        self.trace_row_actions: dict[int, QAction] = {}
         for row, roi in enumerate(rois):
-            combo.addItem(f"ROI {row + 1} - {roi.label}", row)
-        index = combo.findData(previous) if previous is not None else 0
-        combo.setCurrentIndex(max(0, index))
-        del blocker
+            action = menu.addAction(f"ROI {row + 1} - {roi.label}")
+            action.setCheckable(True)
+            action.setChecked(row not in self._hidden_trace_rows)
+            action.toggled.connect(lambda checked, row=row: self._show_trace_row(row, checked))
+            self.trace_row_actions[row] = action
+        self._apply_trace_focus()
+
+    def _show_trace_row(self, row: int, shown: bool) -> None:
+        hidden = set(self._hidden_trace_rows)
+        if shown:
+            hidden.discard(row)
+        else:
+            hidden.add(row)
+        self._set_hidden_trace_rows(hidden)
+
+    def _set_hidden_trace_rows(self, hidden: set[int]) -> None:
+        self._hidden_trace_rows = set(hidden)
+        for row, action in getattr(self, "trace_row_actions", {}).items():
+            blocker = QSignalBlocker(action)
+            action.setChecked(row not in hidden)
+            del blocker
         self._apply_trace_focus()
 
     def _apply_trace_focus(self, *_args: object) -> None:
-        """Give one ROI's row the whole trace area, or lay every row out again."""
+        """Lay out the checked ROIs' rows; fewer rows share the whole trace area."""
 
-        focus = self.trace_focus_combo.currentData()
-        if focus not in self.trace_plots:
-            focus = None
-        # Rows leave the layout while another is focused, keeping their curves and marks.
+        hidden = self._hidden_trace_rows
+        shown_rows = [row for row in self.trace_plots if row not in hidden]
+        # Hidden rows leave the layout but keep their curves and marks.
         layout_rows = self._trace_rows_in_layout
-        last = len(self.trace_plots) - 1
+        bottom_row = shown_rows[-1] if shown_rows else None
         for row, plot in self.trace_plots.items():
-            shown = focus is None or row == focus
+            shown = row not in hidden
             if shown and row not in layout_rows:
                 self.trace_workspace.ci.addItem(plot, row=row, col=0)
                 layout_rows.add(row)
@@ -1637,26 +1672,37 @@ class MainWindow(QMainWindow):
                 self.trace_workspace.ci.removeItem(plot)
                 layout_rows.discard(row)
             plot.setVisible(shown)
-            if row == (focus if focus is not None else last):
+            if row == bottom_row:
                 plot.setLabel("bottom", "Session time", units="s")
             else:
                 plot.getAxis("bottom").showLabel(False)
-        if focus is None:
-            height = _TRACE_ROW_HEIGHT_PX * max(1, len(self.trace_plots))
+        total = len(self.trace_plots)
+        if len(shown_rows) == total:
+            self.trace_rows_button.setText("All ROIs")
+        elif not shown_rows:
+            self.trace_rows_button.setText("None")
+        elif len(shown_rows) <= 3:
+            self.trace_rows_button.setText(", ".join(f"ROI {row + 1}" for row in shown_rows))
         else:
-            height = max(_TRACE_ROW_HEIGHT_PX, self.trace_scroll.viewport().height() - 4)
+            self.trace_rows_button.setText(f"{len(shown_rows)} of {total} ROIs")
+        self._trace_rows_subset = len(shown_rows) < total
+        self._fit_trace_workspace()
+
+    def _fit_trace_workspace(self) -> None:
+        shown = sum(plot.isVisible() for plot in self.trace_plots.values())
+        height = _TRACE_ROW_HEIGHT_PX * max(1, shown)
+        if getattr(self, "_trace_rows_subset", False):
+            # A subset fills the visible trace area; more rows than fit still scroll.
+            height = max(height, self.trace_scroll.viewport().height() - 4)
         self.trace_workspace.setFixedHeight(height)
-        self._focused_trace_row = focus
 
     def eventFilter(self, watched, event) -> bool:
         if (
             watched is getattr(self, "_trace_viewport", None)
             and event.type() == QEvent.Type.Resize
-            and getattr(self, "_focused_trace_row", None) is not None
+            and getattr(self, "_trace_rows_subset", False)
         ):
-            self.trace_workspace.setFixedHeight(
-                max(_TRACE_ROW_HEIGHT_PX, self.trace_scroll.viewport().height() - 4)
-            )
+            self._fit_trace_workspace()
         return super().eventFilter(watched, event)
 
     def _build_wavelength_images_tab(self) -> QWidget:

@@ -1385,16 +1385,20 @@ def test_gui_assigns_ttl_inputs_to_rois(qtbot, tmp_path: Path) -> None:
     assert window._build_config().ttl_inputs == config.ttl_inputs
 
 
-def test_gui_focuses_one_roi_trace_and_restores_all(qtbot, tmp_path: Path) -> None:
+def test_gui_rows_menu_shows_only_checked_roi_traces(qtbot, tmp_path: Path) -> None:
     window = MainWindow(output_directory=tmp_path, default_fibers=6)
     qtbot.addWidget(window)
     window.resize(1400, 900)
     window.show()
     window._prepare_trace_curves(demo_config(tmp_path, fiber_count=6))
     assert window.trace_workspace.height() == 6 * 230
-    assert window.trace_focus_combo.count() == 7
+    assert len(window.trace_row_actions) == 6
+    assert window.trace_rows_button.text() == "All ROIs"
 
-    window.trace_focus_combo.setCurrentIndex(window.trace_focus_combo.findData(3))  # ROI 4
+    window.trace_rows_menu.actions()[1].trigger()  # Select none
+    assert not any(plot.isVisible() for plot in window.trace_plots.values())
+    assert window.trace_rows_button.text() == "None"
+    window.trace_row_actions[3].setChecked(True)  # ROI 4 alone fills the trace area
     qtbot.wait(50)
     assert [plot.isVisible() for plot in window.trace_plots.values()] == [
         False,
@@ -1408,13 +1412,24 @@ def test_gui_focuses_one_roi_trace_and_restores_all(qtbot, tmp_path: Path) -> No
     assert window.trace_workspace.height() >= viewport - 4
     assert window.trace_plots[3].height() >= viewport - 30 > 230
     assert window.trace_plots[3].getAxis("bottom").labelText == "Session time"
+    assert window.trace_rows_button.text() == "ROI 4"
 
-    window.trace_focus_combo.setCurrentIndex(0)
+    window.trace_row_actions[1].setChecked(True)  # two rows share the area
+    qtbot.wait(50)
+    assert window.trace_rows_button.text() == "ROI 2, ROI 4"
+    assert window.trace_plots[1].isVisible() and window.trace_plots[3].isVisible()
+    assert window.trace_workspace.height() >= max(2 * 230, viewport - 4)
+    assert abs(window.trace_plots[1].height() - window.trace_plots[3].height()) < 30
+    assert not window.trace_plots[1].getAxis("bottom").labelText
+
+    window.trace_rows_menu.actions()[0].trigger()  # Select all
     qtbot.wait(50)
     assert all(plot.isVisible() for plot in window.trace_plots.values())
+    assert all(action.isChecked() for action in window.trace_row_actions.values())
     assert window.trace_workspace.height() == 6 * 230
 
-    window.trace_focus_combo.setCurrentIndex(window.trace_focus_combo.findData(1))
+    window.trace_row_actions[0].setChecked(False)
     window._prepare_trace_curves(demo_config(tmp_path, fiber_count=6))  # next run keeps it
-    assert window.trace_focus_combo.currentData() == 1
+    assert not window.trace_row_actions[0].isChecked()
     assert not window.trace_plots[0].isVisible()
+    assert window.trace_rows_button.text() == "5 of 6 ROIs"
