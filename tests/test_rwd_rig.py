@@ -422,7 +422,7 @@ def test_rwd_rig_times_non_divisor_rates_on_the_boards_period(tmp_path: Path) ->
     assert len(frames) == 61
 
 
-def test_rwd_rig_rejects_ambiguous_first_arrival_at_120_hz(tmp_path: Path) -> None:
+def test_rwd_rig_does_not_restart_on_host_scatter_at_120_hz(tmp_path: Path) -> None:
     bench = Bench(_config(tmp_path, requested_fps=120.0, exposure_us=5000))
 
     def setup(cams):
@@ -437,9 +437,10 @@ def test_rwd_rig_rejects_ambiguous_first_arrival_at_120_hz(tmp_path: Path) -> No
     packets = bench.run(2.0)
 
     restarts = [e for e in events_of(packets) if e.event == "rwd_sequencer_restart"]
-    assert len(restarts) == 2
+    # With all three LEDs a late but consistent first arrival is not ambiguous: camera
+    # 1's 1-2-1-2 slot spacing would expose a missed first trigger on its next frame.
+    assert len(restarts) == 1
     assert "missed exposure" in restarts[0].detail
-    assert "too late to establish wavelength phase" in restarts[1].detail
     np.testing.assert_allclose(
         np.diff([f.exposure.timestamp_s for f in frames_of(packets)[:40]]), 0.008333, atol=1e-9
     )
@@ -672,3 +673,18 @@ def test_rwd_rig_gives_each_camera_its_own_gain(tmp_path: Path) -> None:
     assert bench.cameras.gains == {"1": 12.0, "2": 6.0}
     events = [event.detail for event in events_of(rest) if event.event == "rwd_camera_gain_changed"]
     assert events == ["6 dB on camera 2"]
+
+
+def test_rwd_rig_rejects_ambiguous_first_arrival_for_410_470_at_120_hz(tmp_path: Path) -> None:
+    bench = Bench(_config(tmp_path, (W410, W470), requested_fps=120.0, exposure_us=5000))
+
+    def setup(cams):
+        cams.missed.add(("1", 0, 40))  # forces run 1
+        cams.late[("1", 1, 0)] = 0.006  # past slot 1 + exposure: could be 470's frame
+
+    bench.pending_setup = setup
+
+    packets = bench.run(1.0)
+
+    restarts = [e for e in events_of(packets) if e.event == "rwd_sequencer_restart"]
+    assert "too late to establish wavelength phase" in restarts[1].detail

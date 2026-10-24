@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import pairwise
 
 from driftless_photometry.config import RWD_PROFILE, SessionConfig, Wavelength, profile_for
 from driftless_photometry.timing import TickUnwrapper
@@ -95,6 +96,28 @@ class RWDExcitationPlan:
 
     def first_slot(self, camera: int) -> int:
         return self.next_slot(camera, -1)
+
+    def first_frame_phase_needs_arrival_bound(self, camera: int) -> bool:
+        """Whether only the first frame's arrival time can reveal a missed first trigger.
+
+        If ``camera`` missed its first trigger, its first frame would be its next slot.
+        That mislabels a wavelength only when the next slot is another wavelength. And
+        when the camera's slot spacing from there differs from the spacing from its
+        first slot (camera 1 with all three LEDs: steps 1, 2, 1, 2 periods), the second
+        frame lands off the predicted grid and the tracker restarts anyway. Only an
+        unchanged spacing with a changed wavelength (camera 1 with 410 + 470 nm alone)
+        leaves the arrival time as the sole evidence. Other cameras' first frames are
+        still cross-checked against each other.
+        """
+
+        slots = [self.first_slot(camera)]
+        while len(slots) < 2 * len(self.order) + 2:
+            slots.append(self.next_slot(camera, slots[-1]))
+        if self.wavelength_for_slot(slots[0]) == self.wavelength_for_slot(slots[1]):
+            return False
+        steps = [b - a for a, b in pairwise(slots)]
+        per_cycle = sum(1 for s in range(len(self.order)) if self.camera_for_slot(s) == camera)
+        return steps[:per_cycle] == steps[1 : per_cycle + 1]
 
     def next_slot(self, camera: int, slot: int) -> int:
         """The first slot after ``slot`` that triggers ``camera``."""
@@ -309,7 +332,10 @@ class RWDSegmentTracker:
         # Fail closed at high rates/latencies rather than inventing an initial phase.
         next_slot = plan.next_slot(camera, slot)
         latest_unambiguous = self._enabled_host_s + next_slot * plan.period_s + plan.exposure_s
-        if frame.host_received_s >= latest_unambiguous:
+        if (
+            plan.first_frame_phase_needs_arrival_bound(camera)
+            and frame.host_received_s >= latest_unambiguous
+        ):
             return RWDContinuityBreak(
                 camera,
                 f"camera {camera}'s first frame arrived too late to establish wavelength "
