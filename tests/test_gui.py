@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.3.1"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1484,3 +1484,29 @@ def test_gui_rows_ticked_back_after_none_fill_the_trace_area(qtbot, tmp_path: Pa
     heights = [window.trace_plots[row].height() for row in (0, 1)]
     assert sum(heights) >= viewport - 40
     assert min(heights) > viewport / 2 - 60
+
+
+def test_gui_locks_roi_circles_and_applies_one_diameter_to_all(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=3)
+    qtbot.addWidget(window)
+    first = window._roi_items[0]
+    x, y, _r = window._circle_geometry(window._roi_items[2])
+    first.setSize([60.0, 60.0])
+    window._roi_metadata_editors[0].apply_diameter_button.click()
+    for circle in window._roi_items:
+        assert window._circle_geometry(circle)[2] == pytest.approx(30.0)
+    assert window._circle_geometry(window._roi_items[2])[:2] == pytest.approx((x, y))
+    assert window._roi_metadata_editors[2].diameter_spins[1].value() == pytest.approx(60.0)
+
+    window.roi_lock_check.setChecked(True)
+    assert not any(circle.translatable for circle in window._roi_items)
+    assert not any(h.isVisible() for c in window._roi_items for h in c.getHandles())
+    assert not window._roi_metadata_editors[1].diameter_spins[1].isEnabled()
+    assert not window._roi_metadata_editors[1].apply_diameter_button.isEnabled()
+    window.fiber_count_spin.setValue(4)  # rebuilt circles stay locked
+    assert len(window._roi_items) == 4
+    assert not any(circle.translatable for circle in window._roi_items)
+
+    window.roi_lock_check.setChecked(False)
+    assert all(circle.translatable for circle in window._roi_items)
+    assert window._roi_metadata_editors[3].diameter_spins[1].isEnabled()
