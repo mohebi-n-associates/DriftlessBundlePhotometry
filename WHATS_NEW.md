@@ -8,6 +8,17 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.1 - 2026-10-24
+
+### Added
+
+- **Lock ROI circles** (Camera & fiber ROIs, under the ROI count) stops circles on both
+  cameras from being dragged or resized by accident: their handles disappear and the
+  diameter boxes are disabled until it is unticked. Circles rebuilt for a new ROI count
+  stay locked.
+- **Apply diameter to all ROIs** in each ROI's tab gives every ROI that ROI's circle
+  diameter on each camera, keeping every centre where it is.
+
 ## 0.3.0 - 2026-10-24
 
 ### Review fixes — 2026-10-22

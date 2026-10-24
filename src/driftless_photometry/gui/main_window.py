@@ -219,6 +219,11 @@ class ROIMetadataEditor(QWidget):
             spin.setToolTip("Circle diameter; type a value or drag the circle's handle")
             form.addRow(label, spin)
             self.diameter_spins[camera] = spin
+        self.apply_diameter_button = QPushButton("Apply diameter to all ROIs")
+        self.apply_diameter_button.setToolTip(
+            "Give every ROI this ROI's circle diameter on each camera; centres stay put"
+        )
+        form.addRow("", self.apply_diameter_button)
         self._form = form
 
     def set_camera2_visible(self, visible: bool) -> None:
@@ -1786,6 +1791,12 @@ class MainWindow(QMainWindow):
         self.fiber_count_spin.valueChanged.connect(self._rebuild_roi_items)
         self.fiber_count_spin.valueChanged.connect(self._update_overview)
         fibers_form.addRow("Circular ROIs", self.fiber_count_spin)
+        self.roi_lock_check = QCheckBox("Lock ROI circles")
+        self.roi_lock_check.setToolTip(
+            "Stop circles from being moved or resized by accident; untick to edit them"
+        )
+        self.roi_lock_check.toggled.connect(self._apply_roi_lock)
+        fibers_form.addRow("", self.roi_lock_check)
         fibers_layout.addLayout(fibers_form)
         instructions = QLabel(
             "Drag a circle to move its fiber ROI. Drag its handle to resize it. "
@@ -2902,6 +2913,9 @@ class MainWindow(QMainWindow):
                 edit.textChanged.connect(self._invalidate_preview)
             editor.label_edit.textChanged.connect(self._refresh_roi_labels)
             editor.sex_combo.currentIndexChanged.connect(self._invalidate_preview)
+            editor.apply_diameter_button.clicked.connect(
+                lambda _checked=False, roi_index=index: self._apply_diameter_to_all(roi_index)
+            )
             for camera, spin in editor.diameter_spins.items():
                 spin.valueChanged.connect(
                     lambda value, roi_index=index, cam=camera: self._on_diameter_entered(
@@ -3014,6 +3028,35 @@ class MainWindow(QMainWindow):
         self._sync_diameter_controls()
         self._update_roi_summary()
         self._refresh_roi_labels()
+        self._apply_roi_lock()
+
+    def _apply_roi_lock(self, *_args: object) -> None:
+        """Locked circles ignore drags and hide their resize handles."""
+
+        locked = hasattr(self, "roi_lock_check") and self.roi_lock_check.isChecked()
+        for circle in (*self._roi_items, *self._roi_items_cam2):
+            circle.translatable = not locked
+            for handle in circle.getHandles():
+                handle.setVisible(not locked)
+        for editor in getattr(self, "_roi_metadata_editors", ()):
+            editor.apply_diameter_button.setEnabled(not locked)
+            for spin in editor.diameter_spins.values():
+                spin.setEnabled(not locked)
+
+    def _apply_diameter_to_all(self, source_index: int) -> None:
+        for camera in (1, 2):
+            circles = self._circles_for(camera)
+            if source_index >= len(circles):
+                continue
+            _x, _y, radius = self._circle_geometry(circles[source_index])
+            for index, circle in enumerate(circles):
+                if index == source_index:
+                    continue
+                center_x, center_y, _old = self._circle_geometry(circle)
+                circle.setPos([center_x - radius, center_y - radius], update=False, finish=False)
+                circle.setSize([2 * radius, 2 * radius], finish=False)
+        self._on_roi_geometry_changed()
+        self.statusBar().showMessage(f"Every ROI now has ROI {source_index + 1}'s circle diameter")
 
     def _roi_display_name(self, index: int) -> str:
         label = ""

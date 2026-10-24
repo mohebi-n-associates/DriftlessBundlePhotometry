@@ -125,6 +125,10 @@ camera.
    Camera 2 is mirrored to match camera 1, but the fibers will not sit at exactly the
    same pixels.
 
+   Each circle is named beside it. **Apply diameter to all ROIs** in a fiber's tab
+   gives every circle that fiber's size. Once placed, tick **Lock ROI circles** so they
+   cannot be dragged by accident.
+
    During live view, gain changes take effect at once. Frame-rate or exposure changes
    restart live view, because the controller takes them only at the start.
 5. Press **Stop**, then fill in each ROI's animal and region details. Each ROI becomes
