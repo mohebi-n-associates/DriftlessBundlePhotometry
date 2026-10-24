@@ -167,10 +167,12 @@ clean-machine test was run; the bench and finalization-memory gates above remain
     counts, and a timeline of system events, markers, notes, TTL events, stimulation,
     invalid spans, and dropped frames) with the NWB file list;
   - `settings.json`;
-  - `roi_map_{nm}nm.png`: the mean reference with every ROI on that camera outlined.
+  - `roi_map_{nm}nm.png`: the mean reference with every ROI on that camera outlined,
+    auto-contrasted like the live view (0.5-99.9th percentile; the log gives the levels).
 
   Each NWB file carries the same log (scratch `driftless_session_log`) and the
-  all-ROI maps (`roi_map_{nm}nm`). Settings saved in the NWB keep the output root, so
+  all-ROI maps: fixed-scale `roi_map_{nm}nm`, as the data contract requires for
+  annotated copies, and `roi_map_autocontrast_{nm}nm`, identical to the PNG. Settings saved in the NWB keep the output root, so
   reloading them does not nest recordings. Recovery finds spools in recording folders
   (`<id>/<id>.photometry-spool`) as well as directly under the root.
 
