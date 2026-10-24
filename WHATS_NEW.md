@@ -6,10 +6,14 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
+_No unreleased changes._
+
+## 0.3.0 - 2026-10-24
+
 ### Review fixes — 2026-10-22
 
 This work addresses the repository review of acquisition safety, scientific data
-integrity, and operator workflow. Changes are uncommitted at the user's request.
+integrity, and operator workflow.
 
 - **Reject an ambiguous first RWD frame, including run zero.** The first frame must
   arrive before the next possible exposure from that camera could have completed.

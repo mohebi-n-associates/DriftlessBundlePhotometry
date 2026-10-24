@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.2.1"
+    assert __version__ == "0.3.0"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"

@@ -9,9 +9,9 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.2.0
+**Current baseline:** 0.3.0
 
-**Last updated:** 2026-10-22
+**Last updated:** 2026-10-24
 
 ## Review follow-up gates — 2026-10-22
 
