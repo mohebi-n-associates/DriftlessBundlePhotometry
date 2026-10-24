@@ -41,6 +41,7 @@ class TTLPulseClassifier:
                     name=rule.name,
                     source="ttl",
                     detail=f"TTL input {edge.line} ({edge.label}) pulse of {width_ms:g} ms",
+                    ttl_line=edge.line,
                 )
         return None
 

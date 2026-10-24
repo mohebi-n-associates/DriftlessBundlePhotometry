@@ -157,6 +157,8 @@ class EventMark:
     detail: str = ""
     duration_s: float = 0.0
     fiber_id: str = ""
+    ttl_line: int = 0
+    """The TTL input a named TTL event came from; 0 for every other source."""
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.timestamp_s) or self.timestamp_s < 0:

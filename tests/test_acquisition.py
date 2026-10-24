@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 from pynwb import NWBHDF5IO
 
 from driftless_photometry.acquisition import (
@@ -682,3 +683,30 @@ def test_short_recordings_average_their_latest_frames(tmp_path: Path) -> None:
         )
     assert description.startswith("Mean of 10 consecutive 470 nm frames")
     assert "to 0.9" in description
+
+
+def test_each_roi_file_keeps_only_its_assigned_ttl_inputs(tmp_path: Path) -> None:
+    payload = demo_config(tmp_path, fiber_count=2, width_px=48, height_px=24).model_dump()
+    payload["ttl_inputs"] = [
+        {"line": 1, "label": "lever_a", "fiber_ids": ["fiber_01"]},
+        {"line": 2, "label": "lever_b", "fiber_ids": ["fiber_02"]},
+        {"line": 3, "label": "shared_cue"},
+    ]
+    payload["ttl_events"] = [{"line": 1, "max_width_ms": 200, "name": "Press A"}]
+    config = SessionConfig.model_validate(payload)
+
+    result = AcquisitionEngine().run(config, SimulatedRig(config), duration_s=3.5)
+
+    lines = []
+    for report in result.reports:
+        with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
+            nwb = io.read()
+            lines.append(sorted(set(nwb.events["ttl_edges"].to_dataframe()["line"])))
+            marks = nwb.events.get("event_marks")
+            lines.append(len(marks) if marks is not None else 0)
+        assert report.ttl_edge_count > 0
+    assert lines == [[1, 3], 4, [2, 3], 0]
+
+    with pytest.raises(ValidationError, match="unknown ROI"):
+        payload["ttl_inputs"][0]["fiber_ids"] = ["fiber_99"]
+        SessionConfig.model_validate(payload)

@@ -147,11 +147,14 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   input, as in DriftlessFLIP. A **TTL** switch and one switch per input above the
   traces hide or show them; notes and named events always stay visible. The display
   keeps the latest 2000 edges; the NWB keeps every edge.
-- Timestamped operator notes: while recording, choose an ROI (or *All ROIs*), type
-  a note and press Return or **Add timestamped note**. Notes are timed at submission
-  through the latest camera frame, drawn on that ROI's trace row, listed under **Show
-  notes**, and stored in the `event_marks` table as source `note` with a new
-  `fiber_id` column. Each ROI's NWB keeps its own notes and the all-ROI ones.
+- Timestamped operator notes: while recording, tick the ROIs a note is about (all
+  are ticked by default), type it and press Return or **Add timestamped note**. Notes
+  are timed at submission through the latest camera frame, drawn on those ROIs' trace
+  rows, and listed under **Show notes**. Each ticked ROI's NWB file stores its own
+  entry in the `event_marks` table (source `note`, new `fiber_id` column).
+- TTL inputs can be assigned to ROIs (the button beside each input's label, *All ROIs*
+  by default). Each ROI's NWB file then keeps only its own inputs' edges and named
+  TTL events, so animals in separate boxes keep their own behavior signals.
 
 - Each NWB file now also holds, per wavelength, a mean reference image: the mean of
   10 consecutive frames from 5 s into the recording (`mean_reference_{nm}nm`), and the

@@ -142,10 +142,13 @@ camera.
 - TTL input edges appear on the traces as thin dashed lines, one colour per input.
   The **TTL** switch above the traces hides them all; the numbered switches hide one
   input each.
-- To note something, pick the ROI it is about (or *All ROIs*) under the traces, type
-  the note and press Return. It is timed when you press Return, drawn on that ROI's
-  row, and listed under **Show notes**. Each ROI's NWB file keeps its own notes and
-  the all-ROI ones in its `event_marks` table.
+- To note something, tick the ROIs it is about under the traces (all are ticked by
+  default), type the note and press Return. It is timed when you press Return, drawn
+  on those ROIs' rows, listed under **Show notes**, and saved in each ticked ROI's
+  NWB file.
+- If animals have their own behavior inputs, assign each TTL input to its ROIs with
+  the button beside the input's label. Each ROI's NWB file then keeps only its own
+  inputs' edges.
 
 ## Measure LED power
 

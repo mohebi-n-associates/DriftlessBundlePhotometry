@@ -393,11 +393,16 @@ class AcquisitionEngine:
             self._pending_marks.append((pressed_s, name, source, ""))
 
     def add_note(
-        self, text: str, fiber_id: str = "", *, at_monotonic_s: float | None = None
+        self,
+        text: str,
+        fiber_ids: str | tuple[str, ...] = "",
+        *,
+        at_monotonic_s: float | None = None,
     ) -> None:
-        """Record a timestamped operator note for one ROI, or for all when ``fiber_id`` is "".
+        """Record a timestamped operator note for some ROIs, or for all when given "".
 
-        Thread-safe, and timed at submission like a marker.
+        Thread-safe and timed at submission like a marker. A note for several ROIs is one
+        entry per ROI with the same timestamp, so each ROI's NWB file has its own.
         """
 
         text = text.strip()
@@ -406,8 +411,12 @@ class AcquisitionEngine:
         if len(text) > NOTE_MAX_CHARACTERS:
             raise ValueError(f"notes hold at most {NOTE_MAX_CHARACTERS} characters")
         submitted_s = time.monotonic() if at_monotonic_s is None else at_monotonic_s
+        targets = (fiber_ids,) if isinstance(fiber_ids, str) else tuple(fiber_ids)
+        if not targets:
+            raise ValueError("a note needs at least one ROI")
         with self._marks_lock:
-            self._pending_marks.append((submitted_s, text, "note", fiber_id))
+            for fiber_id in targets:
+                self._pending_marks.append((submitted_s, text, "note", fiber_id))
 
     def run(
         self,
