@@ -1433,3 +1433,32 @@ def test_gui_rows_menu_shows_only_checked_roi_traces(qtbot, tmp_path: Path) -> N
     assert not window.trace_row_actions[0].isChecked()
     assert not window.trace_plots[0].isVisible()
     assert window.trace_rows_button.text() == "5 of 6 ROIs"
+
+
+def test_gui_names_each_roi_beside_its_circle(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=3)
+    qtbot.addWidget(window)
+    circles = window._roi_items + window._roi_items_cam2
+    assert len(window._roi_labels) == len(circles)
+    names = [label.toPlainText() for _plot, label in window._roi_labels]
+    assert names[:3] == ["ROI 1 - Fiber 1", "ROI 2 - Fiber 2", "ROI 3 - Fiber 3"]
+
+    window._roi_metadata_editors[1].label_edit.setText("NAc left")
+    assert window._roi_labels[1][1].toPlainText() == "ROI 2 - NAc left"
+
+    circle = window._roi_items[0]
+    circle.setPos((200.0, 150.0))  # dragging moves the label with it
+    x, y, radius = window._circle_geometry(circle)
+    label = window._roi_labels[0][1]
+    assert label.pos().x() == pytest.approx(x)
+    assert label.pos().y() == pytest.approx(y - radius - 2)
+
+    window._roi_metadata_editors[2].enabled_check.setChecked(False)
+    assert window._roi_labels[2][1].opacity() == pytest.approx(0.25)
+
+    shown = [w for w in window.wavelength_image_plots if w in window._active_profile.wavelengths]
+    texts = [
+        item for _plot, item in window._wavelength_roi_overlays if hasattr(item, "toPlainText")
+    ]
+    assert len(texts) == 3 * len(shown)
+    assert "ROI 2 - NAc left" in {item.toPlainText() for item in texts}

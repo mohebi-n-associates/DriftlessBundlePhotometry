@@ -176,6 +176,11 @@ clean-machine test was run; the bench and finalization-memory gates above remain
   reloading them does not nest recordings. Recovery finds spools in recording folders
   (`<id>/<id>.photometry-spool`) as well as directly under the root.
 
+- Every ROI circle in calibration and live view (both cameras) is named beside it
+  ("ROI 2 - NAc left") in its colour; the name follows the circle as it is dragged and
+  the ROI label as it is edited. The Live wavelength images tab outlines and names the
+  ROIs too. Display only.
+
 - A **Rows** menu above the live traces has a checkbox per ROI, plus *Select all* and
   *Select none*; only checked ROIs' traces are shown, sharing the whole trace area, so
   one checked ROI fills it for a closer look. The menu stays open while you tick. The time span, zoom,
