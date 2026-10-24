@@ -8,6 +8,20 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.2 - 2026-10-24
+
+### Added
+
+- **Bleach patch cords…** beside Live view runs every enabled LED at one power (default
+  80 %) for a set time (default 10 min, up to 60), then switches them off, to bleach
+  the patch cords' autofluorescence before recording. It asks you to confirm the fiber
+  ends are capped or on a non-fluorescent target with no animal attached, shows how
+  long each LED is actually lit (they pulse with the camera exposures, so set the
+  exposure to Max for the strongest bleach), and counts down; **Stop bleaching** ends
+  it early. It is a timed live view, so it uses the same LED path and off sequence and
+  records nothing. Later recordings log the last bleach (time, power, LEDs, how long
+  they were lit) as a `patch_cord_bleach` event in the session log and every NWB file.
+
 ## 0.3.1 - 2026-10-24
 
 ### Added

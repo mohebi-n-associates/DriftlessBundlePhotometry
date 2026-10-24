@@ -432,7 +432,14 @@ class AcquisitionEngine:
         on_progress: ProgressCallback | None = None,
         on_state: StateCallback | None = None,
         on_finalization: FinalizationCallback | None = None,
+        preparation_events: tuple[tuple[str, str], ...] = (),
     ) -> AcquisitionRunResult:
+        """Record one session.
+
+        ``preparation_events`` are ``(event, detail)`` pairs about setup done before the
+        recording, such as a patch-cord bleach; they are logged at session time 0.
+        """
+
         if duration_s <= 0:
             raise ValueError("duration_s must be positive")
         if not self._run_lock.acquire(blocking=False):
@@ -573,6 +580,8 @@ class AcquisitionEngine:
                     spool.submit_system_event(
                         SystemEvent(0.0, "session_prepared", config.session_start_time.isoformat())
                     )
+                    for event, detail in preparation_events:
+                        spool.submit_system_event(SystemEvent(0.0, event, detail))
                 for interval in rig_packet.invalid_times:
                     spool.submit_invalid_time(interval)
                 for event in rig_packet.system_events:

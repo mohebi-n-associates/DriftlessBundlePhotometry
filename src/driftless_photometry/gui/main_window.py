@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -89,6 +90,7 @@ from driftless_photometry.settings import (
     settings_root,
 )
 
+from .bleach import BleachDialog, BleachPlan, BleachRecord, led_duty_fraction
 from .branding import logo_path
 from .output_program import OutputProgramDialog, describe_program
 from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
@@ -392,6 +394,8 @@ class MainWindow(QMainWindow):
         self._default_system = default_system
         self._preview_started_config: SessionConfig | None = None
         self._live_rois: tuple[ROIConfig, ...] | None = None
+        self._bleach: dict | None = None
+        self._last_bleach: BleachRecord | None = None
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -1835,6 +1839,14 @@ class MainWindow(QMainWindow):
         )
         self.live_button.clicked.connect(self._toggle_live_view)
         camera_row.addWidget(self.live_button)
+        self.bleach_button = QPushButton("Bleach patch cords…")
+        self.bleach_button.setMinimumHeight(38)
+        self.bleach_button.setToolTip(
+            "Run the enabled LEDs at one power for a set time, then switch them off, to "
+            "bleach the patch cords' autofluorescence; later recordings log it"
+        )
+        self.bleach_button.clicked.connect(self._ask_bleach)
+        camera_row.addWidget(self.bleach_button)
         self.auto_contrast_check = QCheckBox("Auto contrast")
         self.auto_contrast_check.setChecked(True)
         self.auto_contrast_check.setToolTip(
@@ -3515,7 +3527,12 @@ class MainWindow(QMainWindow):
 
         self._camera_frame_counts = {}
         thread = QThread(self)
-        worker = AcquisitionWorker(config, config.recording_limit_s, self._rig_factory)
+        worker = AcquisitionWorker(
+            config,
+            config.recording_limit_s,
+            self._rig_factory,
+            preparation_events=self._preparation_events(),
+        )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_display_ready)
@@ -3541,14 +3558,79 @@ class MainWindow(QMainWindow):
         else:
             self.start_live_view()
 
-    def start_live_view(self) -> None:
-        if self._thread is not None or self._device_thread is not None:
-            return
+    def _ask_bleach(self) -> None:
         try:
             config = self._build_config()
         except Exception as error:
             QMessageBox.critical(self, "Invalid configuration", str(error))
             return
+        channels = config.enabled_channels
+        dialog = BleachDialog(
+            self,
+            wavelengths_nm=tuple(int(c.wavelength_nm) for c in channels),
+            duty_fraction=led_duty_fraction(
+                config.camera.exposure_us, config.camera.requested_fps, len(channels)
+            ),
+            uses_percent=all(c.power_percent is not None for c in channels),
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.start_bleach(dialog.plan())
+
+    def start_bleach(self, plan: BleachPlan) -> None:
+        """Live view with every enabled LED at ``plan.percent``, stopping by itself."""
+
+        try:
+            config = self._build_config()
+        except Exception as error:
+            QMessageBox.critical(self, "Invalid configuration", str(error))
+            return
+        channels = tuple(
+            channel.model_copy(update={"power_percent": plan.percent})
+            if channel.power_percent is not None
+            else channel
+            for channel in config.channels
+        )
+        config = config.model_copy(update={"channels": channels})
+        self._bleach = {"plan": plan, "config": config, "lit_from": None}
+        self.start_live_view(config=config, duration_s=plan.duration_s)
+        if self._operation_kind != "live" or self._worker is None:
+            self._bleach = None
+
+    def _finish_bleach(self) -> None:
+        bleach, self._bleach = getattr(self, "_bleach", None), None
+        if bleach is None or bleach["lit_from"] is None:
+            return
+        plan, config = bleach["plan"], bleach["config"]
+        channels = config.enabled_channels
+        self._last_bleach = BleachRecord(
+            planned_s=plan.duration_s,
+            lit_s=min(plan.duration_s, time.monotonic() - bleach["lit_from"]),
+            percent=plan.percent,
+            wavelengths_nm=tuple(int(c.wavelength_nm) for c in channels),
+            duty_fraction=led_duty_fraction(
+                config.camera.exposure_us, config.camera.requested_fps, len(channels)
+            ),
+            ended=datetime.now().astimezone(),
+        )
+        self.statusBar().showMessage(
+            f"Patch-cord bleach finished, LEDs off: {self._last_bleach.describe()}"
+        )
+
+    def _preparation_events(self) -> tuple[tuple[str, str], ...]:
+        bleach = getattr(self, "_last_bleach", None)
+        return () if bleach is None else (("patch_cord_bleach", bleach.describe()),)
+
+    def start_live_view(
+        self, *, config: SessionConfig | None = None, duration_s: float | None = None
+    ) -> None:
+        if self._thread is not None or self._device_thread is not None:
+            return
+        if config is None:
+            try:
+                config = self._build_config()
+            except Exception as error:
+                QMessageBox.critical(self, "Invalid configuration", str(error))
+                return
         self.last_error = None
         self._operation_kind = "live"
         self._operation_uses_leds = isinstance(config.source, RWDSourceConfig)
@@ -3571,7 +3653,7 @@ class MainWindow(QMainWindow):
         )
         thread = QThread(self)
         try:
-            worker = LiveViewWorker(config, self._rig_factory)
+            worker = LiveViewWorker(config, self._rig_factory, duration_s=duration_s)
         except Exception as error:
             self._on_live_failed(str(error))
             return
@@ -3650,6 +3732,16 @@ class MainWindow(QMainWindow):
         self._show_calibration_frame(frame.camera_index, frame.image)
         self._trace_live_frame(frame)
         self.frame_counter.setText(f"{frame.frame_count:,} live frames")
+        bleach = getattr(self, "_bleach", None)
+        if bleach is not None:
+            if bleach["lit_from"] is None:
+                bleach["lit_from"] = time.monotonic()
+            left = max(0.0, bleach["plan"].duration_s - (time.monotonic() - bleach["lit_from"]))
+            self.live_status.setText(
+                f"Bleaching patch cords at {bleach['plan'].percent:g} %: "
+                f"{int(left // 60)}:{int(left % 60):02d} left"
+            )
+            return
         self.live_status.setText(
             f"Live view - camera {frame.camera_index}, {int(frame.wavelength_nm)} nm"
         )
@@ -3742,9 +3834,11 @@ class MainWindow(QMainWindow):
         self.live_status.setText(f"Live view stopped after {frame_count:,} frames")
         self._set_system_status("READY", "ready")
         self.statusBar().showMessage("Live view stopped; nothing was recorded")
+        self._finish_bleach()
 
     def _on_live_failed(self, traceback_text: str) -> None:
         self._drain_display()
+        self._finish_bleach()
         self._log_failure("Live view failed", traceback_text)
         self.last_error = traceback_text
         self.live_status.setText("Live view failed")
@@ -4424,9 +4518,13 @@ class MainWindow(QMainWindow):
         live = busy and self._operation_kind == "live"
         previewing = busy and self._operation_kind == "preview"
         if hasattr(self, "live_button"):
-            # While live view runs, the same button stops it.
+            # While live view (or a bleach) runs, the same button stops it.
+            bleaching = live and getattr(self, "_bleach", None) is not None
             self.live_button.setEnabled(not busy or live)
-            self.live_button.setText("Stop live view" if live else "Live view")
+            self.live_button.setText(
+                "Stop bleaching" if bleaching else "Stop live view" if live else "Live view"
+            )
+            self.bleach_button.setEnabled(not busy)
         self.preview_button.setEnabled(not busy)
         self.start_button.setEnabled(not busy and self._preview_signature is not None)
         if hasattr(self, "camera_settings_group"):
