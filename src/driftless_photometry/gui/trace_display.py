@@ -229,3 +229,36 @@ def rolling_f0(
     n = len(at_times)
     lower, upper = baseline[inverse[:n]], baseline[inverse[n:]]
     return lower + (upper - lower) * (position - left)
+
+
+GAP_MIN_S = 0.25
+"""A pause in a trace longer than this, and than GAP_FACTOR sample periods, is a gap."""
+GAP_FACTOR = 4.0
+
+
+def break_at_gaps(
+    raw_times: NDArray[np.float64],
+    display_times: NDArray[np.float64],
+    display_values: NDArray[np.floating],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Insert a NaN wherever the raw samples pause, so the line is not drawn across it.
+
+    Gaps are found in ``raw_times`` (the samples behind the display), not in the
+    downsampled display points, whose spacing grows with the visible span.
+    """
+
+    values = np.asarray(display_values, dtype=np.float64)
+    if len(raw_times) < 3 or len(display_times) == 0:
+        return display_times, values
+    recent = np.diff(raw_times[-512:])
+    period = float(np.median(recent)) if len(recent) else 0.0
+    threshold = max(GAP_MIN_S, GAP_FACTOR * period)
+    gaps = np.flatnonzero(np.diff(raw_times) > threshold)
+    if len(gaps) == 0:
+        return display_times, values
+    middles = (raw_times[gaps] + raw_times[gaps + 1]) / 2.0
+    positions = np.searchsorted(display_times, middles)
+    return (
+        np.insert(display_times, positions, middles),
+        np.insert(values, positions, np.nan),
+    )

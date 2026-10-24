@@ -10,7 +10,7 @@ import numpy as np
 
 from driftless_photometry.acquisition import AcquisitionProgress, LiveFrame
 from driftless_photometry.config import SessionConfig
-from driftless_photometry.domain import EventMark, TTLEdge
+from driftless_photometry.domain import EventMark, InvalidTimeInterval, TTLEdge
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
 
 from .trace_display import compact_history
@@ -23,6 +23,7 @@ class DisplayBatch:
     marks: tuple[EventMark, ...]
     aggregated: bool
     edges: tuple[TTLEdge, ...] = ()
+    invalid_times: tuple[InvalidTimeInterval, ...] = ()
 
 
 class DisplayMailbox:
@@ -44,6 +45,7 @@ class DisplayMailbox:
         self._points: dict[tuple[str, int], list[LiveTracePoint]] = {}
         self._marks: deque[EventMark] = deque(maxlen=self.MAX_MARKS)
         self._edges: deque[TTLEdge] = deque(maxlen=self.MAX_EDGES)
+        self._invalid: deque[InvalidTimeInterval] = deque(maxlen=self.MAX_MARKS)
         self._aggregated = False
 
     def publish(self, item: AcquisitionProgress | LiveFrame) -> bool:
@@ -61,6 +63,7 @@ class DisplayMailbox:
                 if len(self._edges) + len(item.ttl_edges) > self.MAX_EDGES:
                     self._aggregated = True
                 self._edges.extend(item.ttl_edges)
+                self._invalid.extend(item.invalid_times)
                 for point in camera_live_trace_points(self._config, item):
                     key = (point.fiber_id, point.wavelength_nm)
                     points = self._points.setdefault(key, [])
@@ -88,11 +91,13 @@ class DisplayMailbox:
                 tuple(self._marks),
                 self._aggregated,
                 tuple(self._edges),
+                tuple(self._invalid),
             )
             self._images.clear()
             self._points.clear()
             self._marks.clear()
             self._edges.clear()
+            self._invalid.clear()
             self._aggregated = False
             self._notified = False
             return batch
