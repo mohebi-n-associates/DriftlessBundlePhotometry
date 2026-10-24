@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.6"
+    assert __version__ == "0.3.7"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1650,3 +1650,47 @@ def test_gui_switches_between_dark_and_light_themes_and_remembers(qtbot, tmp_pat
     assert again._theme == "light" and "#f3f6f9" in again.styleSheet()
     again.theme_button.click()
     assert load_theme() == "dark" and "#081521" in again.styleSheet()
+
+
+def test_gui_shows_each_rois_snr_per_wavelength_once_a_minute(qtbot, tmp_path: Path) -> None:
+    import math
+
+    from driftless_photometry.live_trace import LiveTracePoint
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    config = demo_config(tmp_path, fiber_count=1)
+    window._operation_kind = "live"
+    window._prepare_trace_curves(config)
+    assert "SNR: preview or record" in window.trace_plots[0].titleLabel.text
+
+    window._operation_kind = "preview"
+    window._prepare_trace_curves(config)
+    fiber = config.enabled_rois[0].fiber_id
+    wavelengths = window._active_trace_wavelengths
+    rng = np.random.default_rng(5)
+
+    def feed(start_s, stop_s):
+        for index in range(round(start_s * 40), round(stop_s * 40)):
+            t = index / 40
+            window._append_live_trace_points(
+                [
+                    LiveTracePoint(
+                        t, fiber, w, 1000 + 10 * math.sin(2 * math.pi * t) + rng.normal()
+                    )
+                    for w in wavelengths
+                ]
+            )
+
+    feed(0, 30)
+    assert "SNR after 1 min" in window.trace_plots[0].titleLabel.text
+    feed(30, 61)
+    title = window.trace_plots[0].titleLabel.text
+    assert title.count("SNR ") == 1 and "after 1 min" not in title
+    first = dict(window._snr_values[0])
+    assert set(first) == set(wavelengths)
+    assert all(50 < snr < 90 for snr, _fs in first.values())
+    feed(61, 100)
+    assert window._snr_values[0] == first  # steady until a minute has passed
+    feed(100, 122)
+    assert window._snr_values[0] != first

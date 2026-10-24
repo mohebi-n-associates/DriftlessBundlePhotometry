@@ -427,10 +427,13 @@ class AcquisitionEngine:
     def log_signal_warning(self, timestamp_s: float, fiber_id: str, detail: str) -> None:
         """Log a live signal-check warning for one ROI at session time (thread-safe)."""
 
+        self.log_system_event(timestamp_s, "roi_signal_warning", f"{fiber_id}: {detail}")
+
+    def log_system_event(self, timestamp_s: float, event: str, detail: str) -> None:
+        """Log a display-derived diagnostic, such as live SNR, at session time."""
+
         with self._marks_lock:
-            self._pending_system_events.append(
-                SystemEvent(max(0.0, timestamp_s), "roi_signal_warning", f"{fiber_id}: {detail}")
-            )
+            self._pending_system_events.append(SystemEvent(max(0.0, timestamp_s), event, detail))
 
     def run(
         self,

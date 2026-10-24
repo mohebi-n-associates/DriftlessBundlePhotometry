@@ -129,6 +129,11 @@ class AcquisitionWorker(QObject):
 
         self._engine.log_signal_warning(timestamp_s, fiber_id, detail)
 
+    def log_snr(self, timestamp_s: float, fiber_id: str, detail: str) -> None:
+        """Thread-safe: log one ROI's live SNR in the recording."""
+
+        self._engine.log_system_event(timestamp_s, "roi_snr", f"{fiber_id}: {detail}")
+
     def _emit_progress(self, progress: AcquisitionProgress) -> None:
         if self.display_mailbox.publish(progress):
             self.progress.emit(None)

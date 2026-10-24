@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 from array import array
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -91,6 +92,11 @@ from driftless_photometry.settings import (
     settings_root,
 )
 from driftless_photometry.signal_quality import SignalQualityMonitor
+from driftless_photometry.snr import MIN_SAMPLING_HZ as SNR_MIN_SAMPLING_HZ
+from driftless_photometry.snr import MIN_WINDOW_S as SNR_MIN_WINDOW_S
+from driftless_photometry.snr import UPDATE_S as SNR_UPDATE_S
+from driftless_photometry.snr import WINDOW_S as SNR_WINDOW_S
+from driftless_photometry.snr import live_snr
 
 from .bleach import BleachDialog, BleachPlan, BleachRecord, led_duty_fraction
 from .branding import logo_path
@@ -411,6 +417,18 @@ class MainWindow(QMainWindow):
         self._signal_monitor = SignalQualityMonitor()
         self._signal_warnings: dict[int, str] = {}
         self._signal_checked_s = -np.inf
+        # SNR needs every sample at a steady rate: preview and recording only.
+        kind = getattr(self, "_operation_kind", None)
+        self._snr_enabled = kind in {"preview", "recording"}
+        self._snr_buffers: dict[tuple[int, int], deque[tuple[float, float]]] = {}
+        self._snr_values: dict[int, dict[int, tuple[float, float]]] = {}
+        self._snr_first_s: float | None = None
+        self._snr_computed_s: float | None = None
+        self._snr_note: str | None = (
+            "SNR after 1 min" if self._snr_enabled else "SNR: preview or record"
+        )
+        if kind not in {"preview", "recording", "live"}:
+            self._snr_note = None
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -1682,6 +1700,7 @@ class MainWindow(QMainWindow):
             plot.setClipToView(True)
             self.trace_plots[row] = plot
             self.trace_view_boxes[row] = view_box
+            self._render_trace_title(row)
         self._trace_rows_in_layout = set(self.trace_plots)
         self._fill_trace_focus_choices(rois)
 
@@ -1991,13 +2010,8 @@ class MainWindow(QMainWindow):
                 axis = plot.getAxis(name)
                 axis.setPen(colors.foreground)
                 axis.setTextPen(colors.foreground)
-        for row, plot in getattr(self, "trace_plots", {}).items():
-            warning = getattr(self, "_signal_warnings", {}).get(row)
-            title = self._trace_titles.get(row, "")
-            if warning:
-                plot.setTitle(f"{title}   ⚠ {warning}", color=_SIGNAL_WARNING_COLOR, size="10pt")
-            else:
-                plot.setTitle(title, color=colors.title, size="10pt")
+        for row in getattr(self, "trace_plots", {}):
+            self._render_trace_title(row)
         for _plot, label in getattr(self, "_roi_labels", ()):
             label.fill = pg.mkBrush(*colors.label_fill)
             label.update()
@@ -3856,6 +3870,18 @@ class MainWindow(QMainWindow):
         self._signal_monitor = SignalQualityMonitor()
         self._signal_warnings: dict[int, str] = {}
         self._signal_checked_s = -np.inf
+        # SNR needs every sample at a steady rate: preview and recording only.
+        kind = getattr(self, "_operation_kind", None)
+        self._snr_enabled = kind in {"preview", "recording"}
+        self._snr_buffers: dict[tuple[int, int], deque[tuple[float, float]]] = {}
+        self._snr_values: dict[int, dict[int, tuple[float, float]]] = {}
+        self._snr_first_s: float | None = None
+        self._snr_computed_s: float | None = None
+        self._snr_note: str | None = (
+            "SNR after 1 min" if self._snr_enabled else "SNR: preview or record"
+        )
+        if kind not in {"preview", "recording", "live"}:
+            self._snr_note = None
         self._event_marks_shown = []
         self._event_graphics = []
         self._ttl_graphics = []
@@ -4147,19 +4173,97 @@ class MainWindow(QMainWindow):
             return
         recording = self._operation_kind == "recording" and self._worker is not None
         fiber_ids = {row: fiber for fiber, row in self._trace_roi_indices.items()}
-        for row, plot in self.trace_plots.items():
+        for row in self.trace_plots:
             text = current.get(row)
             if text == self._signal_warnings.get(row):
                 continue
-            title = self._trace_titles.get(row, "")
             if text:
-                plot.setTitle(f"{title}   ⚠ {text}", color=_SIGNAL_WARNING_COLOR, size="10pt")
                 if recording and row in fiber_ids:
                     self._worker.log_signal_warning(now_s, fiber_ids[row], text)
                 self.statusBar().showMessage(f"Signal check, ROI {row + 1}: {text}")
-            else:
-                plot.setTitle(title, color=PLOT_COLORS[self._theme].title, size="10pt")
         self._signal_warnings = current
+        for row in self.trace_plots:
+            self._render_trace_title(row)
+
+    def _render_trace_title(self, row: int) -> None:
+        """A row's title: ROI name, any signal warning, and its SNR per wavelength."""
+
+        plot = self.trace_plots.get(row)
+        if plot is None:
+            return
+        colors = PLOT_COLORS[self._theme]
+        parts = [self._trace_titles.get(row, "")]
+        warning = self._signal_warnings.get(row)
+        if warning:
+            parts.append(f'<span style="color:{_SIGNAL_WARNING_COLOR}">⚠ {warning}</span>')
+        snr = self._snr_text(row)
+        if snr:
+            parts.append(snr)
+        plot.setTitle("&nbsp;&nbsp;&nbsp;".join(parts), color=colors.title, size="10pt")
+
+    def _snr_text(self, row: int) -> str:
+        if self._snr_note:
+            color = PLOT_COLORS[self._theme].foreground
+            return f'<span style="color:{color}">{self._snr_note}</span>'
+        if not self._snr_enabled:
+            return ""
+        values = self._snr_values.get(row)
+        if not values:
+            return ""
+        shown = []
+        for wavelength, (snr, fs) in sorted(values.items()):
+            color = _WAVELENGTH_COLORS.get(wavelength, PLOT_COLORS[self._theme].foreground)
+            if snr == snr:  # not NaN
+                text = f"{wavelength} {snr:.1f}"
+            elif fs == fs and fs < SNR_MIN_SAMPLING_HZ:
+                text = f"{wavelength} n/a ({fs:.1f} Hz)"
+            else:
+                text = f"{wavelength} n/a"
+            shown.append(f'<span style="color:{color}">{text}</span>')
+        return "SNR " + " · ".join(shown)
+
+    def _update_snr(self, now_s: float) -> None:
+        """Recompute each ROI's SNR over the last 2 minutes, once a minute."""
+
+        if not self._snr_enabled or self._snr_first_s is None:
+            return
+        if self._snr_computed_s is None:
+            if now_s - self._snr_first_s < SNR_MIN_WINDOW_S:
+                return
+        elif now_s - self._snr_computed_s < SNR_UPDATE_S:
+            return
+        self._snr_computed_s = now_s
+        self._snr_note = None
+        values: dict[int, dict[int, tuple[float, float]]] = {}
+        for (wavelength, row), buffer in self._snr_buffers.items():
+            times = [t for t, _v in buffer]
+            values.setdefault(row, {})[wavelength] = live_snr(times, [v for _t, v in buffer])
+        self._snr_values = values
+        slow = [
+            fs
+            for per_row in values.values()
+            for snr, fs in per_row.values()
+            if fs == fs and fs < SNR_MIN_SAMPLING_HZ
+        ]
+        if slow:
+            self.statusBar().showMessage(
+                f"SNR needs each wavelength sampled at {SNR_MIN_SAMPLING_HZ:g} Hz or faster "
+                f"(now {min(slow):.1f} Hz); raise the frame rate"
+            )
+        if self._operation_kind == "recording" and self._worker is not None:
+            fiber_ids = {row: fiber for fiber, row in self._trace_roi_indices.items()}
+            for row, per_row in sorted(values.items()):
+                detail = ", ".join(
+                    f"{w} nm {snr:.2f}" if snr == snr else f"{w} nm n/a"
+                    for w, (snr, _fs) in sorted(per_row.items())
+                )
+                self._worker.log_snr(
+                    now_s,
+                    fiber_ids.get(row, str(row)),
+                    f"{detail} over the last {SNR_WINDOW_S:g} s",
+                )
+        for row in self.trace_plots:
+            self._render_trace_title(row)
 
     def _append_live_trace_points(self, points: Sequence[LiveTracePoint]) -> None:
         affected_wavelengths: set[int] = set()
@@ -4169,6 +4273,13 @@ class MainWindow(QMainWindow):
             if roi_index is None:
                 raise ValueError(f"live trace references unknown fiber_id {point.fiber_id!r}")
             self._signal_monitor.add(roi_index, point.wavelength_nm, point.timestamp_s, point.value)
+            if self._snr_enabled:
+                buffer = self._snr_buffers.setdefault((point.wavelength_nm, roi_index), deque())
+                buffer.append((point.timestamp_s, point.value))
+                while buffer[0][0] < point.timestamp_s - SNR_WINDOW_S - 5.0:
+                    buffer.popleft()
+                if self._snr_first_s is None:
+                    self._snr_first_s = point.timestamp_s
             latest_s = max(latest_s, point.timestamp_s)
             key = (point.wavelength_nm, roi_index)
             if key not in self._trace_times:
@@ -4204,6 +4315,7 @@ class MainWindow(QMainWindow):
             affected_wavelengths.add(point.wavelength_nm)
         if points:
             self._check_signals(latest_s)
+            self._update_snr(latest_s)
         if self._trace_first_s is not None and self._trace_latest_s is not None:
             available_span = self._trace_latest_s - self._trace_first_s + 1 / 30
             self._update_trace_horizon_availability(available_span)
@@ -4232,6 +4344,13 @@ class MainWindow(QMainWindow):
         batch = mailbox.take()
         if batch.aggregated:
             self._display_aggregated = True
+            if self._snr_enabled:
+                # Compacted points are not evenly sampled; stop rather than mislead.
+                self._snr_enabled = False
+                self._snr_buffers.clear()
+                self.statusBar().showMessage(
+                    "SNR paused: the display fell behind; recorded samples are unaffected"
+                )
         if batch.points:
             self._append_live_trace_points(batch.points)
         if batch.marks:
