@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 from pynwb import NWBHDF5IO
 
@@ -649,3 +650,35 @@ def test_manual_stop_checks_storage_for_the_expected_length(tmp_path: Path, monk
     engine.run(config, rig, duration_s=config.recording_limit_s, on_progress=stop_soon)
 
     assert checked == [120.0]
+
+
+def test_nwb_holds_mean_reference_images_from_five_seconds_in(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+
+    result = AcquisitionEngine().run(config, SimulatedRig(config), duration_s=7.0)
+
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        images = io.read().processing["photometry"]["wavelength_roi_images"].images
+        names = set(images)
+        description = images["mean_reference_405nm"].description
+        mean = images["mean_reference_405nm"].data[:]
+        overlay = images["mean_roi_overlay_405nm"].data[:]
+    assert {"mean_reference_470nm", "mean_roi_overlay_565nm", "raw_reference_405nm"} <= names
+    assert description.startswith("Mean of 10 consecutive 405 nm frames from 5.0")
+    assert mean.dtype == np.uint16 and overlay.shape == (*mean.shape, 3)
+
+
+def test_short_recordings_average_their_latest_frames(tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1, width_px=32, height_px=24)
+
+    result = AcquisitionEngine().run(config, SimulatedRig(config), duration_s=1.0)
+
+    with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
+        description = (
+            io.read()
+            .processing["photometry"]["wavelength_roi_images"]
+            .images["mean_reference_470nm"]
+            .description
+        )
+    assert description.startswith("Mean of 10 consecutive 470 nm frames")
+    assert "to 0.9" in description

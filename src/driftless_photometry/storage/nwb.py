@@ -48,7 +48,7 @@ from driftless_photometry.config import (
     profile_for,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
-from driftless_photometry.domain import AcquisitionData
+from driftless_photometry.domain import AcquisitionData, MeanReferenceImage
 from driftless_photometry.provenance import (
     NWB_RUNTIME_PROVENANCE_SCRATCH_NAME,
     capture_runtime_provenance,
@@ -576,6 +576,7 @@ def _add_rois_and_calibration(
     wavelength_images: Mapping[Wavelength, NDArray[np.uint16]] | None,
     roi_index: int,
     calibration_camera: int = 1,
+    mean_images: Mapping[Wavelength, MeanReferenceImage] | None = None,
 ) -> None:
     profile = profile_for(config.source)
     two_cameras = profile.camera_count > 1
@@ -644,6 +645,27 @@ def _add_rois_and_calibration(
             image = wavelength_images[wavelength]
             camera = profile.camera_for(wavelength)
             placed = rois_for_camera((roi,), camera)
+            mean = (mean_images or {}).get(wavelength)
+            if mean is not None:
+                diagnostic_images.extend(
+                    (
+                        GrayscaleImage(
+                            name=f"mean_reference_{int(wavelength)}nm",
+                            data=mean.image,
+                            description=mean.describe(int(wavelength)),
+                        ),
+                        RGBImage(
+                            name=f"mean_roi_overlay_{int(wavelength)}nm",
+                            data=render_annotated_rois(
+                                mean.image, placed, bit_depth=config.camera.bit_depth
+                            ),
+                            description=(
+                                f"Derived fixed-scale RGB view of the {int(wavelength)} nm "
+                                f"mean reference with ROI {roi.fiber_id} outlined."
+                            ),
+                        ),
+                    )
+                )
             diagnostic_images.extend(
                 (
                     GrayscaleImage(
@@ -1168,6 +1190,12 @@ def _round_trip_verify(
                 )
                 if not np.array_equal(stored_images[overlay_name].data, overlay):
                     raise RuntimeError(f"NWB round-trip overlay mismatch for {overlay_name}")
+                mean = data.mean_reference_images.get(wavelength)
+                mean_name = f"mean_reference_{int(wavelength)}nm"
+                if mean is not None and not np.array_equal(
+                    stored_images[mean_name].data, mean.image
+                ):
+                    raise RuntimeError(f"NWB round-trip mean reference mismatch for {mean_name}")
         if frames is not None:
             stored = nwbfile.acquisition["camera_frames"].data
             if isinstance(frames, FrameStream):
@@ -1301,6 +1329,7 @@ def _write_roi_partial_nwb(
         wavelength_images,
         roi_index,
         calibration_camera=data.frame_camera_indices[0] if data.frame_camera_indices else 1,
+        mean_images=data.mean_reference_images,
     )
     _add_events(nwbfile, config, data, roi_index, additional_system_events)
     _add_raw_frames(nwbfile, config, data, frames)
