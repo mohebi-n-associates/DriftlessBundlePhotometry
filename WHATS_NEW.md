@@ -33,6 +33,13 @@ _No unreleased changes._
   keeps recordings, settings, and its error log. `docs/releasing.md` explains how to
   build the Windows application locally.
 
+### Fixed
+
+- **A rare hang when a recording finished.** Python's cycle collector could run on the
+  acquisition worker while it loaded the spool for NWB writing, free Qt objects there,
+  and deadlock the window (seen intermittently in CI on Windows). DBF now runs the
+  collector only on the GUI thread, once a second, with Python's usual thresholds.
+
 ## 0.3.14 - 2026-10-26
 
 ### Fixed
