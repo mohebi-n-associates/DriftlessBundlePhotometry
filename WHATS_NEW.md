@@ -8,6 +8,20 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.14 - 2026-10-26
+
+### Fixed
+
+- **macOS controls, fully.** 0.3.11 replaced lambda signal handlers, but CI showed
+  macOS with Python 3.13.16 and PySide6 6.8.3 also drops connections to
+  `functools.partial` objects. Every handler that needs arguments is now a method of
+  a small Qt object attached to the widget that sends the signal (`gui/slots.py`), the
+  form those connections keep. It holds the window and widgets only weakly, so a
+  closed window can no longer be freed from the NWB writer's thread, which could hang
+  on Windows and crash on macOS. The full test suite now passes on macOS 3.13.
+- A GUI test that stopped its first preview too early, and could hang on a busy
+  computer, now waits for two frames of every wavelength.
+
 ## 0.3.13 - 2026-10-26
 
 ### Changed
