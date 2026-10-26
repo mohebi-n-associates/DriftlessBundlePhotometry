@@ -8,6 +8,19 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.13 - 2026-10-26
+
+### Changed
+
+- **LED power changes no longer blank the traces.** A bench test on the R821
+  (2026-10-26) showed the board takes a new LED power while its LED cycle keeps
+  running: 470 nm stepped from one frame to the next, with no missed trigger, no
+  camera frame-ID gap, and no change to the other LEDs. Preview and live view now send
+  only the new power, without stopping and restarting the cycle, so no frames are
+  dropped and no gap is marked. The powers follow the slider as you drag (sent at most
+  every 150 ms, and once more on release). Recordings still keep the power they started
+  with. The simulated board now applies power changes mid-run the same way.
+
 ## 0.3.12 - 2026-10-26
 
 ### Changed

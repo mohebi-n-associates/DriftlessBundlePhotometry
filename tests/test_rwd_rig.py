@@ -615,7 +615,8 @@ def test_rwd_rig_starts_manual_programs_once_at_a_time(tmp_path: Path) -> None:
     bench.assert_all_off()
 
 
-def test_rwd_rig_changes_led_power_mid_session_with_a_marked_gap(tmp_path: Path) -> None:
+def test_rwd_rig_changes_led_power_mid_session_without_a_restart(tmp_path: Path) -> None:
+    # The R821 applies LED_VALUE within one LED cycle while it runs (bench, 2026-10-26).
     bench = Bench(_config(tmp_path, (W410, W470)))
     packets = []
     for packet in bench.rig.packets(2.0):
@@ -631,12 +632,14 @@ def test_rwd_rig_changes_led_power_mid_session_with_a_marked_gap(tmp_path: Path)
         if f.exposure.wavelength_nm == W470
     ]
     assert powers[0][0] == 12.5 and powers[-1][0] == 20.0
-    assert [run.led_value[RWDLed.LED_470] for run in bench.board.runs] == [1250, 2000]
+    assert len(bench.board.runs) == 1  # one LED cycle throughout
+    assert bench.board.runs[0].led_value[RWDLed.LED_470] == 2000
     events = {event.event: event.detail for event in events_of(packets)}
     assert events["rwd_led_power_changed"].startswith("410 nm 5 %, 470 nm 20 %")
-    (gap,) = invalid_of(packets)
-    assert gap.reason == "RWD sequencer restart: LED power changed"
-    assert all(not gap.start_time_s <= t < gap.stop_time_s for _p, t in powers)
+    assert "without restarting" in events["rwd_led_power_changed"]
+    assert invalid_of(packets) == []
+    sequences = [f.exposure.sequence for f in frames]
+    assert sequences == list(range(sequences[0], sequences[0] + len(sequences)))
     bench.assert_all_off()
 
 

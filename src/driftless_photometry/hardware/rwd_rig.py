@@ -40,7 +40,13 @@ from driftless_photometry.faults import AcquisitionFault, AcquisitionFaultCode
 
 from .alvium import AlviumFrame, AlviumSettings, AlviumTriggeredCameras
 from .base import ExcitationCycle, RigPacket, StartCondition
-from .rwd_controller_protocol import device_enable, output_config, output_enable
+from .rwd_controller_protocol import (
+    RWDLed,
+    device_enable,
+    led_power,
+    output_config,
+    output_enable,
+)
 from .rwd_outputs import OutputProgramRun
 from .rwd_timing import (
     RWDBrightnessCheck,
@@ -645,24 +651,23 @@ class _RWDSession:
         }
         if updated == dict(self._plan.power_percent):
             return
-        start_s = self._first_unemitted_s()
-        discarded = len(self._held)
-        self._held.clear()
-        self._transport.command(device_enable(False))
-        discarded += self._drain_frames()
+        # The R821 takes LED_VALUE while its sequencer runs and applies it within one
+        # LED cycle, with no missed trigger or frame (bench, 2026-10-26), so the LED cycle,
+        # and every frame's wavelength, carry on without a restart.
+        for led in RWDLed:
+            wavelength = Wavelength(led.wavelength_nm)
+            if (
+                wavelength in updated
+                and updated[wavelength] != self._plan.power_percent[wavelength]
+            ):
+                self._transport.command(led_power(led, updated[wavelength]))
         self._plan = replace(self._plan, power_percent=updated)
-        self._brightness = RWDBrightnessCheck(self._plan)
-        for command in self._plan.commands():
-            self._transport.command(command)
-        if self._open_invalid is None:
-            self._open_invalid = (start_s, "LED power changed")
         self._event(
             "rwd_led_power_changed",
             ", ".join(f"{int(w)} nm {p:g} %" for w, p in updated.items())
-            + f"; {discarded} frame(s) during the change were not recorded",
-            at_s=start_s,
+            + "; applied without restarting the LED cycle, from the next exposure",
+            at_s=self._first_unemitted_s(),
         )
-        self._start_run()
 
     # Sequencer runs ----------------------------------------------------------------------
     def _start_outputs(self) -> None:
