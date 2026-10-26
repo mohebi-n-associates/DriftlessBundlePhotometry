@@ -934,9 +934,9 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.review_setup_button)
         self._power_timer = QTimer(self)
         self._power_timer.setSingleShot(True)
-        # One board restart per adjustment: on slider release, or after keys or the wheel
-        # have been still for a moment.
-        self._power_timer.setInterval(600)
+        # The board takes a new power without restarting its LED cycle, so powers follow
+        # the slider live, sent at most this often (and once more on release).
+        self._power_timer.setInterval(150)
         self._power_timer.timeout.connect(self._send_led_powers)
         for checks, sliders, _group in self._channel_controls.values():
             for check in checks.values():
@@ -4552,10 +4552,8 @@ class MainWindow(QMainWindow):
             return
         if not self._is_rwd_mode():
             return
-        slider = self.sender()
-        if isinstance(slider, QSlider) and slider.isSliderDown():
-            return  # still dragging: sent once on release
-        self._power_timer.start()
+        if not self._power_timer.isActive():
+            self._power_timer.start()
 
     def _on_power_slider_released(self) -> None:
         if self._operation_kind in {"preview", "live"} and self._is_rwd_mode():
@@ -4571,7 +4569,7 @@ class MainWindow(QMainWindow):
         for wavelength, slider in sliders.items():
             if checks[wavelength].isChecked():
                 request(wavelength, slider.value() / 10)
-        self.statusBar().showMessage("LED power sent; the board restarts its LED cycle")
+        self.statusBar().showMessage("LED power sent; it applies from the next exposure")
 
     def _on_preview_failed(self, traceback_text: str) -> None:
         self._drain_display()

@@ -241,7 +241,12 @@ class SimulatedRWDBoard:
         elif function is RWDFunction.QUERY_MODEL:
             self._reply(RWDFunction.MODEL_REPLY, bytes([self.model_code]))
         elif function is RWDFunction.LED_VALUE:
-            state.led_value[RWDLed(data[0])] = int.from_bytes(data[2:4], "big")
+            led, value = RWDLed(data[0]), int.from_bytes(data[2:4], "big")
+            state.led_value[led] = value
+            if state.sequencer_enabled and self.runs and self.runs[-1].stop_s is None:
+                # The R821 applies a power change within one LED cycle while the
+                # sequencer runs, with no missed trigger (bench, 2026-10-26).
+                self.runs[-1].led_value[led] = value
             self._reply(RWDFunction.LED_VALUE_REPLY, data)
         elif function is RWDFunction.LED_ENABLE:
             state.led_enabled[RWDLed(data[0])] = bool(data[1])

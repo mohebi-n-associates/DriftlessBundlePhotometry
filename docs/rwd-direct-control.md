@@ -721,3 +721,19 @@ and the TTL source on Input 1. The operator was away; the script kept Windows aw
     so this is most likely ambient light reaching the fiber or cameras: daylight after
     sunrise, then room lights. The overnight 20 Hz run, in the dark, showed no rise.
     Shield the fiber and target from room light for real recordings.
+
+**2026-10-26 LED power change while the sequencer runs.** One fiber on its target or
+capped, all three LEDs at 5 %, 20 Hz, DBF's `RWDRig` with its power change replaced by
+a single `LED_VALUE` command (no `DEVICE_ENABLE` stop or start). 470 nm went from 5 to
+10 % 5 s into an 11 s run.
+
+- One sequencer run throughout, with no restart and no invalid span.
+- Camera 1 (410/470): 147 frames, no frame-ID gaps, steps of exactly 50 and 100 ms.
+  Camera 2 (560): 73 frames, no gaps, every step 150.0 ms.
+- 470 nm mean frame brightness stepped from 2.23 to 2.71 counts between two
+  consecutive 470 nm frames, with no intermediate value; 410 nm (3.10 → 3.07) and
+  560 nm (15.42 → 15.40) did not change.
+- So the board applies a new LED power within one LED cycle and keeps its trigger
+  grid. Since 0.3.13 DBF changes power this way in preview and live view. Not yet
+  checked: other frame rates, several changes in quick succession, and whether an
+  exposure in flight when the command lands can be partly at each power.

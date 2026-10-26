@@ -144,8 +144,9 @@ camera.
    its own NWB file.
 6. Press **Run preview**. It runs the full acquisition path, live traces included,
    until you press **Stop** (10 minutes at most). Nothing is saved. While it
-   runs, move the LED power sliders to set each LED. The board restarts its LED cycle
-   for each change, and the short gap is marked. Which LEDs are on cannot change
+   runs, move the LED power sliders to set each LED; the traces follow as you drag,
+   with no gap, because the board takes a new power without restarting its LED
+   cycle. Which LEDs are on cannot change
    during a preview. When you stop it, the preview counts for recording only if it
    ended on the current powers and nothing else changed. Any later change to the
    settings or circles needs a new preview before **Record** is enabled.

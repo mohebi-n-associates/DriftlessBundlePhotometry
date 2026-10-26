@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.12"
+    assert __version__ == "0.3.13"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1175,21 +1175,18 @@ def test_gui_preview_runs_until_stopped_and_takes_led_power_changes(qtbot, tmp_p
     )
     seen = sum(window._camera_frame_counts.values())
     qtbot.waitUntil(lambda: sum(window._camera_frame_counts.values()) >= seen + 6, timeout=15_000)
-    # Dragging sends nothing until the slider is released: one board restart, not many.
+    # Dragging follows the slider live (throttled) and sends once more on release; the
+    # board keeps one LED cycle, so nothing restarts.
     runs = len(benches[-1].board.runs)
     slider.setSliderDown(True)
     for value in (220, 250, 280, 300):
         slider.setValue(value)
-    assert not window._power_timer.isActive()
-    assert len(benches[-1].board.runs) == runs
+    assert window._power_timer.isActive()
     slider.setSliderDown(False)  # released: sent at once
     qtbot.waitUntil(
-        lambda: any(run.led_value[RWDLed.LED_470] == 3000 for run in benches[-1].board.runs),
-        timeout=10_000,
+        lambda: benches[-1].board.state.led_value[RWDLed.LED_470] == 3000, timeout=10_000
     )
-    assert not any(
-        run.led_value[RWDLed.LED_470] in (2200, 2500, 2800) for run in benches[-1].board.runs
-    )
+    assert len(benches[-1].board.runs) == runs
     seen = sum(window._camera_frame_counts.values())
     qtbot.waitUntil(lambda: sum(window._camera_frame_counts.values()) >= seen + 6, timeout=15_000)
     window.stop_recording()
