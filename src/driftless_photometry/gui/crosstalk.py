@@ -122,14 +122,14 @@ class CrosstalkDialog(QDialog):
         layout.addWidget(intro)
         row = QHBoxLayout()
         self.dark_button = QPushButton("Capture dark")
-        self.dark_button.clicked.connect(lambda: self._start(None))
+        self.dark_button.clicked.connect(self._capture_dark)
         row.addWidget(self.dark_button)
         self.fiber_combo = QComboBox()
         for fiber, name in self._fibers:
             self.fiber_combo.addItem(name, fiber)
         row.addWidget(self.fiber_combo)
         self.fiber_button = QPushButton("Capture fiber")
-        self.fiber_button.clicked.connect(lambda: self._start(self.fiber_combo.currentData()))
+        self.fiber_button.clicked.connect(self._capture_fiber)
         row.addWidget(self.fiber_button)
         row.addStretch(1)
         row.addWidget(QLabel("Wavelength"))
@@ -171,6 +171,12 @@ class CrosstalkDialog(QDialog):
             self.status.setText("Start Live view to capture.")
         elif self._capture is None and self.dark is None:
             self.status.setText("Cap every fiber end, then press Capture dark.")
+
+    def _capture_dark(self, *_args: object) -> None:
+        self._start(None)
+
+    def _capture_fiber(self, *_args: object) -> None:
+        self._start(self.fiber_combo.currentData())
 
     def _start(self, target: str | None) -> None:
         self._capture = _Capture(target)

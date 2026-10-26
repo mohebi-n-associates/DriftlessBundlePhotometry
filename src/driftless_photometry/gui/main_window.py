@@ -9,11 +9,12 @@ from array import array
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QEvent, QRectF, QSignalBlocker, QSize, Qt, QThread, QTimer
+from PySide6.QtCore import QEvent, QObject, QRectF, QSignalBlocker, QSize, Qt, QThread, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
@@ -271,6 +272,27 @@ class ROIMetadataEditor(QWidget):
 _SIGNAL_WARNING_COLOR = "#ffb454"
 _INVALID_SPAN_RGBA = (224, 68, 80, 45)
 _MAX_INVALID_GRAPHICS = 500
+
+
+class _GainLink(QObject):
+    """Keeps a gain slider (0.1 dB steps) and its spin box in step.
+
+    Signals connect to bound methods throughout this window, never to lambdas: on
+    macOS with Python 3.13.16 and PySide6 6.8.3, lambda connections were dropped soon
+    after they were made, and closures over widgets also tie windows into reference
+    cycles that the garbage collector may free on a worker thread.
+    """
+
+    def __init__(self, slider: QSlider, spin: QDoubleSpinBox) -> None:
+        super().__init__(spin)
+        self._slider = slider
+        self._spin = spin
+
+    def slider_moved(self, tenths: int) -> None:
+        self._spin.setValue(tenths / 10)
+
+    def spin_changed(self, db: float) -> None:
+        self._slider.setValue(round(db * 10))
 
 
 class _StayOpenMenu(QMenu):
@@ -870,7 +892,7 @@ class MainWindow(QMainWindow):
         self._marker_shortcuts: list[QShortcut] = []
         for key in EVENT_MARKER_KEYS:
             shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.activated.connect(lambda key=key: self.mark_event(key, "key"))
+            shortcut.activated.connect(partial(self.mark_event, key, "key"))
             self._marker_shortcuts.append(shortcut)
         self._event_marks_shown: list[EventMark] = []
         self._event_graphics: list[list[tuple[object, object]]] = []
@@ -1027,13 +1049,13 @@ class MainWindow(QMainWindow):
             summary.setWordWrap(True)
             edit_button = QPushButton("Edit…")
             edit_button.setToolTip("Set the pulse train, its trigger, timing, steps and repeats")
-            edit_button.clicked.connect(lambda _checked=False, p=port: self.edit_output_program(p))
+            edit_button.clicked.connect(partial(self._invoke, self.edit_output_program, (port,)))
             test_button = QPushButton("Test")
             test_button.setToolTip(
                 "Drive this output's pulse train for 1 s with the LEDs off; anything "
                 "connected to it, such as a laser, is driven too"
             )
-            test_button.clicked.connect(lambda _checked=False, p=port: self.start_output_test(p))
+            test_button.clicked.connect(partial(self._invoke, self.start_output_test, (port,)))
             for column, widget in enumerate((check, summary, edit_button, test_button)):
                 outputs.addWidget(widget, row, column)
             check.toggled.connect(self._invalidate_preview)
@@ -1371,11 +1393,7 @@ class MainWindow(QMainWindow):
             readout = QLabel(self._format_intensity(default, profile))
             readout.setObjectName("voltageReadout")
             readout.setMinimumWidth(54)
-            slider.valueChanged.connect(
-                lambda value, label=readout, prof=profile: label.setText(
-                    self._format_intensity(value, prof)
-                )
-            )
+            slider.valueChanged.connect(partial(self._show_intensity, readout, profile))
             row = QWidget()
             row_layout = QVBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
@@ -1467,9 +1485,7 @@ class MainWindow(QMainWindow):
         self.exposure_spin.setSuffix(" ms")
         self.exposure_max_button = QPushButton("Max")
         self.exposure_max_button.setToolTip("Use the longest exposure this frame rate allows")
-        self.exposure_max_button.clicked.connect(
-            lambda: self.exposure_spin.setValue(self.exposure_spin.maximum())
-        )
+        self.exposure_max_button.clicked.connect(self._set_maximum_exposure)
         exposure_row = QWidget()
         exposure_layout = QHBoxLayout(exposure_row)
         exposure_layout.setContentsMargins(0, 0, 0, 0)
@@ -1495,8 +1511,8 @@ class MainWindow(QMainWindow):
         form.addRow(self.timing_summary)
         self.fps_spin.valueChanged.connect(self._on_camera_timing_changed)
         self.exposure_spin.valueChanged.connect(self._on_camera_timing_changed)
-        self.gain_spin.valueChanged.connect(lambda db: self._on_gain_changed(db, 1))
-        self.gain2_spin.valueChanged.connect(lambda db: self._on_gain_changed(db, 2))
+        self.gain_spin.valueChanged.connect(partial(self._on_gain_changed, camera=1))
+        self.gain2_spin.valueChanged.connect(partial(self._on_gain_changed, camera=2))
         return group
 
     def _configure_camera_controls(self, profile: SystemProfile) -> None:
@@ -1688,7 +1704,7 @@ class MainWindow(QMainWindow):
             view_box.range_selected.connect(self._on_trace_range_selected)
             view_box.reset_requested.connect(self._reset_trace_zoom)
             view_box.sigRangeChangedManually.connect(
-                lambda mask, index=row: self._on_trace_range_changed_manually(index, mask)
+                partial(self._on_trace_range_changed_manually, row)
             )
             plot = self.trace_workspace.addPlot(row=row, col=0, viewBox=view_box)
             title = f"ROI {row + 1} - {roi.label} / {roi.animal_id}"
@@ -1712,16 +1728,16 @@ class MainWindow(QMainWindow):
         menu.clear()
         self._hidden_trace_rows &= set(range(len(rois)))
         every = menu.addAction("Select all")
-        every.triggered.connect(lambda: self._set_hidden_trace_rows(set()))
+        every.triggered.connect(self._show_all_trace_rows)
         none = menu.addAction("Select none")
-        none.triggered.connect(lambda: self._set_hidden_trace_rows(set(range(len(rois)))))
+        none.triggered.connect(self._show_no_trace_rows)
         menu.addSeparator()
         self.trace_row_actions: dict[int, QAction] = {}
         for row, roi in enumerate(rois):
             action = menu.addAction(f"ROI {row + 1} - {roi.label}")
             action.setCheckable(True)
             action.setChecked(row not in self._hidden_trace_rows)
-            action.toggled.connect(lambda checked, row=row: self._show_trace_row(row, checked))
+            action.toggled.connect(partial(self._show_trace_row, row))
             self.trace_row_actions[row] = action
         self._apply_trace_focus()
 
@@ -1992,6 +2008,23 @@ class MainWindow(QMainWindow):
         self._rebuild_roi_metadata(fiber_count)
         return page
 
+    def _invoke(self, func: Callable[..., object], args: tuple, *_signal_args: object) -> None:
+        """Call ``func(*args)``, ignoring the signal's own arguments (a button's checked)."""
+
+        func(*args)
+
+    def _show_intensity(self, label: QLabel, profile: SystemProfile, value: int) -> None:
+        label.setText(self._format_intensity(value, profile))
+
+    def _set_maximum_exposure(self, *_args: object) -> None:
+        self.exposure_spin.setValue(self.exposure_spin.maximum())
+
+    def _show_all_trace_rows(self, *_args: object) -> None:
+        self._set_hidden_trace_rows(set())
+
+    def _show_no_trace_rows(self, *_args: object) -> None:
+        self._set_hidden_trace_rows(set(self.trace_plots))
+
     def _toggle_theme(self) -> None:
         theme = "light" if self._theme == "dark" else "dark"
         self._apply_theme(theme)
@@ -2097,9 +2130,7 @@ class MainWindow(QMainWindow):
                 "The ROIs (animals) this input belongs to; only their NWB files get its edges"
             )
             menu = QMenu(rois_button)
-            menu.aboutToShow.connect(
-                lambda line=line, menu=menu: self._fill_ttl_roi_menu(line, menu)
-            )
+            menu.aboutToShow.connect(partial(self._fill_ttl_roi_menu, line, menu))
             rois_button.setMenu(menu)
             layout.addWidget(check, row, 0)
             layout.addWidget(label, row, 1)
@@ -2194,7 +2225,7 @@ class MainWindow(QMainWindow):
         every = menu.addAction("All ROIs")
         every.setCheckable(True)
         every.setChecked(not selected)
-        every.triggered.connect(lambda _c=False, line=line: self._set_ttl_rois(line, ()))
+        every.triggered.connect(partial(self._invoke, self._set_ttl_rois, (line, ())))
         menu.addSeparator()
         try:
             rois = self._roi_configs_from_controls()
@@ -2204,11 +2235,7 @@ class MainWindow(QMainWindow):
             action = menu.addAction(f"ROI {index + 1} - {roi.label} ({roi.animal_id})")
             action.setCheckable(True)
             action.setChecked(roi.fiber_id in selected)
-            action.triggered.connect(
-                lambda checked, line=line, fiber=roi.fiber_id: self._toggle_ttl_roi(
-                    line, fiber, checked
-                )
-            )
+            action.triggered.connect(partial(self._toggle_ttl_roi, line, roi.fiber_id))
 
     def _toggle_ttl_roi(self, line: int, fiber_id: str, checked: bool) -> None:
         selected = [f for f in self._ttl_roi_selection.get(line, ()) if f != fiber_id]
@@ -2310,16 +2337,14 @@ class MainWindow(QMainWindow):
                 button = QPushButton(f"Fire {output.label or f'output {port}'}")
                 button.setObjectName("attention")
                 button.setToolTip(f"Start TTL output {port}'s program now")
-                button.clicked.connect(lambda _checked=False, p=port: self.fire_output(p))
+                button.clicked.connect(partial(self._invoke, self.fire_output, (port,)))
                 self.marker_row.insertWidget(self.marker_row.count() - 1, button)
                 self.output_fire_buttons[port] = button
         for marker in self._markers_from_controls():
             button = QPushButton(f"{marker.key} · {marker.name}")
             button.setObjectName("horizon")
             button.setToolTip(f"Mark {marker.name!r} now (key {marker.key})")
-            button.clicked.connect(
-                lambda _checked=False, key=marker.key: self.mark_event(key, "button")
-            )
+            button.clicked.connect(partial(self._invoke, self.mark_event, (marker.key, "button")))
             self.marker_row.insertWidget(self.marker_row.count() - 1, button)
             self.marker_buttons[marker.key] = button
         self._update_marker_buttons()
@@ -2907,9 +2932,7 @@ class MainWindow(QMainWindow):
             if index < len(existing):
                 editor.restore(existing[index])
             self._roi_metadata_editors.append(editor)
-            editor.enabled_check.toggled.connect(
-                lambda checked, roi_index=index: self._on_roi_enabled_changed(roi_index, checked)
-            )
+            editor.enabled_check.toggled.connect(partial(self._on_roi_enabled_changed, index))
             for edit in (
                 editor.label_edit,
                 editor.animal_id_edit,
@@ -2921,14 +2944,10 @@ class MainWindow(QMainWindow):
             editor.label_edit.textChanged.connect(self._refresh_roi_labels)
             editor.sex_combo.currentIndexChanged.connect(self._invalidate_preview)
             editor.apply_diameter_button.clicked.connect(
-                lambda _checked=False, roi_index=index: self._apply_diameter_to_all(roi_index)
+                partial(self._invoke, self._apply_diameter_to_all, (index,))
             )
             for camera, spin in editor.diameter_spins.items():
-                spin.valueChanged.connect(
-                    lambda value, roi_index=index, cam=camera: self._on_diameter_entered(
-                        roi_index, cam, value
-                    )
-                )
+                spin.valueChanged.connect(partial(self._on_diameter_entered, index, camera))
             suffix = "" if editor.enabled_check.isChecked() else " (off)"
             self.roi_metadata_tabs.addTab(editor, f"ROI {index + 1}{suffix}")
         self.roi_metadata_tabs.setCurrentIndex(max(0, selected))
@@ -4806,8 +4825,10 @@ def _gain_control() -> tuple[QWidget, QSlider, QDoubleSpinBox]:
     slider.setSingleStep(1)
     slider.setPageStep(10)
     slider.setToolTip(tip)
-    slider.valueChanged.connect(lambda tenths: spin.setValue(tenths / 10))
-    spin.valueChanged.connect(lambda db: slider.setValue(round(db * 10)))
+    # Bound methods of a QObject, not lambdas: see _GainLink.
+    link = _GainLink(slider, spin)
+    slider.valueChanged.connect(link.slider_moved)
+    spin.valueChanged.connect(link.spin_changed)
     row = QWidget()
     layout = QHBoxLayout(row)
     layout.setContentsMargins(0, 0, 0, 0)

@@ -122,7 +122,7 @@ class OutputProgramDialog(QDialog):
             self._add_step(step)
         buttons = QHBoxLayout()
         add = QPushButton("Add step")
-        add.clicked.connect(lambda: self._add_step(None))
+        add.clicked.connect(self._add_empty_step)
         remove = QPushButton("Remove step")
         remove.clicked.connect(self._remove_step)
         buttons.addWidget(add)
@@ -182,6 +182,9 @@ class OutputProgramDialog(QDialog):
         self.trigger_combo.currentIndexChanged.connect(self._sync)
         self.continuous_check.toggled.connect(self._sync)
         self._sync()
+
+    def _add_empty_step(self, *_args: object) -> None:
+        self._add_step(None)
 
     def _add_step(self, step: RWDTTLOutputStepConfig | None) -> None:
         row = self.steps_table.rowCount()
