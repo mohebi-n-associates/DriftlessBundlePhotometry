@@ -99,7 +99,8 @@ jobs:
           if ($headless.ExitCode -ne 0) {
             throw "Frozen acquisition smoke exited with code $($headless.ExitCode)"
           }
-          if ((Get-ChildItem $outputDir -Filter "*.nwb").Count -ne 1) {
+          # Each recording is saved in its own folder under the output directory.
+          if ((Get-ChildItem $outputDir -Recurse -Filter "*.nwb").Count -ne 1) {
             throw "Frozen acquisition smoke did not create exactly one NWB file"
           }
       - name: Compile the per-user installer
