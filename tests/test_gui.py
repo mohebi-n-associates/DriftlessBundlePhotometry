@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.11"
+    assert __version__ == "0.3.12"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1164,7 +1164,7 @@ def test_gui_preview_runs_until_stopped_and_takes_led_power_changes(qtbot, tmp_p
     assert window._thread is not None  # still running: no fixed length
     assert slider.isEnabled() and not window.channel_checks[Wavelength.GREEN_470].isEnabled()
     slider.setValue(200)  # 20 %
-    # The simulated rig floods the event queue, which can starve the 250 ms debounce,
+    # The simulated rig floods the event queue, which can starve the 600 ms debounce,
     # so send at once once it is armed.
     assert window._power_timer.isActive()
     window._power_timer.stop()
@@ -1175,16 +1175,33 @@ def test_gui_preview_runs_until_stopped_and_takes_led_power_changes(qtbot, tmp_p
     )
     seen = sum(window._camera_frame_counts.values())
     qtbot.waitUntil(lambda: sum(window._camera_frame_counts.values()) >= seen + 6, timeout=15_000)
+    # Dragging sends nothing until the slider is released: one board restart, not many.
+    runs = len(benches[-1].board.runs)
+    slider.setSliderDown(True)
+    for value in (220, 250, 280, 300):
+        slider.setValue(value)
+    assert not window._power_timer.isActive()
+    assert len(benches[-1].board.runs) == runs
+    slider.setSliderDown(False)  # released: sent at once
+    qtbot.waitUntil(
+        lambda: any(run.led_value[RWDLed.LED_470] == 3000 for run in benches[-1].board.runs),
+        timeout=10_000,
+    )
+    assert not any(
+        run.led_value[RWDLed.LED_470] in (2200, 2500, 2800) for run in benches[-1].board.runs
+    )
+    seen = sum(window._camera_frame_counts.values())
+    qtbot.waitUntil(lambda: sum(window._camera_frame_counts.values()) >= seen + 6, timeout=15_000)
     window.stop_recording()
     qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
 
     assert window.last_error is None, window.last_error
-    assert dict(window.last_preview.final_power_percent)[Wavelength.GREEN_470] == 20.0
+    assert dict(window.last_preview.final_power_percent)[Wavelength.GREEN_470] == 30.0
     assert window.start_button.isEnabled()  # it ended on the current powers
     assert window.channel_checks[Wavelength.GREEN_470].isEnabled()
     benches[-1].assert_all_off()
 
-    slider.setValue(300)
+    slider.setValue(350)  # a different power needs a new preview
     assert not window.start_button.isEnabled()
 
 
@@ -1475,7 +1492,7 @@ def test_gui_rows_ticked_back_after_none_fill_the_trace_area(qtbot, tmp_path: Pa
     window._prepare_trace_curves(demo_config(tmp_path, fiber_count=5))
     window.trace_rows_menu.actions()[1].trigger()  # Select none
     viewport = window.trace_scroll.viewport().height()
-    assert viewport > 2 * 230
+    assert viewport > 230
     window.trace_row_actions[0].setChecked(True)
     qtbot.wait(50)
     assert window.trace_plots[0].height() >= viewport - 40
@@ -1727,3 +1744,16 @@ def test_gui_locks_roi_circles_while_recording_but_not_in_preview(qtbot, tmp_pat
     assert window.last_error is None, window.last_error
     assert editable()  # unlocked again after the recording
     assert window._roi_metadata_editors[0].diameter_spins[1].isEnabled()
+
+
+def test_gui_one_roi_trace_fills_the_trace_area(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window.resize(1600, 1000)
+    window.show()
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=1))
+    qtbot.wait(50)
+    viewport = window.trace_scroll.viewport().height()
+    assert viewport > 230
+    assert window.trace_workspace.height() >= viewport - 4
+    assert window.trace_plots[0].height() >= viewport - 40

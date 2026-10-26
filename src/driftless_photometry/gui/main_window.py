@@ -934,7 +934,9 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.review_setup_button)
         self._power_timer = QTimer(self)
         self._power_timer.setSingleShot(True)
-        self._power_timer.setInterval(250)
+        # One board restart per adjustment: on slider release, or after keys or the wheel
+        # have been still for a moment.
+        self._power_timer.setInterval(600)
         self._power_timer.timeout.connect(self._send_led_powers)
         for checks, sliders, _group in self._channel_controls.values():
             for check in checks.values():
@@ -943,6 +945,7 @@ class MainWindow(QMainWindow):
             for slider in sliders.values():
                 slider.valueChanged.connect(self._invalidate_preview)
                 slider.valueChanged.connect(self._on_power_slider_changed)
+                slider.sliderReleased.connect(self._on_power_slider_released)
         for edit in (
             self.experimenter_edit,
             self.session_description_edit,
@@ -1792,10 +1795,10 @@ class MainWindow(QMainWindow):
 
     def _fit_trace_workspace(self) -> None:
         shown = sum(plot.isVisible() for plot in self.trace_plots.values())
-        height = _TRACE_ROW_HEIGHT_PX * max(1, shown)
-        if getattr(self, "_trace_rows_subset", False):
-            # A subset fills the visible trace area; more rows than fit still scroll.
-            height = max(height, self.trace_scroll.viewport().height() - 4)
+        # Rows fill the visible trace area; more rows than fit scroll.
+        height = max(
+            _TRACE_ROW_HEIGHT_PX * max(1, shown), self.trace_scroll.viewport().height() - 4
+        )
         self.trace_workspace.setFixedHeight(height)
         # Re-adding rows shrinks the layout to its preferred size, and a same-height change
         # sends no resize to restore it: stretch it over the whole workspace again.
@@ -1806,7 +1809,7 @@ class MainWindow(QMainWindow):
         if (
             watched is getattr(self, "_trace_viewport", None)
             and event.type() == QEvent.Type.Resize
-            and getattr(self, "_trace_rows_subset", False)
+            and getattr(self, "trace_plots", None)
         ):
             self._fit_trace_workspace()
         return super().eventFilter(watched, event)
@@ -4549,7 +4552,15 @@ class MainWindow(QMainWindow):
             return
         if not self._is_rwd_mode():
             return
+        slider = self.sender()
+        if isinstance(slider, QSlider) and slider.isSliderDown():
+            return  # still dragging: sent once on release
         self._power_timer.start()
+
+    def _on_power_slider_released(self) -> None:
+        if self._operation_kind in {"preview", "live"} and self._is_rwd_mode():
+            self._power_timer.stop()
+            self._send_led_powers()
 
     def _send_led_powers(self) -> None:
         worker = self._worker
