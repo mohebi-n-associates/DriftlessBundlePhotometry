@@ -102,6 +102,7 @@ from driftless_photometry.snr import live_snr
 from .bleach import BleachDialog, BleachPlan, BleachRecord, led_duty_fraction
 from .branding import logo_path
 from .crosstalk import CrosstalkDialog
+from .gc_thread import install_main_thread_gc
 from .output_program import OutputProgramDialog, describe_program
 from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
 from .slots import button_slot, slot
@@ -331,6 +332,8 @@ class MainWindow(QMainWindow):
         demo_only: bool = False,
     ) -> None:
         super().__init__()
+        # Free Qt objects only on this thread, never on an acquisition worker.
+        install_main_thread_gc()
         self._demo_only = demo_only
         if demo_only:
             from driftless_photometry.hardware import SimulatedRig
