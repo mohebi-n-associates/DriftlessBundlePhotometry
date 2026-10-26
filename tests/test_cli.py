@@ -12,7 +12,7 @@ def test_cli_reports_short_name_and_version(capsys) -> None:
     with pytest.raises(SystemExit, match="0"):
         build_parser().parse_args(["--version"])
 
-    assert capsys.readouterr().out == "DBF 0.3.14\n"
+    assert capsys.readouterr().out == "DBF 0.3.15\n"
 
 
 def test_headless_cli_writes_machine_readable_result(tmp_path: Path, capsys) -> None:
@@ -84,3 +84,36 @@ def test_cli_reports_and_refuses_legacy_rwd_tcp_spools(tmp_path: Path, capsys) -
 def test_cli_no_longer_offers_rwd_tcp_modes(removed_flag: str, tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args([removed_flag, str(tmp_path / "unused")])
+
+
+def test_cli_checks_devices_without_leds_and_reports_json(monkeypatch, tmp_path, capsys):
+    import json
+
+    from driftless_photometry.hardware import rwd_devices
+    from driftless_photometry.hardware.rwd_devices import DeviceStatus, RWDDeviceReport
+
+    seen = {}
+
+    def fake_check(config):
+        seen["port"] = config.source.controller_port
+        return RWDDeviceReport(
+            DeviceStatus("Controller", True, "R821 on COM7"),
+            (
+                DeviceStatus("Camera 1 (410/470 nm)", True, "1800 U-040m"),
+                DeviceStatus("Camera 2 (560 nm)", False, "no camera with DeviceUserID 2"),
+            ),
+        )
+
+    monkeypatch.setattr(rwd_devices, "check_rwd_devices", fake_check)
+    report = tmp_path / "check.json"
+    assert main(["--check-devices", "--port", "COM7", "--report", str(report)]) == 1
+    assert seen["port"] == "COM7"
+    written = json.loads(report.read_text(encoding="utf-8"))
+    assert written["ok"] is False
+    assert [d["ok"] for d in written["devices"]] == [True, True, False]
+    assert json.loads(capsys.readouterr().out) == written
+
+
+def test_cli_device_options_need_check_devices():
+    with pytest.raises(SystemExit):
+        main(["--report", "x.json"])

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -50,6 +51,22 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="decode RWD controller serial traffic from a USBPcap .pcapng/.pcap capture",
     )
+    mode.add_argument(
+        "--check-devices",
+        action="store_true",
+        help="check the RWD controller and both cameras without switching any LED on",
+    )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        metavar="PATH",
+        help="also write the --check-devices result to this JSON file",
+    )
+    parser.add_argument(
+        "--port",
+        metavar="COM",
+        help="the RWD controller's serial port for --check-devices (default: find it)",
+    )
     parser.add_argument(
         "--rwd-usb-csv",
         type=Path,
@@ -71,11 +88,47 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _check_devices(port: str | None, report_path: Path | None) -> int:
+    """Report the RWD controller and cameras; 0 when every needed device is found.
+
+    Opening the controller forces it all-off, as every DBF connection does; no LED is
+    switched on. The installed desktop application has no console, so ``report_path``
+    is how its result is read there.
+    """
+
+    from driftless_photometry.config import RWDSourceConfig
+    from driftless_photometry.hardware.rwd_devices import check_rwd_devices
+
+    config = demo_config(Path("."), fiber_count=1, system="rwd")
+    if port:
+        config = config.model_copy(update={"source": RWDSourceConfig(controller_port=port)})
+    report = check_rwd_devices(config)
+    result = {
+        "version": __version__,
+        "ok": report.ok,
+        "devices": [
+            {"name": d.name, "ok": d.ok, "needed": d.needed, "detail": d.detail}
+            for d in report.devices
+        ],
+    }
+    text = json.dumps(result, indent=2)
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(text + "\n", encoding="utf-8")
+    if sys.stdout is not None:  # the windowed desktop executable has none
+        print(text)
+    return 0 if report.ok else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.rwd_usb_csv is not None and args.decode_rwd_usb_capture is None:
         parser.error("--rwd-usb-csv requires --decode-rwd-usb-capture")
+    if (args.report is not None or args.port is not None) and not args.check_devices:
+        parser.error("--report and --port require --check-devices")
+    if args.check_devices:
+        return _check_devices(args.port, args.report)
     if args.decode_rwd_usb_capture is not None:
         decoded = decode_rwd_usb_capture(args.decode_rwd_usb_capture)
         if args.rwd_usb_csv is not None:

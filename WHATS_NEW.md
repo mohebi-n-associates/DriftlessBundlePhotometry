@@ -8,6 +8,31 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.15 - 2026-10-26
+
+### Added
+
+- **`--check-devices`** checks the RWD controller and both cameras without switching
+  any LED on (opening the controller forces it all-off, as every DBF connection does)
+  and prints each device with its COM port or camera serial number. The exit code is 0
+  only when every needed device is found; `--port COM3` picks the controller's port,
+  and `--report PATH` also writes the result as JSON, which is how the installed
+  application, having no console, reports it.
+
+### Changed
+
+- **The Windows installer can drive RWD hardware.** It now bundles the Allied Vision
+  camera API (`vmbpy`, with its VmbC library), `pyserial`, and `pyvisa`, which earlier
+  installers lacked, so they could only run the simulator. The rig PC still needs Vimba
+  X installed for the camera driver. The installer's smoke test now fails a build
+  missing any of these libraries. A locally frozen build found the R821 and both
+  cameras on the bench PC with `--check-devices`.
+- **Installation guide.** The README now covers the installer, the drivers an RWD rig
+  needs (Vimba X, FTDI, `DeviceUserID`s, VISA for power meters), checking a rig with
+  `--check-devices`, the hardware extras for Conda and PyPI installs, and where DBF
+  keeps recordings, settings, and its error log. `docs/releasing.md` explains how to
+  build the Windows application locally.
+
 ## 0.3.14 - 2026-10-26
 
 ### Fixed

@@ -1,13 +1,17 @@
 # Driftless Bundle Photometry
 
-**Version 0.3.14** · [What's new](WHATS_NEW.md)
+**Version 0.3.15** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
-The application supports up to nine circular fiber ROIs, interleaved 405/470/565 nm
+The application supports up to nine circular fiber ROIs, interleaved multi-wavelength
 excitation, four edge-recording TTL inputs, optional lossless raw frames, and one
-self-contained NWB-HDF5 output per ROI and animal. Windows is the physical-hardware
-target; the simulator and GUI demo are cross-platform.
+self-contained NWB-HDF5 output per ROI and animal. It drives an RWD R821
+multichannel photometry system and its two Allied Vision cameras directly, without
+RWD's OFRS software (410/470/560 nm; bench-tested on one R821, see
+[the operator guide](docs/rwd-direct-operator-guide.md)), and has a Custom simulator
+path (405/470/565 nm). Windows is the physical-hardware target; the simulator and GUI
+demo are cross-platform. See [Installation](#installation).
 
 ## Current implementation
 
@@ -104,27 +108,65 @@ Each file also embeds a separate runtime provenance snapshot with the applicatio
 Python, operating-system, dependency, adapter, and protocol versions that governed
 acquisition or recovery.
 
-## Installation choices
+## Installation
 
-End users on 64-bit Windows should use the standalone installer. Developers should
-use the repository's Conda environment. PyPI is also available for users who already
-manage Python environments. The standalone installer includes Python and all normal
-application dependencies; it does not require Conda or a separate Python install.
+| You want to… | Use |
+| --- | --- |
+| Record with an RWD R821 rig, or just run DBF on Windows | the **Windows installer** |
+| Develop DBF or run its tests | the **Conda environment** |
+| Use DBF in a Python environment you already manage | **PyPI** |
 
-### Windows installer for end users
+### 1. Windows installer (recommended for the rig PC)
 
-1. Open the [latest GitHub release](https://github.com/mohebi-n-associates/DriftlessBundlePhotometry/releases/latest).
-2. Download `Driftless-Bundle-Photometry-<version>-Windows-x64-Setup.exe`.
-3. Optionally compare its SHA-256 digest with `SHA256SUMS.txt` from the same release.
-4. Run the installer, then launch **Driftless Bundle Photometry** from the Start menu.
+1. Open the [latest GitHub release](https://github.com/mohebi-n-associates/DriftlessBundlePhotometry/releases/latest)
+   and download `Driftless-Bundle-Photometry-<version>-Windows-x64-Setup.exe`.
+   Optionally compare its SHA-256 digest with `SHA256SUMS.txt` from the same release.
+2. Run it. It installs for the current user only, needs no administrator rights, and
+   uninstalls cleanly from Windows Settings. The installer is not code-signed yet, so
+   SmartScreen may warn about an unrecognized publisher (**More info → Run anyway**).
+3. Launch **Driftless Bundle Photometry** from the Start menu.
 
-The installer is per-user, supports clean uninstall through Windows Settings, and
-does not require administrator access. Current installers are not code-signed, so
-Windows SmartScreen may show an unrecognized-publisher warning. The application can
-run the simulator, but the physical Thorlabs/controller path must not be treated as
-validated until the documented Windows bench gates pass.
+The installer is self-contained: Python, Qt, the NWB libraries, the Allied Vision
+camera API (`vmbpy`), the serial library for the controller, and the VISA library for
+power meters are all inside it. It runs the simulator straight away. For RWD hardware,
+add the drivers below.
 
-### Conda environment for developers
+### 2. Drivers for an RWD R821 rig (once per PC)
+
+1. **Allied Vision Vimba X**, with its USB transport layer, from
+   [Allied Vision](https://www.alliedvision.com/en/products/software/vimba-x-sdk/).
+   It provides the camera driver; DBF finds it through the `GENICAM_GENTL64_PATH`
+   setting that the Vimba X installer adds. Install it before starting DBF, or restart
+   DBF afterwards.
+2. **Controller driver:** Windows Update installs the FTDI driver for the R821's USB
+   cable, which then appears as a COM port. If it does not, install FTDI's VCP driver.
+3. **Cameras:** keep RWD's `DeviceUserID` settings, `1` for the 410/470 nm camera and
+   `2` for the 560 nm camera (Vimba X Viewer shows them).
+4. **Optional, for Measure power:** a Thorlabs PM100 or PM400 needs a VISA runtime,
+   such as NI-VISA or Thorlabs' Optical Power Monitor driver.
+
+Then check the rig without switching any LED on. With a Conda or PyPI install:
+
+```bash
+dbf --check-devices
+```
+
+or, for the installed application (it has no console, so write the result to a file):
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Driftless Bundle Photometry\DriftlessBundlePhotometry.exe" --check-devices --report "$env:USERPROFILE\Desktop\dbf-devices.json"
+```
+
+The exit code is 0 only when the controller and both cameras are found; the report
+names each device, its serial number or COM port, and what is missing. OFRS and its
+licence dongle are not needed; close OFRS (and Vimba X Viewer) before starting DBF,
+because only one program can use the controller and cameras at a time.
+
+Before recording, read [Recording with RWD hardware](docs/rwd-direct-operator-guide.md):
+it covers safety (**the RWD unit has no fail-safe; its power switch turns the LEDs off
+if DBF or the PC stops**), circle placement, previews, and what each NWB file holds.
+
+### 3. Conda environment for developers
 
 Clone the repository and let `environment.yml` create the `dbf` environment plus an
 editable install with GUI, test, lint, build, and release tools:
@@ -143,13 +185,17 @@ After pulling dependency changes, synchronize the existing environment with:
 conda env update --file environment.yml --prune
 ```
 
-### PyPI installation
+For RWD hardware, also install the hardware extras into that environment:
+`python -m pip install -e ".[rwd,power-meter]"`.
 
-Inside an existing Python 3.11–3.13 environment, install the desktop application
-from PyPI and launch it with:
+### 4. PyPI
+
+Inside an existing Python 3.11–3.13 environment:
 
 ```bash
-python -m pip install "driftless-bundle-photometry[gui]"
+python -m pip install "driftless-bundle-photometry[gui]"            # GUI and simulator
+python -m pip install "driftless-bundle-photometry[gui,rwd]"        # plus RWD cameras
+python -m pip install "driftless-bundle-photometry[gui,rwd,power-meter]"  # plus power meters
 dbf --version
 dbf --demo
 ```
@@ -157,7 +203,15 @@ dbf --demo
 The distribution name is `driftless-bundle-photometry`, the short command and Conda
 environment are `dbf`, and Python imports use `driftless_photometry`. The long
 `driftless-photometry` command remains available. On macOS, use Conda or PyPI for the
-simulator, replay, NWB, analysis, and GUI-demo paths.
+simulator, replay, NWB, analysis, and GUI-demo paths; RWD hardware is Windows-only.
+
+### Where DBF keeps its files
+
+- **Recordings:** the **Output root** on the Acquire tab (choose it with **Browse…** and
+  keep it with **Set as default**). Each recording gets its own folder there with its
+  NWB files, `session_log.txt`, `settings.json`, and ROI maps.
+- **Settings:** `Documents\Driftless Bundle Photometry` holds `default_settings.json`
+  (**Set as default**), `ui_preferences.json` (theme), and `logs\dbf-errors.log`.
 
 ## Running developer workflows
 

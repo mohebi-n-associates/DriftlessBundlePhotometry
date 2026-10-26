@@ -20,6 +20,11 @@ for package_name in (
     "ndx_fiber_photometry",
     "ndx_ophys_devices",
     "nwbinspector",
+    # RWD hardware: the Allied Vision camera API ships VmbC and its GenICam DLLs inside
+    # the wheel; the USB transport layer comes from the Vimba X installation on the PC.
+    "vmbpy",
+    # Thorlabs power meters through a VISA runtime (NI-VISA or Thorlabs' TLPM driver).
+    "pyvisa",
 ):
     package_datas, package_binaries, package_hiddenimports = collect_all(package_name)
     datas += package_datas
@@ -39,6 +44,8 @@ for distribution_name in (
     "pynwb",
     "pyqtgraph",
     "pyserial",
+    "pyvisa",
+    "vmbpy",
 ):
     datas += copy_metadata(distribution_name)
 

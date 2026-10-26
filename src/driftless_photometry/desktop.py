@@ -21,10 +21,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _desktop_smoke() -> int:
-    """Load the frozen Qt entry point and packaged icon without opening a window."""
+    """Load the frozen Qt entry point, hardware libraries, and icon without a window.
+
+    The RWD cameras need ``vmbpy`` (with its bundled VmbC library), the controller
+    ``pyserial``, and the power meter ``pyvisa``; a release without them would run only
+    the simulator, so a missing one fails the smoke test.
+    """
+
+    import importlib
 
     from driftless_photometry.gui.app import run_gui  # noqa: F401
     from driftless_photometry.gui.branding import logo_path
+
+    if getattr(sys, "frozen", False):  # the installer must bundle them; dev setups may not
+        for module in ("vmbpy", "serial", "pyvisa"):
+            importlib.import_module(module)
 
     with logo_path() as icon:
         if not Path(icon).is_file():
