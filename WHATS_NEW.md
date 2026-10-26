@@ -8,6 +8,17 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.11 - 2026-10-26
+
+### Fixed
+
+- **Controls that silently did nothing on macOS.** With Python 3.13.16 and PySide6
+  6.8.3 on macOS, Qt connections to lambdas were dropped soon after the window was
+  built, so the exposure **Max** button, gain sliders, diameter boxes, LED power
+  readouts, marker buttons, and others did nothing, and the garbage collector could
+  free a window from a worker thread during NWB writing (a crash in CI). Every signal
+  now connects to a method instead; behaviour on Windows is unchanged.
+
 ## 0.3.10 - 2026-10-24
 
 ### Changed
