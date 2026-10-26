@@ -72,8 +72,8 @@ jobs:
           cache: pip
       - name: Validate synchronized release metadata
         run: python tools/release.py check "$env:RELEASE_TAG"
-      - name: Install application and freezer
-        run: python -m pip install --upgrade pip && python -m pip install ".[gui,release]"
+      - name: Install application, hardware libraries, and freezer
+        run: python -m pip install --upgrade pip && python -m pip install ".[gui,rwd,power-meter,release]"
       - name: Create multi-resolution Windows icon
         run: >-
           python tools/make_windows_icon.py

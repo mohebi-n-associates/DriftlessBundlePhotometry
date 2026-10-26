@@ -57,6 +57,20 @@ release with a new version rather than trying to replace an uploaded file.
 
 ## Windows package details
 
+The Windows application is built with the `gui`, `rwd`, and `power-meter` extras, so it
+bundles the Allied Vision camera API (`vmbpy`, with VmbC), `pyserial`, and `pyvisa`; the
+rig PC still needs Vimba X (camera driver and USB transport layer) and, for power
+meters, a VISA runtime. `--desktop-smoke` fails a frozen build that lacks any of these
+libraries, and `--check-devices` checks a real rig without switching LEDs on.
+
+To build it locally, mirror the workflow: `pip install -e ".[gui,rwd,power-meter,release]"`,
+`python tools/make_windows_icon.py src/driftless_photometry/gui/assets/driftless-photometry.png build/windows/driftless-photometry.ico`,
+then `python -m PyInstaller --noconfirm --clean packaging/windows/DriftlessBundlePhotometry.spec`.
+Build into a short path (the repository's `dist\`): deeper folders push bundled DLL paths
+past Windows' 260-character limit. With an Anaconda-based Python, put
+`<anaconda>\Library\bin` on `PATH` for the build, or `_ctypes` is frozen without its
+`ffi` DLL; the release workflow uses python.org Python and needs neither.
+
 PyInstaller builds an onedir application so Qt, HDF5, PyNWB, NDX schemas, and their
 native libraries remain explicit. Inno Setup packages that directory into one
 downloadable installer. CI then performs a silent per-user install, launches the
