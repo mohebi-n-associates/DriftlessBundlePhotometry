@@ -1724,11 +1724,16 @@ def test_gui_locks_roi_circles_while_recording_but_not_in_preview(qtbot, tmp_pat
         )
 
     window.start_preview()
-    qtbot.waitUntil(lambda: window._trace_latest_s is not None, timeout=10_000)
+    # Stop only once every wavelength has two frames, or the preview rightly fails.
+    wanted = 2 * len(window._build_config().enabled_channels) + 2
+    qtbot.waitUntil(
+        lambda: sum(window._camera_frame_counts.values()) >= wanted or window._thread is None,
+        timeout=15_000,
+    )
     assert window._operation_kind == "preview" and editable()
     window.stop_recording()
     qtbot.waitUntil(lambda: window._thread is None, timeout=15_000)
-    run_preview_until_checked(window, qtbot)  # recording needs a preview of these circles
+    assert window.last_error is None, window.last_error  # this preview also enables Record
 
     window.start_recording()
     qtbot.waitUntil(lambda: window._trace_latest_s is not None, timeout=10_000)
