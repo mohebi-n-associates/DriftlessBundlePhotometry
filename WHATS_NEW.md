@@ -8,6 +8,24 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.12 - 2026-10-26
+
+### Changed
+
+- **LED power changes cause one restart per adjustment.** In preview and live view a
+  new LED power stops the board's LED cycle, sends the settings, and starts a new cycle;
+  the frames in that gap are not recorded and the gap is marked invalid, because each
+  frame's wavelength comes from its place in the cycle. DBF used to send the power
+  250 ms after the slider paused, so a slow drag restarted the cycle many times. It now
+  sends it once when the slider is released, or 0.6 s after keyboard or wheel changes.
+  Recordings keep the power they started with, as before.
+
+### Fixed
+
+- **Trace rows fill the trace area.** With one ROI (or any number that fits), the rows
+  now share the whole visible area instead of leaving it mostly empty; more ROIs than
+  fit still scroll at their usual height.
+
 ## 0.3.11 - 2026-10-26
 
 ### Fixed
