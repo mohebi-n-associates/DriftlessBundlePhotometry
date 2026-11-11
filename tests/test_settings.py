@@ -6,6 +6,7 @@ import pytest
 from driftless_photometry.config import (
     RWD_PROFILE,
     CustomSourceConfig,
+    ROIChoicesConfig,
     RWDSourceConfig,
     SessionConfig,
     TraceDisplayConfig,
@@ -23,6 +24,7 @@ from driftless_photometry.settings import (
     load_default_settings,
     save_default_settings,
     settings_root,
+    update_default_roi_choices,
 )
 
 
@@ -77,6 +79,40 @@ def test_default_settings_live_in_operator_settings_root(tmp_path: Path) -> None
     assert written == default_settings_path()
     assert written.name == "default_settings.json"
     assert load_default_settings() == config
+
+
+def test_dropdown_values_are_added_and_removed_in_the_default_settings_only(
+    tmp_path: Path,
+) -> None:
+    assert update_default_roi_choices(add=ROIChoicesConfig(animal_ids=("m1",))) is None
+
+    config = demo_config(tmp_path / "recordings", fiber_count=1)
+    save_default_settings(config)
+    written = update_default_roi_choices(
+        add=ROIChoicesConfig(animal_ids=("m1", "m2"), brain_regions=("NAc core",))
+    )
+    update_default_roi_choices(add=ROIChoicesConfig(animal_ids=("m3", "m1")))
+    update_default_roi_choices(remove=ROIChoicesConfig(animal_ids=("m2",)))
+
+    assert written == default_settings_path()
+    loaded = load_default_settings()
+    assert loaded is not None
+    assert loaded.roi_choices == ROIChoicesConfig(
+        animal_ids=("m1", "m3"), brain_regions=("NAc core",)
+    )
+    assert loaded.model_copy(update={"roi_choices": config.roi_choices}) == config
+
+
+def test_older_default_settings_are_not_rewritten_for_dropdown_values(tmp_path: Path) -> None:
+    path = save_default_settings(demo_config(tmp_path / "recordings", fiber_count=1))
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["format"] = SETTINGS_FORMAT_V1
+    del document["settings"]["source"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    assert update_default_roi_choices(add=ROIChoicesConfig(animal_ids=("m1",))) is None
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_v1_settings_migrate_explicitly_to_custom_source(tmp_path: Path) -> None:

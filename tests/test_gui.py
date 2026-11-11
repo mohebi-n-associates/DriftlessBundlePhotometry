@@ -25,7 +25,7 @@ from driftless_photometry.diagnostics import (
 )
 from driftless_photometry.gui.main_window import MainWindow
 from driftless_photometry.hardware.rwd_controller_protocol import RWDLed
-from driftless_photometry.settings import save_default_settings
+from driftless_photometry.settings import load_default_settings, save_default_settings
 
 
 def run_preview_until_checked(window, qtbot, *, timeout: int = 15_000) -> None:
@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.16"
+    assert __version__ == "0.3.17"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -372,6 +372,78 @@ def test_gui_display_smoothing_is_time_based_and_does_not_change_raw_buffer(
     assert list(window._trace_values[key]) == [0.0, 10.0, 20.0]
 
 
+def test_gui_smoothing_reaches_control_fit_dff(qtbot, tmp_path: Path) -> None:
+    # Regression: in dF/F with a fitted control, only the signal was smoothed, so the
+    # control's sample-to-sample noise went straight through F0 into the display.
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=1))
+    times = np.arange(200, dtype=np.float64) / 10.0
+    slow = 100.0 + 5.0 * np.sin(2 * np.pi * 0.05 * times)
+    noise = np.where(np.arange(len(times)) % 2 == 0, 2.0, -2.0)
+    control_key = (Wavelength.CONTROL_405, 0)
+    signal_key = (Wavelength.GREEN_470, 0)
+    window._trace_times[control_key] = array("d", times)
+    window._trace_values[control_key] = array("f", slow + noise)
+    window._trace_times[signal_key] = array("d", times)
+    window._trace_values[signal_key] = array("f", 2.0 * slow)
+    window._trace_first_s, window._trace_latest_s = 0.0, float(times[-1])
+    window._set_trace_horizon(None)
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff_fit"))
+
+    def jitter(window_s: float) -> float:
+        window.trace_smoothing_spin.setValue(window_s)
+        window._refresh_trace_wavelength(Wavelength.GREEN_470)
+        _, shown = window._curves[signal_key].getData()
+        shown = np.asarray(shown, dtype=float)
+        return float(np.std(np.diff(shown[np.isfinite(shown)][20:])))
+
+    raw, smoothed = jitter(0.0), jitter(1.0)
+    assert raw > 1.0
+    assert smoothed < 0.1 * raw
+
+
+def test_gui_fibers_can_share_an_animal_picked_from_an_extendable_dropdown(
+    qtbot, tmp_path: Path
+) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._demo_only = False  # demo mode never writes the default settings
+    save_default_settings(window._build_config())
+    first, second = window._roi_metadata_editors
+
+    first.animal_id_edit.setText("mouse-7")
+    first.animal_id_edit.commit()  # what Enter does
+    first.brain_region_edit.setText("DMS")
+    first.brain_region_edit.commit()
+
+    # Every ROI is offered the added values, and the second fiber picks the same animal.
+    assert "mouse-7" in second.animal_id_edit.choices()
+    assert "DMS" in second.brain_region_edit.choices()
+    second.animal_id_edit.setCurrentIndex(second.animal_id_edit.findText("mouse-7"))
+    config = window._build_config()
+    assert [roi.animal_id for roi in config.rois] == ["mouse-7", "mouse-7"]
+    saved = load_default_settings()
+    assert saved is not None
+    assert "mouse-7" in saved.roi_choices.animal_ids
+    assert "DMS" in saved.roi_choices.brain_regions
+
+    # An invalid animal ID is not added.
+    first.animal_id_edit.setText("bad id")
+    first.animal_id_edit.commit()
+    assert "bad id" not in first.animal_id_edit.choices()
+    first.animal_id_edit.setText("mouse-7")
+
+    # Removing a value takes it out of every ROI's list and the defaults, but leaves
+    # the ROIs that use it alone.
+    second.animal_id_edit.remove_choice("mouse-7")
+    assert "mouse-7" not in first.animal_id_edit.choices()
+    assert second.animal_id_edit.text() == "mouse-7"
+    saved = load_default_settings()
+    assert saved is not None and "mouse-7" not in saved.roi_choices.animal_ids
+    assert "mouse-7" not in window._build_config().roi_choices.animal_ids
+
+
 def test_gui_setting_change_invalidates_passed_preview(qtbot, tmp_path: Path) -> None:
     window = MainWindow(output_directory=tmp_path)
     qtbot.addWidget(window)
@@ -471,9 +543,11 @@ def test_gui_loads_complete_default_settings_at_startup(qtbot, tmp_path: Path) -
     assert window.trace_mode_combo.currentData() == "dff"
     assert window._trace_horizon_s == 600.0
     assert not window.trace_wavelength_checks[Wavelength.GREEN_470].isChecked()
-    assert restored.model_dump(exclude={"session_id", "session_start_time"}) == (
-        expected.model_dump(exclude={"session_id", "session_start_time"})
-    )
+    unchanged = {"session_id", "session_start_time", "roi_choices"}
+    assert restored.model_dump(exclude=unchanged) == expected.model_dump(exclude=unchanged)
+    # The values the ROIs use become dropdown choices.
+    assert restored.roi_choices.animal_ids == ("mouse-A", "mouse-B")
+    assert window._roi_metadata_editors[0].animal_id_edit.choices() == ("mouse-A", "mouse-B")
 
 
 def test_gui_overview_tracks_channel_and_fiber_configuration(qtbot, tmp_path: Path) -> None:

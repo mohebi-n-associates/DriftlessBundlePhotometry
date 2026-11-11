@@ -9,7 +9,7 @@ from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Wavelength(IntEnum):
@@ -51,6 +51,9 @@ class EdgeSelection(StrEnum):
     FALLING = "falling"
 
 
+ANIMAL_ID_PATTERN = r"^[A-Za-z0-9_.-]+$"
+
+
 class ROIConfig(BaseModel):
     """A circular camera-space fiber region and its subject metadata."""
 
@@ -59,15 +62,9 @@ class ROIConfig(BaseModel):
     fiber_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     enabled: bool = True
     label: str = Field(min_length=1, max_length=128)
-    animal_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
+    animal_id: str = Field(min_length=1, max_length=128, pattern=ANIMAL_ID_PATTERN)
     brain_region: str = Field(min_length=1, max_length=256)
     sensor_type: str = Field(min_length=1, max_length=128)
-    subject_age: str | None = Field(
-        default=None,
-        min_length=2,
-        description="Optional ISO 8601 duration from birth at session start, for example P90D.",
-    )
-    subject_sex: Literal["M", "F", "U", "O"] = "U"
     center_x_px: float = Field(ge=0)
     center_y_px: float = Field(ge=0)
     radius_px: float = Field(gt=0)
@@ -248,6 +245,44 @@ class TraceDisplayConfig(BaseModel):
         if len(self.visible_wavelengths) != len(set(self.visible_wavelengths)):
             raise ValueError("visible display wavelengths must be unique")
         return self
+
+
+MAX_ROI_CHOICES = 500
+
+
+def _clean_choices(values: tuple[str, ...]) -> tuple[str, ...]:
+    """Strip, drop blanks and repeats, keeping the operator's order."""
+
+    cleaned: list[str] = []
+    for value in values:
+        text = value.strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return tuple(cleaned)
+
+
+class ROIChoicesConfig(BaseModel):
+    """Remembered values offered in the ROI dropdowns; adding one keeps it for later."""
+
+    model_config = ConfigDict(frozen=True)
+
+    animal_ids: tuple[str, ...] = Field(default=(), max_length=MAX_ROI_CHOICES)
+    brain_regions: tuple[str, ...] = Field(default=(), max_length=MAX_ROI_CHOICES)
+    sensor_types: tuple[str, ...] = Field(default=(), max_length=MAX_ROI_CHOICES)
+
+    @field_validator("animal_ids", "brain_regions", "sensor_types")
+    @classmethod
+    def clean(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        return _clean_choices(values)
+
+    def including(self, rois: tuple[ROIConfig, ...]) -> ROIChoicesConfig:
+        """These choices plus every value the given ROIs use."""
+
+        return ROIChoicesConfig(
+            animal_ids=(*self.animal_ids, *(roi.animal_id for roi in rois)),
+            brain_regions=(*self.brain_regions, *(roi.brain_region for roi in rois)),
+            sensor_types=(*self.sensor_types, *(roi.sensor_type for roi in rois)),
+        )
 
 
 class CustomSourceConfig(BaseModel):
@@ -501,6 +536,7 @@ class SessionConfig(BaseModel):
     recording: RecordingControlConfig = Field(default_factory=RecordingControlConfig)
     event_markers: tuple[EventMarkerConfig, ...] = Field(default=(), max_length=9)
     ttl_events: tuple[TTLEventRuleConfig, ...] = Field(default=(), max_length=8)
+    roi_choices: ROIChoicesConfig = Field(default_factory=ROIChoicesConfig)
 
     @model_validator(mode="after")
     def validate_contract(self) -> SessionConfig:
@@ -508,9 +544,8 @@ class SessionConfig(BaseModel):
         if len(fiber_ids) != len(set(fiber_ids)):
             raise ValueError("fiber_id values must be unique")
 
-        animal_ids = [roi.animal_id for roi in self.rois]
-        if len(animal_ids) != len(set(animal_ids)):
-            raise ValueError("animal_id values must be unique across ROIs")
+        # One animal may carry several fibers, so animal IDs may repeat across ROIs;
+        # each ROI still gets its own NWB file.
         if not any(roi.enabled for roi in self.rois):
             raise ValueError("at least one ROI must be enabled")
 
@@ -699,8 +734,6 @@ def demo_config(
             animal_id=f"animal-{index + 1:02d}",
             brain_region="not specified",
             sensor_type="not specified",
-            subject_age="P90D",
-            subject_sex="U",
             center_x_px=(index % grid_columns + 1) * spacing_x,
             center_y_px=(index // grid_columns + 1) * spacing_y,
             radius_px=radius,

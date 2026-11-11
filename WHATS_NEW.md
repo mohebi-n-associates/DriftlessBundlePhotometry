@@ -8,6 +8,46 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.17 - 2026-11-11
+
+### Added
+
+- **Dropdowns for animal ID, brain region, and sensor.** Each ROI's *Animal ID*,
+  *Brain region*, and *Sensor type* is now a dropdown of remembered values. Pick one, or
+  type a new value and press Enter to add it. To remove a value, right-click the field
+  and choose *Remove from the list*, or press Delete on it in the open list; ROIs that
+  use it keep their value. Every ROI's list changes at once, and the change is written
+  into the saved default settings when there is one (nothing else in that file
+  changes). Without a saved default, changes last for the session until *Set as
+  default*. The lists are saved in settings files and in each NWB's settings snapshot.
+
+### Changed
+
+- **Several fibers can share one animal.** ROIs no longer need different animal IDs,
+  so two fibers in one mouse can both carry its ID. Each ROI still gets its own NWB
+  file.
+- **NWB filenames include the brain region:**
+  `<session>__<animal>__<brain region>__<fiber>.nwb`, for example
+  `rwd-20261111T184252-155136Z__IM-1140__NAc_core__fiber_01.nwb`. Characters that are
+  not filename-safe become underscores, and the region part is capped at 48 characters;
+  the full region is inside the file.
+
+### Removed
+
+- **Animal age and sex fields.** The ROI panel no longer asks for them. NWB files
+  record sex as `U` (unknown), NWB's value for an unrecorded sex, and no age. Settings
+  and NWB files that contain age and sex still load; those values are ignored. NWB
+  Inspector rates a missing age as critical because DANDI requires one, so DBF's
+  validation skips that single check; add the age to the files before a DANDI upload.
+
+### Fixed
+
+- **Smoothing in dF/F with a fitted control.** In *dF/F, control fit* mode the
+  *Smooth* window smoothed the signal but not F0, which follows the 405/410 nm control
+  sample by sample, so control noise passed straight into the trace and smoothing
+  appeared to do nothing. F0 is now smoothed over the same window. Display only;
+  recorded samples are unchanged.
+
 ## 0.3.16 - 2026-11-11
 
 ### Added

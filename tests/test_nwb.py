@@ -112,8 +112,8 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
     )
     assert len(reports) == 2
     assert {report.path.name for report in reports} == {
-        f"{config.session_id}__animal-01__fiber_01.nwb",
-        f"{config.session_id}__animal-02__fiber_02.nwb",
+        f"{config.session_id}__animal-01__not_specified__fiber_01.nwb",
+        f"{config.session_id}__animal-02__not_specified__fiber_02.nwb",
     }
 
     for roi_index, report in enumerate(reports):
@@ -212,9 +212,10 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
         assert warnings == []
 
 
+@pytest.mark.parametrize("names_without_region", [False, True])
 @pytest.mark.parametrize("raw_capture", [False, True])
 def test_legacy_per_roi_nwbs_restore_available_sibling_settings(
-    tmp_path: Path, raw_capture: bool
+    tmp_path: Path, raw_capture: bool, names_without_region: bool
 ) -> None:
     config, data, frames = _golden_data(tmp_path, raw_capture=raw_capture)
     reports = write_session_nwbs(
@@ -229,8 +230,13 @@ def test_legacy_per_roi_nwbs_restore_available_sibling_settings(
     for report in reports:
         with h5py.File(report.path, mode="r+") as handle:
             del handle[f"scratch/{NWB_SETTINGS_SCRATCH_NAME}"]
+    paths = [report.path for report in reports]
+    if names_without_region:  # <session>__<animal>__<fiber>, as files were once named
+        paths = [
+            path.rename(path.with_name(path.name.replace("__not_specified", ""))) for path in paths
+        ]
 
-    restored, warnings = configuration_from_nwb(reports[0].path)
+    restored, warnings = configuration_from_nwb(paths[-1])
 
     assert len(restored.rois) == 2
     assert [roi.animal_id for roi in restored.rois] == ["animal-01", "animal-02"]
@@ -274,3 +280,21 @@ def test_rejects_raw_frame_count_mismatch_before_writing(tmp_path: Path) -> None
     else:  # pragma: no cover - assertion produces a clearer error than pytest.raises here
         raise AssertionError("expected raw frame count mismatch")
     assert not list(tmp_path.glob("*.nwb*"))
+
+
+def test_nwb_filenames_name_session_animal_brain_region_and_fiber(tmp_path: Path) -> None:
+    from driftless_photometry.storage.nwb import _roi_output_paths
+
+    config = demo_config(tmp_path, fiber_count=1)
+    roi = config.rois[0].model_copy(
+        update={"animal_id": "IM-1140", "brain_region": "NAc core / lateral  shell"}
+    )
+
+    final, partial = _roi_output_paths(config, roi)
+
+    assert final.name == (
+        f"{config.session_id}__IM-1140__NAc_core_lateral_shell__{roi.fiber_id}.nwb"
+    )
+    assert partial.name == final.name.replace(".nwb", ".partial.nwb")
+    long_region = roi.model_copy(update={"brain_region": "x" * 256})
+    assert len(_roi_output_paths(config, long_region)[0].name) < 150

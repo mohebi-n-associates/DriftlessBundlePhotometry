@@ -358,8 +358,8 @@ def _create_nwbfile(config: SessionConfig, roi: ROIConfig, data: AcquisitionData
         ),
         subject=Subject(
             subject_id=roi.animal_id,
-            age=roi.subject_age,
-            sex=roi.subject_sex,
+            # DBF does not collect age or sex; "U" is NWB's value for unknown sex.
+            sex="U",
             description=(
                 f"Animal assigned to {roi.fiber_id}; brain region: {roi.brain_region}; "
                 f"sensor type: {roi.sensor_type}."
@@ -1383,12 +1383,28 @@ def _or_nan(value: float | None) -> float:
     return float("nan") if value is None else float(value)
 
 
+REGION_FILENAME_MAX_CHARS = 48
+"""Brain regions are free text; their part of a filename is capped so the path stays
+well within Windows' 260-character limit. The full region is in the file."""
+
+
+def _region_filename(region: str) -> str:
+    """The filename part for a brain region: filename-safe, single underscores, capped."""
+
+    safe = "".join(
+        character if character.isalnum() or character in "-." else "_" for character in region
+    )
+    safe = "_".join(part for part in safe.split("_") if part)[:REGION_FILENAME_MAX_CHARS]
+    return safe.strip("._-") or "region"
+
+
 def _roi_output_paths(config: SessionConfig, roi: ROIConfig) -> tuple[Path, Path]:
     output_directory = config.output_directory.expanduser().resolve()
     stem = "__".join(
         (
             _safe_filename(config.session_id),
             _safe_filename(roi.animal_id),
+            _region_filename(roi.brain_region),
             _safe_filename(roi.fiber_id),
         )
     )
@@ -1488,7 +1504,10 @@ def _validate_roi_nwb(
             candidate_path,
             skip_validate=True,
             importance_threshold=Importance.CRITICAL,
-            ignore=["check_data_orientation"],
+            # DBF does not collect animal age (operator decision, 2026-11-11), and a
+            # placeholder would be false data. DANDI requires an age, so it must be
+            # added to the Subject before upload there.
+            ignore=["check_data_orientation", "check_subject_age"],
         )
         if message is not None
     )

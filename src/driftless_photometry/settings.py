@@ -20,6 +20,7 @@ from driftless_photometry.config import (
     CameraConfig,
     ChannelConfig,
     EdgeSelection,
+    ROIChoicesConfig,
     ROIConfig,
     SessionConfig,
     SignalRole,
@@ -267,6 +268,46 @@ def save_default_settings(config: SessionConfig) -> Path:
     return export_settings(default_settings_path(), config)
 
 
+def update_default_roi_choices(
+    *,
+    add: ROIChoicesConfig | None = None,
+    remove: ROIChoicesConfig | None = None,
+) -> Path | None:
+    """Add or remove dropdown values in the saved default settings, changing nothing else.
+
+    Returns the file written, or None when there is no current-format default file to
+    update; the values then persist once the operator saves a default.
+    """
+
+    path = default_settings_path()
+    if not path.is_file():
+        return None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path.name} is not valid JSON: {error}") from error
+    if not isinstance(document, dict) or document.get("format") != SETTINGS_FORMAT:
+        # Rewriting an older file here would migrate it behind the operator's back.
+        return None
+    config, _warnings = _config_from_document(document, path.name)
+    old = config.roi_choices
+    add = add or ROIChoicesConfig()
+    remove = remove or ROIChoicesConfig()
+    updated = ROIChoicesConfig(
+        **{
+            field: tuple(
+                value
+                for value in (*getattr(old, field), *getattr(add, field))
+                if value not in getattr(remove, field)
+            )
+            for field in ROIChoicesConfig.model_fields
+        }
+    )
+    if updated == old:
+        return path
+    return export_settings(path, config.model_copy(update={"roi_choices": updated}))
+
+
 def load_default_settings() -> SessionConfig | None:
     path = default_settings_path()
     return import_settings(path) if path.is_file() else None
@@ -309,11 +350,12 @@ def configuration_from_nwb(path: str | Path) -> tuple[SessionConfig, list[str]]:
 def _legacy_configuration_from_nwbs(source: Path) -> tuple[SessionConfig, list[str]]:
     """Best-effort import for DBF NWBs written before exact snapshots were embedded."""
 
-    stem_parts = source.stem.rsplit("__", 2)
-    prefix = stem_parts[0] if len(stem_parts) == 3 else source.stem
-    candidates = sorted(source.parent.glob(f"{prefix}__*.nwb"))
-    if source not in candidates:
-        candidates.append(source)
+    # Names are <session>__<animal>__<fiber> (older) or <session>__<animal>__<region>__
+    # <fiber>. Siblings are found by the session part, and kept only when the session
+    # recorded inside them matches the selected file's, which is read first.
+    prefix = source.stem.split("__", 1)[0]
+    siblings = sorted(path for path in source.parent.glob(f"{prefix}__*.nwb") if path != source)
+    candidates = [source, *siblings]
 
     rois: list[ROIConfig] = []
     base_session_id: str | None = None
@@ -362,8 +404,6 @@ def _legacy_configuration_from_nwbs(source: Path) -> tuple[SessionConfig, list[s
                     animal_id=str(subject.subject_id),
                     brain_region=str(first_path["location"]),
                     sensor_type=str(indicator.label),
-                    subject_age=str(subject.age) if subject.age else None,
-                    subject_sex=str(subject.sex or "U"),
                     center_x_px=float(roi_row["center_x_px"]),
                     center_y_px=float(roi_row["center_y_px"]),
                     radius_px=float(roi_row["radius_px"]),
