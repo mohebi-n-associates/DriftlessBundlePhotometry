@@ -8,6 +8,24 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.16 - 2026-11-11
+
+### Added
+
+- **ROI values on the live wavelength images.** Each circle's label on *Live
+  wavelength images* now shows its value at that wavelength, for 410 nm too, which the
+  ROI readout on *Camera & fiber ROIs* does not show. The value is the mean of the
+  trace samples in the last 0.1 s, so it is readable rather than flickering, with the
+  share of saturated pixels when any saturate. It updates in live view, previews, and
+  recordings, and is display only.
+
+### Changed
+
+- **Developer setup guide.** The README's Conda section now covers installing Miniforge
+  or using an existing Anaconda/Miniconda, opening a conda prompt and enabling conda
+  in PowerShell, keeping the environment free of user site-packages, and selecting
+  the `dbf` interpreter in VS Code.
+
 ## 0.3.15 - 2026-10-26
 
 ### Added

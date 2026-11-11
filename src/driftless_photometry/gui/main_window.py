@@ -134,6 +134,9 @@ from .worker import (
 )
 
 _TRACE_REFRESH_INTERVAL_S = 0.1
+# The wavelength images show each ROI's mean over this window, so its value is
+# readable instead of flickering frame to frame.
+_ROI_VALUE_INTERVAL_MS = 100
 
 _FIBER_COLORS = (
     "#00d5e4",
@@ -408,6 +411,15 @@ class MainWindow(QMainWindow):
         # Display-only names beside the circles, and outlines on the wavelength images.
         self._roi_labels: list[tuple[pg.PlotWidget, pg.TextItem]] = []
         self._wavelength_roi_overlays: list[tuple[pg.PlotWidget, object]] = []
+        # Display-only ROI values on the wavelength images: trace values summed per
+        # (wavelength, fiber) and shown as their mean every _ROI_VALUE_INTERVAL_MS.
+        self._wavelength_roi_value_labels: dict[tuple[int, str], tuple[pg.TextItem, str]] = {}
+        self._roi_value_window: dict[tuple[int, str], list[float]] = {}
+        self._roi_saturation_window: dict[tuple[int, str], float] = {}
+        self._roi_value_text: dict[tuple[int, str], str] = {}
+        self._roi_value_timer = QTimer(self)
+        self._roi_value_timer.setInterval(_ROI_VALUE_INTERVAL_MS)
+        self._roi_value_timer.timeout.connect(self._show_roi_values)
         self._restart_live_view = False
         self._camera_controls_ready = False
         self._camera_frame_counts: dict[int, int] = {}
@@ -3147,6 +3159,11 @@ class MainWindow(QMainWindow):
         for plot, item in self._wavelength_roi_overlays:
             plot.removeItem(item)
         self._wavelength_roi_overlays.clear()
+        self._wavelength_roi_value_labels.clear()
+        try:
+            fiber_ids = [roi.fiber_id for roi in self._roi_configs_from_controls()]
+        except Exception:
+            fiber_ids = []
         angles = np.linspace(0.0, 2.0 * np.pi, 97)
         for wavelength, plot in getattr(self, "wavelength_image_plots", {}).items():
             if wavelength not in self._active_profile.wavelengths:
@@ -3173,6 +3190,51 @@ class MainWindow(QMainWindow):
                 for item in (outline, label):
                     plot.addItem(item)
                     self._wavelength_roi_overlays.append((plot, item))
+                if index < len(fiber_ids):
+                    key = (int(wavelength), fiber_ids[index])
+                    name = self._roi_display_name(index)
+                    self._wavelength_roi_value_labels[key] = (label, name)
+                    if key in self._roi_value_text:
+                        label.setText(f"{name} · {self._roi_value_text[key]}")
+
+    def _note_roi_saturation(
+        self, wavelength: int, rois: Sequence[ROIConfig], saturation: Sequence[float]
+    ) -> None:
+        for roi, fraction in zip(rois, saturation, strict=True):
+            key = (wavelength, roi.fiber_id)
+            self._roi_saturation_window[key] = max(
+                fraction, self._roi_saturation_window.get(key, 0.0)
+            )
+
+    def _show_roi_values(self) -> None:
+        """Write each ROI's mean value over the last window onto the wavelength images.
+
+        Display only: the values are the trace samples, averaged so they can be read.
+        """
+
+        if not self._roi_value_window:
+            self._roi_value_timer.stop()
+            return
+        for key, (total, count) in self._roi_value_window.items():
+            text = f"{total / count:,.0f}"
+            saturated = self._roi_saturation_window.get(key, 0.0)
+            if saturated > 0:
+                text += f" · {saturated:.1%} saturated"
+            self._roi_value_text[key] = text
+            shown = self._wavelength_roi_value_labels.get(key)
+            if shown is not None:
+                label, name = shown
+                label.setText(f"{name} · {text}")
+        self._roi_value_window.clear()
+        self._roi_saturation_window.clear()
+
+    def _reset_roi_values(self) -> None:
+        self._roi_value_timer.stop()
+        self._roi_value_window.clear()
+        self._roi_saturation_window.clear()
+        self._roi_value_text.clear()
+        for label, name in self._wavelength_roi_value_labels.values():
+            label.setText(name)
 
     def _add_camera2_items(self, rois: tuple[ROIConfig, ...]) -> None:
         for index, roi in enumerate(rois):
@@ -3830,6 +3892,7 @@ class MainWindow(QMainWindow):
                 frame.timestamp_s,
                 {roi.fiber_id: float(v) for roi, v in zip(rois, extracted.values, strict=True)},
             )
+        self._note_roi_saturation(int(frame.wavelength_nm), rois, extracted.saturation_fractions)
         self._show_roi_readout(
             frame.camera_index,
             int(frame.wavelength_nm),
@@ -3954,6 +4017,7 @@ class MainWindow(QMainWindow):
         }
         self._trace_times.clear()
         self._trace_values.clear()
+        self._reset_roi_values()
         self._trace_horizon_s = HORIZONS[0][1]
         self._trace_manual_x_range = None
         for seconds, button in self.horizon_buttons.items():
@@ -4352,6 +4416,13 @@ class MainWindow(QMainWindow):
                 raise ValueError("live trace timestamps must increase per fiber/wavelength")
             times.append(point.timestamp_s)
             self._trace_values[key].append(point.value)
+            window = self._roi_value_window.setdefault(
+                (point.wavelength_nm, point.fiber_id), [0.0, 0]
+            )
+            window[0] += point.value
+            window[1] += 1
+            if not self._roi_value_timer.isActive():
+                self._roi_value_timer.start()
             if len(times) > MAX_HISTORY_POINTS:
                 self._display_aggregated = True
                 x, y = compact_history(
@@ -4453,10 +4524,12 @@ class MainWindow(QMainWindow):
         self._camera_frame_counts[progress.camera_index] = camera_count
         self._last_camera_images[progress.camera_index] = progress.image
         self._show_calibration_frame(progress.camera_index, progress.image)
+        camera_rois = rois_for_camera(self._active_config.enabled_rois, progress.camera_index)
+        self._note_roi_saturation(wavelength, camera_rois, sample.saturation_fractions)
         self._show_roi_readout(
             progress.camera_index,
             wavelength,
-            rois_for_camera(self._active_config.enabled_rois, progress.camera_index),
+            camera_rois,
             sample.values,
             sample.saturation_fractions,
         )

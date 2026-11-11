@@ -128,7 +128,13 @@ camera.
    Camera 2 is mirrored to match camera 1, but the fibers will not sit at exactly the
    same pixels.
 
-   Each circle is named beside it. **Apply diameter to all ROIs** in a fiber's tab
+   Each circle is named beside it. On *Live wavelength images*, each wavelength's
+   panel also shows every circle's value: the mean pixel value in the circle (raw
+   counts, as on the traces), averaged over the last 0.1 s so it can be read, plus the
+   share of saturated pixels when there are any. A circle off its fiber reads at
+   background level. The values are display only and are not recorded.
+
+   **Apply diameter to all ROIs** in a fiber's tab
    gives every circle that fiber's size. Once placed, tick **Lock ROI circles** so they
    cannot be dragged by accident. Circles always lock while a recording runs, and can
    be moved in live view and during a preview (a moved circle needs a new preview).
