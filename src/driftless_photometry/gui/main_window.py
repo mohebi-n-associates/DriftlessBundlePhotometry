@@ -55,6 +55,7 @@ from driftless_photometry.acquisition import (
     PreviewResult,
 )
 from driftless_photometry.config import (
+    ANIMAL_ID_PATTERN,
     CUSTOM_PROFILE,
     EVENT_MARKER_KEYS,
     RWD_PROFILE,
@@ -64,6 +65,7 @@ from driftless_photometry.config import (
     EdgeSelection,
     EventMarkerConfig,
     RecordingControlConfig,
+    ROIChoicesConfig,
     ROIConfig,
     RWDSourceConfig,
     RWDTTLOutputConfig,
@@ -91,6 +93,7 @@ from driftless_photometry.settings import (
     load_default_settings_with_warnings,
     save_default_settings,
     settings_root,
+    update_default_roi_choices,
 )
 from driftless_photometry.signal_quality import SignalQualityMonitor
 from driftless_photometry.snr import MIN_SAMPLING_HZ as SNR_MIN_SAMPLING_HZ
@@ -101,6 +104,7 @@ from driftless_photometry.snr import live_snr
 
 from .bleach import BleachDialog, BleachPlan, BleachRecord, led_duty_fraction
 from .branding import logo_path
+from .choice_combo import ChoiceCombo
 from .crosstalk import CrosstalkDialog
 from .gc_thread import install_main_thread_gc
 from .output_program import OutputProgramDialog, describe_program
@@ -208,6 +212,15 @@ class SummaryCard(QWidget):
         layout.addWidget(caption_label)
 
 
+def _starting_roi_choices(config: SessionConfig) -> ROIChoicesConfig:
+    """The saved dropdown values, or, for settings saved before there were any, the
+    values the ROIs use."""
+
+    if config.roi_choices != ROIChoicesConfig():
+        return config.roi_choices
+    return ROIChoicesConfig().including(config.rois)
+
+
 class ROIMetadataEditor(QWidget):
     """Editable subject and implant metadata for one camera ROI."""
 
@@ -218,20 +231,22 @@ class ROIMetadataEditor(QWidget):
         self.enabled_check = QCheckBox("Include in acquisition and NWB output")
         self.enabled_check.setChecked(True)
         self.label_edit = QLineEdit(f"Fiber {index + 1}")
-        self.animal_id_edit = QLineEdit(f"animal-{index + 1:02d}")
-        self.brain_region_edit = QLineEdit("not specified")
-        self.sensor_type_edit = QLineEdit("not specified")
-        self.age_edit = QLineEdit("P90D")
-        self.age_edit.setPlaceholderText("ISO 8601, e.g. P90D")
-        self.sex_combo = QComboBox()
-        self.sex_combo.addItems(["U", "F", "M", "O"])
+        # Several fibers may share one animal, so its ID is picked, not unique per ROI.
+        self.animal_id_edit = ChoiceCombo(
+            f"animal-{index + 1:02d}", pattern=ANIMAL_ID_PATTERN, what="animal ID"
+        )
+        self.brain_region_edit = ChoiceCombo("not specified", what="brain region")
+        self.sensor_type_edit = ChoiceCombo("not specified", what="sensor")
+        self.choice_combos: dict[str, ChoiceCombo] = {
+            "animal_ids": self.animal_id_edit,
+            "brain_regions": self.brain_region_edit,
+            "sensor_types": self.sensor_type_edit,
+        }
         form.addRow("Enabled", self.enabled_check)
         form.addRow("ROI label", self.label_edit)
         form.addRow("Animal ID", self.animal_id_edit)
         form.addRow("Brain region", self.brain_region_edit)
         form.addRow("Sensor type", self.sensor_type_edit)
-        form.addRow("Animal age", self.age_edit)
-        form.addRow("Animal sex", self.sex_combo)
         self.diameter_spins: dict[int, QDoubleSpinBox] = {}
         for camera, label in ((1, "Diameter"), (2, "Diameter, camera 2")):
             spin = QDoubleSpinBox()
@@ -253,6 +268,10 @@ class ROIMetadataEditor(QWidget):
             "Diameter, camera 1" if visible else "Diameter"
         )
 
+    def set_choices(self, choices: ROIChoicesConfig) -> None:
+        for field, combo in self.choice_combos.items():
+            combo.set_choices(getattr(choices, field))
+
     def values(self) -> dict[str, str | bool]:
         return {
             "enabled": self.enabled_check.isChecked(),
@@ -260,8 +279,6 @@ class ROIMetadataEditor(QWidget):
             "animal_id": self.animal_id_edit.text(),
             "brain_region": self.brain_region_edit.text(),
             "sensor_type": self.sensor_type_edit.text(),
-            "subject_age": self.age_edit.text(),
-            "subject_sex": self.sex_combo.currentText(),
         }
 
     def restore(self, values: Mapping[str, str | bool]) -> None:
@@ -270,8 +287,6 @@ class ROIMetadataEditor(QWidget):
         self.animal_id_edit.setText(str(values["animal_id"]))
         self.brain_region_edit.setText(str(values["brain_region"]))
         self.sensor_type_edit.setText(str(values["sensor_type"]))
-        self.age_edit.setText(str(values["subject_age"]))
-        self.sex_combo.setCurrentText(str(values["subject_sex"]))
 
 
 _SIGNAL_WARNING_COLOR = "#ffb454"
@@ -451,6 +466,7 @@ class MainWindow(QMainWindow):
             recording_duration_s=default_duration_s,
         )
         self._custom_camera = self._session_template.camera
+        self._roi_choices = _starting_roi_choices(self._session_template)
         self._default_system = default_system
         self._preview_started_config: SessionConfig | None = None
         self._live_rois: tuple[ROIConfig, ...] | None = None
@@ -1923,7 +1939,7 @@ class MainWindow(QMainWindow):
         instructions.setWordWrap(True)
         self.fiber_instructions = instructions
         fibers_layout.addWidget(instructions)
-        metadata_title = QLabel("ONE ANIMAL AND NWB FILE PER ROI")
+        metadata_title = QLabel("ONE NWB FILE PER ROI; FIBERS MAY SHARE AN ANIMAL")
         metadata_title.setObjectName("eyebrow")
         fibers_layout.addWidget(metadata_title)
         self.roi_metadata_tabs = QTabWidget()
@@ -2085,10 +2101,12 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _configuration_signature(config: SessionConfig) -> str:
-        # A preview exercises neither TTL inputs nor the start/stop options.
+        # A preview exercises neither TTL inputs nor the start/stop options, and the
+        # remembered dropdown values are only suggestions.
         payload = config.model_dump(
             mode="json",
             exclude={
+                "roi_choices",
                 "session_id",
                 "session_start_time",
                 "display",
@@ -2905,6 +2923,7 @@ class MainWindow(QMainWindow):
         blocker = QSignalBlocker(self.fiber_count_spin)
         self.fiber_count_spin.setValue(len(config.rois))
         del blocker
+        self._roi_choices = _starting_roi_choices(config)
         self._rebuild_roi_metadata(len(config.rois))
         for editor, roi in zip(self._roi_metadata_editors, config.rois, strict=True):
             editor.restore(
@@ -2914,8 +2933,6 @@ class MainWindow(QMainWindow):
                     "animal_id": roi.animal_id,
                     "brain_region": roi.brain_region,
                     "sensor_type": roi.sensor_type,
-                    "subject_age": roi.subject_age or "",
-                    "subject_sex": roi.subject_sex,
                 }
             )
         self._set_roi_items(config.rois, config.camera)
@@ -2946,6 +2963,7 @@ class MainWindow(QMainWindow):
         self._roi_metadata_editors = []
         for index in range(fiber_count):
             editor = ROIMetadataEditor(index)
+            editor.set_choices(self._roi_choices)
             if index < len(existing):
                 editor.restore(existing[index])
             self._roi_metadata_editors.append(editor)
@@ -2957,11 +2975,12 @@ class MainWindow(QMainWindow):
                 editor.animal_id_edit,
                 editor.brain_region_edit,
                 editor.sensor_type_edit,
-                editor.age_edit,
             ):
                 edit.textChanged.connect(self._invalidate_preview)
             editor.label_edit.textChanged.connect(self._refresh_roi_labels)
-            editor.sex_combo.currentIndexChanged.connect(self._invalidate_preview)
+            for field, combo in editor.choice_combos.items():
+                combo.added.connect(slot(combo, self._on_roi_choice_added, field))
+                combo.removed.connect(slot(combo, self._on_roi_choice_removed, field))
             editor.apply_diameter_button.clicked.connect(
                 button_slot(editor.apply_diameter_button, self._apply_diameter_to_all, index)
             )
@@ -3433,8 +3452,6 @@ class MainWindow(QMainWindow):
                     animal_id=metadata.animal_id_edit.text().strip(),
                     brain_region=metadata.brain_region_edit.text().strip(),
                     sensor_type=metadata.sensor_type_edit.text().strip(),
-                    subject_age=metadata.age_edit.text().strip() or None,
-                    subject_sex=metadata.sex_combo.currentText(),
                     center_x_px=center_x,
                     center_y_px=center_y,
                     radius_px=radius,
@@ -3507,8 +3524,52 @@ class MainWindow(QMainWindow):
             ttl_inputs=self._ttl_inputs_from_controls(),
             event_markers=self._markers_from_controls(),
             ttl_events=self._ttl_events_from_controls(),
+            roi_choices=self._roi_choices,
         )
         return SessionConfig.model_validate(payload)
+
+    def _on_roi_choice_added(self, field: str, value: str) -> None:
+        """Offer a newly typed dropdown value on every ROI and keep it in the defaults."""
+
+        self._change_roi_choices(ROIChoicesConfig(**{field: (value,)}), added=True)
+
+    def _on_roi_choice_removed(self, field: str, value: str) -> None:
+        """Take a value out of every ROI's dropdown and out of the defaults."""
+
+        self._change_roi_choices(ROIChoicesConfig(**{field: (value,)}), added=False)
+
+    def _change_roi_choices(self, change: ROIChoicesConfig, *, added: bool) -> None:
+        self._roi_choices = ROIChoicesConfig(
+            **{
+                field: tuple(
+                    value
+                    for value in (
+                        *getattr(self._roi_choices, field),
+                        *(getattr(change, field) if added else ()),
+                    )
+                    if added or value not in getattr(change, field)
+                )
+                for field in ROIChoicesConfig.model_fields
+            }
+        )
+        for editor in self._roi_metadata_editors:
+            editor.set_choices(self._roi_choices)
+        verb = "Added to" if added else "Removed from"
+        if self._demo_only:
+            return
+        try:
+            written = update_default_roi_choices(
+                add=change if added else None, remove=None if added else change
+            )
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"The default settings were not updated: {error}")
+            return
+        if written is None:
+            self.statusBar().showMessage(
+                f"{verb} the dropdown for this session; Set as default to keep it"
+            )
+        else:
+            self.statusBar().showMessage(f"{verb} the dropdown and saved in {written}")
 
     def start_preview(self) -> None:
         if self._thread is not None or self._device_thread is not None:
@@ -4184,7 +4245,20 @@ class MainWindow(QMainWindow):
             control = self._trace_control_wavelength()
             fitted_f0 = None
             if mode == "dff_fit" and control is not None and wavelength != control:
-                fitted_f0 = self._fitted_f0(control, index, times, all_values, selected_times)
+                if smoothing_window_s > 0:
+                    # F0 follows the raw control sample by sample, so it is smoothed
+                    # like the signal; otherwise control noise passes straight into dF/F.
+                    lead_times = times[smoothing_start:stop_index]
+                    lead_f0 = self._fitted_f0(control, index, times, all_values, lead_times)
+                    fitted_f0 = (
+                        None
+                        if lead_f0 is None
+                        else trailing_mean(lead_times, lead_f0, window_s=smoothing_window_s)[
+                            first_index - smoothing_start :
+                        ]
+                    )
+                else:
+                    fitted_f0 = self._fitted_f0(control, index, times, all_values, selected_times)
                 if fitted_f0 is None:
                     values = np.full(len(values), np.nan, dtype=np.float64)
                 else:

@@ -9,6 +9,7 @@ from driftless_photometry.config import (
     CameraConfig,
     ChannelConfig,
     CustomSourceConfig,
+    ROIChoicesConfig,
     ROIConfig,
     RWDSourceConfig,
     RWDTTLOutputConfig,
@@ -97,13 +98,40 @@ def test_rejects_duplicate_ttl_lines(tmp_path: Path) -> None:
         SessionConfig.model_validate(payload)
 
 
-def test_rejects_duplicate_animals_across_rois(tmp_path: Path) -> None:
+def test_one_animal_may_carry_several_fibers(tmp_path: Path) -> None:
     config = demo_config(tmp_path, fiber_count=2)
     payload = config.model_dump()
     payload["rois"][1]["animal_id"] = payload["rois"][0]["animal_id"]
+    payload["rois"][1]["brain_region"] = "DMS"
 
-    with pytest.raises(ValidationError, match="animal_id values must be unique"):
-        SessionConfig.model_validate(payload)
+    restored = SessionConfig.model_validate(payload)
+
+    assert restored.rois[0].animal_id == restored.rois[1].animal_id
+    assert restored.rois[0].fiber_id != restored.rois[1].fiber_id
+
+
+def test_settings_with_the_retired_age_and_sex_fields_still_load(tmp_path: Path) -> None:
+    payload = demo_config(tmp_path, fiber_count=1).model_dump(mode="json")
+    payload["rois"][0].update(subject_age="P90D", subject_sex="F")
+
+    roi = SessionConfig.model_validate(payload).rois[0]
+
+    assert not hasattr(roi, "subject_age") and not hasattr(roi, "subject_sex")
+
+
+def test_roi_choices_are_cleaned_and_collect_values_in_use(tmp_path: Path) -> None:
+    choices = ROIChoicesConfig(animal_ids=(" m1 ", "m1", "", "m2"), brain_regions=("NAc",))
+    assert choices.animal_ids == ("m1", "m2")
+
+    config = demo_config(tmp_path, fiber_count=1)
+    merged = choices.including(config.rois)
+    assert merged.animal_ids == ("m1", "m2", config.rois[0].animal_id)
+    assert merged.brain_regions == ("NAc", config.rois[0].brain_region)
+    assert merged.sensor_types == (config.rois[0].sensor_type,)
+
+    payload = config.model_dump(mode="json")
+    del payload["roi_choices"]  # settings written before the dropdowns existed
+    assert SessionConfig.model_validate(payload).roi_choices == ROIChoicesConfig()
 
 
 def test_sources_round_trip_as_discriminated_custom_or_rwd_kinds(tmp_path: Path) -> None:

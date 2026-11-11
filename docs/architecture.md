@@ -143,7 +143,9 @@ writer, existed in 0.2.0–0.2.1 and was removed in favor of direct control.
 
 ## Per-ROI NWB organization
 
-Every configured ROI maps to one animal and one self-contained NWB file. The file
+Every configured ROI maps to one animal and one self-contained NWB file. Several
+ROIs may map to the same animal when it carries more than one fiber; their files are
+told apart by fiber ID, and they must agree on the animal's age and sex. The file
 contains that ROI's single-column fluorescence series and subject metadata. Shared
 session timing, TTL edges, exposure provenance, calibration imagery, and optional
 raw frames are copied into each file so it remains independently interpretable.
