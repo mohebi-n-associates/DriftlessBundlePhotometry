@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.15"
+    assert __version__ == "0.3.16"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1309,6 +1309,11 @@ def test_gui_live_view_draws_traces_and_roi_readouts(qtbot, tmp_path: Path) -> N
     assert readout.startswith("Fiber 1: ") and readout.endswith("counts @ 470 nm")
     assert window._readout_wavelength(1) == 470
     assert "@ 560 nm" in window.calibration_readouts[2].text()
+    fiber = window._current_live_rois()[0].fiber_id
+    for wavelength in (410, 470, 560):
+        label, name = window._wavelength_roi_value_labels[(wavelength, fiber)]
+        qtbot.waitUntil(lambda label=label, name=name: label.toPlainText() != name, timeout=5_000)
+        assert label.toPlainText().startswith(f"{name} · ")
     _, values = window._curves[(470, 0)].getData()
     assert values is not None and len(values) >= 1
 
@@ -1591,6 +1596,52 @@ def test_gui_flags_a_dark_roi_on_its_trace_row(qtbot, tmp_path: Path) -> None:
             ]
         )
     assert "⚠" not in window.trace_plots[1].titleLabel.text
+
+
+def test_gui_wavelength_images_show_each_roi_mean_per_window(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.live_trace import LiveTracePoint
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    config = window._build_config()
+    window._prepare_trace_curves(config)
+    window._refresh_roi_labels()
+    fibers = [roi.fiber_id for roi in config.enabled_rois]
+    wavelength = window._active_trace_wavelengths[0]
+    label, name = window._wavelength_roi_value_labels[(wavelength, fibers[0])]
+    assert label.toPlainText() == name == "ROI 1 - Fiber 1"
+
+    # The label shows the mean of the samples since the last update, not the latest.
+    for t, value in ((0.00, 1000.0), (0.05, 2000.0)):
+        window._append_live_trace_points(
+            [
+                LiveTracePoint(t, fibers[0], wavelength, value),
+                LiveTracePoint(t, fibers[1], wavelength, 40.0),
+            ]
+        )
+    assert window._roi_value_timer.isActive()
+    window._note_roi_saturation(wavelength, config.enabled_rois, (0.0, 0.025))
+    window._show_roi_values()
+    assert label.toPlainText() == "ROI 1 - Fiber 1 · 1,500"
+    second, _ = window._wavelength_roi_value_labels[(wavelength, fibers[1])]
+    assert second.toPlainText() == "ROI 2 - Fiber 2 · 40 · 2.5% saturated"
+
+    # A new window starts fresh, and moving a circle keeps the value on its label.
+    window._append_live_trace_points([LiveTracePoint(0.1, fibers[0], wavelength, 900.0)])
+    window._show_roi_values()
+    assert label.toPlainText() == "ROI 1 - Fiber 1 · 900"
+    assert second.toPlainText() == "ROI 2 - Fiber 2 · 40 · 2.5% saturated"
+    window._show_roi_values()  # nothing new: keep the last values, stop the timer
+    assert not window._roi_value_timer.isActive()
+    circle = window._roi_items[0]
+    circle.setPos([circle.pos()[0] + 10, circle.pos()[1]])
+    moved, _ = window._wavelength_roi_value_labels[(wavelength, fibers[0])]
+    assert moved.toPlainText() == "ROI 1 - Fiber 1 · 900"
+
+    # The next preview, recording, or live view starts without old values.
+    window._prepare_trace_curves(config)
+    moved, _ = window._wavelength_roi_value_labels[(wavelength, fibers[0])]
+    assert moved.toPlainText() == "ROI 1 - Fiber 1"
 
 
 def test_gui_crosstalk_test_reads_live_view_and_is_logged(qtbot, tmp_path: Path) -> None:

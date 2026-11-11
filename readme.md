@@ -1,6 +1,6 @@
 # Driftless Bundle Photometry
 
-**Version 0.3.15** · [What's new](WHATS_NEW.md)
+**Version 0.3.16** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
@@ -168,8 +168,34 @@ if DBF or the PC stops**), circle placement, previews, and what each NWB file ho
 
 ### 3. Conda environment for developers
 
-Clone the repository and let `environment.yml` create the `dbf` environment plus an
-editable install with GUI, test, lint, build, and release tools:
+**Install conda once per PC.** Either distribution works; the environment file uses
+only the conda-forge channel.
+
+- **Miniforge** (recommended): a small installer that defaults to conda-forge and has
+  no licence terms for institutional use. On Windows, download
+  `Miniforge3-Windows-x86_64.exe` from
+  [conda-forge/miniforge](https://github.com/conda-forge/miniforge/releases/latest),
+  or run `winget install --id CondaForge.Miniforge3 --scope user`. Install it for
+  the current user (the default, `%USERPROFILE%\miniforge3`).
+- **Anaconda or Miniconda**: if one is already installed, use it as is. Do not
+  install Miniforge alongside it. Large organizations may need an Anaconda licence
+  for Anaconda's `defaults` channel; DBF does not use that channel.
+
+**Open a conda terminal.** On Windows, open **Miniforge Prompt** (Start menu entry
+`miniforge3 Prompt`) or **Anaconda Prompt**. Neither installer adds conda to `PATH`,
+so plain PowerShell and the VS Code terminal do not know `conda` until you run this
+once from that prompt and then open a new terminal:
+
+```bash
+conda init powershell
+```
+
+On macOS and Linux, the installer offers to run `conda init` for your shell.
+
+**Create the environment.** Clone the repository and let `environment.yml` create the
+`dbf` environment plus an editable install with GUI, test, lint, build, and release
+tools. Because the install is editable, changes to `src/` take effect without
+reinstalling:
 
 ```bash
 git clone https://github.com/mohebi-n-associates/DriftlessBundlePhotometry.git
@@ -179,14 +205,36 @@ conda activate dbf
 python -m pytest
 ```
 
+From the activated environment, `dbf --demo` opens the desktop application with the
+simulator and `dbf --gui` opens it with hardware support. Plain `dbf`, with no
+options, records a short simulated session without a window and prints the NWB files
+it wrote under `demo-output/` (`--output` chooses another folder).
+
+For RWD hardware, also install the hardware extras into that environment:
+`python -m pip install -e ".[rwd,power-meter]"`, then check the rig with
+`dbf --check-devices`.
+
+If you have ever run `pip install --user` with a system Python of the same version,
+pip can satisfy some of DBF's dependencies from your user site-packages
+(`%APPDATA%\Python\Python313` on Windows) instead of the environment. Keep the
+environment self-contained with:
+
+```bash
+conda env config vars set -n dbf PYTHONNOUSERSITE=1
+conda activate dbf
+python -m pip install -e ".[dev,release,rwd,power-meter]"
+```
+
 After pulling dependency changes, synchronize the existing environment with:
 
 ```bash
 conda env update --file environment.yml --prune
 ```
 
-For RWD hardware, also install the hardware extras into that environment:
-`python -m pip install -e ".[rwd,power-meter]"`.
+**Use it in VS Code** by selecting the environment's interpreter (**Python: Select
+Interpreter**): `%USERPROFILE%\miniforge3\envs\dbf\python.exe` for Miniforge, or the
+`envs\dbf` folder under your Anaconda or Miniconda install. `conda env list` prints
+the path.
 
 ### 4. PyPI
 
