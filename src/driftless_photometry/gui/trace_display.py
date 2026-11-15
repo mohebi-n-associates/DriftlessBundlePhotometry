@@ -34,6 +34,67 @@ def refresh_interval_s(span_s: float, width_px: float) -> float:
     return min(MAX_REFRESH_INTERVAL_S, max(MIN_REFRESH_INTERVAL_S, span_s / width_px))
 
 
+TimeAxisMode = str  # "s", "min", or "h"
+
+TIME_AXIS_LABELS = {
+    "s": "Session time (s)",
+    "min": "Session time (min:s)",
+    "h": "Session time (h:min:s)",
+}
+
+_NICE_TIME_STEPS_S = (
+    0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30,
+    60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400,
+)  # fmt: skip
+
+
+def time_axis_mode(visible_max_s: float) -> TimeAxisMode:
+    """Seconds below a minute, min:s below an hour, then h:min:s."""
+
+    if visible_max_s < 60:
+        return "s"
+    return "min" if visible_max_s < 3600 else "h"
+
+
+def time_tick_spacing(span_s: float, max_ticks: float) -> tuple[float, float]:
+    """Major and minor tick steps: round clock steps, at most ``max_ticks`` majors."""
+
+    if not np.isfinite(span_s) or span_s <= 0:
+        return 1.0, 0.5
+    wanted = span_s / max(1.0, max_ticks)
+    major = next((s for s in _NICE_TIME_STEPS_S if s >= wanted), _NICE_TIME_STEPS_S[-1])
+    smaller = [
+        s
+        for s in _NICE_TIME_STEPS_S
+        if s < major and abs(major / s - round(major / s)) < 1e-9 and major / s <= 6
+    ]
+    if not smaller:
+        return float(major), float(major / 2)
+    # About four or five minor steps per major one: 1 min -> 15 s, 10 min -> 2 min.
+    minor = min(smaller, key=lambda s: (abs(major / s - 4.5), major / s))
+    return float(major), float(minor)
+
+
+def format_session_time(value_s: float, spacing_s: float, mode: TimeAxisMode) -> str:
+    """One tick label: ``12`` in seconds mode, ``8:20`` in minutes, ``1:05:00`` in hours.
+
+    Fractions of a second are shown only when ticks are less than a second apart.
+    """
+
+    decimals = 0 if spacing_s >= 1 else min(2, int(np.ceil(-np.log10(spacing_s) - 1e-9)))
+    sign = "-" if value_s < 0 else ""
+    value = round(abs(value_s), decimals)
+    if mode == "s":
+        return f"{sign}{value:.{decimals}f}"
+    seconds = value % 60
+    width = 2 if decimals == 0 else 3 + decimals
+    second_text = f"{seconds:0{width}.{decimals}f}"
+    minutes = int(value // 60)
+    if mode == "min":
+        return f"{sign}{minutes}:{second_text}"
+    return f"{sign}{minutes // 60}:{minutes % 60:02d}:{second_text}"
+
+
 def compact_history(times: NDArray, values: NDArray, budget: int) -> tuple[NDArray, NDArray]:
     """Bound display memory, retaining endpoints and chronological bucket extrema."""
     x, y = downsample_min_max(times[1:-1], values[1:-1], first_index=1, max_points=budget - 2)
@@ -248,27 +309,43 @@ GAP_MIN_S = 0.25
 GAP_FACTOR = 4.0
 
 
-def break_at_gaps(
-    raw_times: NDArray[np.float64],
-    display_times: NDArray[np.float64],
-    display_values: NDArray[np.floating],
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Insert a NaN wherever the raw samples pause, so the line is not drawn across it.
+def gap_midpoints(raw_times: NDArray[np.float64]) -> NDArray[np.float64]:
+    """The middle of every pause in ``raw_times``, which must be unthinned samples."""
 
-    Gaps are found in ``raw_times`` (the samples behind the display), not in the
-    downsampled display points, whose spacing grows with the visible span.
-    """
-
-    values = np.asarray(display_values, dtype=np.float64)
-    if len(raw_times) < 3 or len(display_times) == 0:
-        return display_times, values
+    raw_times = np.asarray(raw_times, dtype=np.float64)
+    if len(raw_times) < 3:
+        return np.empty(0, dtype=np.float64)
     recent = np.diff(raw_times[-512:])
     period = float(np.median(recent)) if len(recent) else 0.0
     threshold = max(GAP_MIN_S, GAP_FACTOR * period)
     gaps = np.flatnonzero(np.diff(raw_times) > threshold)
-    if len(gaps) == 0:
+    return (raw_times[gaps] + raw_times[gaps + 1]) / 2.0
+
+
+def break_at_gaps(
+    raw_times: NDArray[np.float64],
+    display_times: NDArray[np.float64],
+    display_values: NDArray[np.floating],
+    known_gaps_s: NDArray[np.float64] | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Insert a NaN wherever the samples paused, so the line is not drawn across it.
+
+    Gaps are found in ``raw_times``, unthinned samples behind the display, not in the
+    downsampled display points, whose spacing grows with the visible span. Where the
+    display history was thinned, its points are far apart everywhere, so gaps found
+    before thinning are passed as ``known_gaps_s`` instead (midpoints, in seconds).
+    """
+
+    values = np.asarray(display_values, dtype=np.float64)
+    if len(display_times) == 0:
         return display_times, values
-    middles = (raw_times[gaps] + raw_times[gaps + 1]) / 2.0
+    middles = gap_midpoints(raw_times)
+    if known_gaps_s is not None and len(known_gaps_s):
+        known = np.asarray(known_gaps_s, dtype=np.float64)
+        known = known[(known > display_times[0]) & (known < display_times[-1])]
+        middles = np.sort(np.concatenate((known, middles)))
+    if len(middles) == 0:
+        return display_times, values
     positions = np.searchsorted(display_times, middles)
     return (
         np.insert(display_times, positions, middles),

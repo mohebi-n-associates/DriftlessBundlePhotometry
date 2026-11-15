@@ -1,6 +1,6 @@
 # Driftless Bundle Photometry
 
-**Version 0.3.18** · [What's new](WHATS_NEW.md)
+**Version 0.4.1** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
@@ -75,7 +75,8 @@ Custom system. Each exposure's wavelength is derived from the camera and the LED
 and is marked as phase-derived. The RWD unit has no fail-safe: if DBF cannot switch
 its LEDs off, the unit's power switch must. Read
 [the RWD operator guide](docs/rwd-direct-operator-guide.md) before using it. The design and
-bench evidence are in [the design record](docs/rwd-direct-control.md). An offline
+bench evidence are in [the design record](docs/rwd-direct-control.md), and the
+checks that validate the rig in the 0.4 line are in [the validation plan](docs/rwd-rig-validation.md). An offline
 decoder for USB captures of RWD software sessions is also included
 (`dbf --decode-rwd-usb-capture`). The earlier read-only bridge to RWD's TCP data
 stream was removed after 0.2.1.

@@ -6,13 +6,12 @@ import json
 import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 from hdmf.backends.hdf5.h5_utils import H5DataIO
-from hdmf.common import DynamicTable, VectorData
+from hdmf.common import DynamicTable, ElementIdentifiers, VectorData
 from hdmf.data_utils import DataChunkIterator
 from ndx_fiber_photometry import (
     CommandedVoltageSeries,
@@ -49,7 +48,15 @@ from driftless_photometry.config import (
     profile_for,
 )
 from driftless_photometry.diagnostics import FinalizationProgress, FinalizationStage
-from driftless_photometry.domain import AcquisitionData, MeanReferenceImage
+from driftless_photometry.domain import (
+    WAVELENGTH_SOURCE_CODES,
+    AcquisitionData,
+    Column,
+    MeanReferenceImage,
+    TraceColumns,
+    trace_timestamps,
+    trace_values,
+)
 from driftless_photometry.provenance import (
     NWB_RUNTIME_PROVENANCE_SCRATCH_NAME,
     capture_runtime_provenance,
@@ -69,10 +76,39 @@ if TYPE_CHECKING:
 
 
 _WAVELENGTH_SOURCE_DESCRIPTION = (
-    "How the wavelength is known: controller (reported by the timing controller for this "
-    "exposure) or phase_derived (derived from camera identity and the trigger slot after "
-    "a sequencer restart; RWD hardware only)."
+    "How the wavelength is known, as a code: 0 = controller (reported by the timing "
+    "controller for this exposure); 1 = phase_derived (derived from camera identity and "
+    "the trigger slot after a sequencer restart; RWD hardware only). DBF 0.3.x and earlier "
+    "stored the names as text."
 )
+
+
+def _wavelength_source_codes(data: AcquisitionData) -> NDArray[np.uint8]:
+    """One small integer per exposure: a text value per row took ~6 MB per 100,000 rows."""
+
+    sources = np.asarray(data.frame_wavelength_sources, dtype=object)
+    codes = np.zeros(len(sources), dtype=np.uint8)
+    for name, code in WAVELENGTH_SOURCE_CODES.items():
+        codes[sources == name] = code
+    return codes
+
+
+def _saturation(data: AcquisitionData, roi_count: int) -> NDArray[np.float32]:
+    """Per-frame ROI saturation fractions as one ``[frame, roi]`` array."""
+
+    fractions = data.frame_saturation_fractions
+    if isinstance(fractions, Column):
+        return np.asarray(fractions, dtype=np.float32)
+    if not fractions:
+        return np.empty((0, roi_count), dtype=np.float32)
+    rows = [np.asarray(row, dtype=np.float32) for row in fractions]
+    if any(row.shape != (roi_count,) for row in rows):
+        raise ValueError("per-frame saturation ROI count does not match configuration")
+    return np.stack(rows)
+
+
+def _frames_of(data: AcquisitionData, wavelength: Wavelength) -> NDArray[np.bool_]:
+    return np.asarray(data.frame_wavelengths_nm, dtype=np.int64) == int(wavelength)
 
 
 def _control_codes(profile: SystemProfile) -> dict[Wavelength, int]:
@@ -93,10 +129,10 @@ class _Intensity:
     unit: str
     description: str
 
-    def values(self, data: AcquisitionData) -> list[float]:
+    def values(self, data: AcquisitionData) -> NDArray[np.float64]:
         if self.unit == "percent":
-            return data.frame_commanded_power_percent
-        return data.frame_commanded_voltages_v
+            return np.asarray(data.frame_commanded_power_percent, dtype=np.float64)
+        return np.asarray(data.frame_commanded_voltages_v, dtype=np.float64)
 
 
 def _intensity(config: SessionConfig) -> _Intensity:
@@ -175,13 +211,26 @@ def _rgb_image(*, name: str, data, description: str) -> RGBImage:
     return RGBImage(name=name, data=_compressed(data), description=description)
 
 
-def _column_data(values: list):
-    """Numeric per-frame columns are stored compressed; text columns as they are."""
+_COLUMN_COMPRESSION = {"compression": "gzip", "compression_opts": 4, "shuffle": True}
+
+
+def _column_data(values):
+    """Numeric per-frame columns are stored compressed; text columns as they are.
+
+    Per-exposure columns are numeric for this reason: variable-length text cannot be
+    compressed in HDF5.
+    """
 
     array = np.asarray(values)
     if len(array) and array.dtype.kind in "biuf":
-        return H5DataIO(array, compression="gzip", compression_opts=4, shuffle=True)
+        return H5DataIO(array, **_COLUMN_COMPRESSION)
     return list(values)
+
+
+def _series_data(values, dtype) -> H5DataIO:
+    """Per-exposure series data and timestamps, compressed losslessly."""
+
+    return H5DataIO(np.asarray(values, dtype=dtype), **_COLUMN_COMPRESSION)
 
 
 def _make_events_table(
@@ -209,18 +258,26 @@ def _make_events_table(
     lengths = {len(values[column]) for column in ("timestamp", *(c for c, _ in columns))}
     if len(lengths) != 1:
         raise ValueError(f"{name} columns have different lengths: {sorted(lengths)}")
+    (row_count,) = lengths
     return EventsTable(
         name=name,
         description=description,
         source_description=source_description,
+        id=ElementIdentifiers(
+            name="id", data=H5DataIO(np.arange(row_count, dtype=np.int64), **_COLUMN_COMPRESSION)
+        ),
         columns=[
             TimestampVectorData(
                 name="timestamp",
                 description=_EVENTS_TIMESTAMP_DESCRIPTION,
-                data=_column_data(list(values["timestamp"])),
+                data=_column_data(values["timestamp"]),
             ),
             *(
-                VectorData(name=column, description=text, data=_column_data(list(values[column])))
+                VectorData(
+                    name=column,
+                    description=text,
+                    data=_column_data(values[column]),
+                )
                 for column, text in columns
             ),
         ],
@@ -255,33 +312,40 @@ def _validate_inputs(
         raise ValueError("camera frame metadata columns have different lengths")
 
     expected_roi_count = len(config.enabled_rois)
-    for index in range(frame_count):
-        host_received_s = data.frame_host_received_s[index]
-        saturation = data.frame_saturation_fractions[index]
+    # Vectorized: a long recording has millions of frames.
+    saturation = _saturation(data, expected_roi_count)
+    if frame_count:
+        power = np.asarray(data.frame_commanded_power_percent, dtype=np.float64)
+        voltage = np.asarray(data.frame_commanded_voltages_v, dtype=np.float64)
         if profile.intensity_unit == "%":
-            power = data.frame_commanded_power_percent[index]
-            if not np.isfinite(power) or not 0 <= power <= 100:
+            if not np.all(np.isfinite(power) & (power >= 0) & (power <= 100)):
                 raise ValueError("per-frame commanded power must be between 0 and 100 %")
-            if np.isfinite(data.frame_commanded_voltages_v[index]):
+            if np.any(np.isfinite(voltage)):
                 raise ValueError(f"{profile.display_name} frames do not command a voltage")
-        else:
-            voltage = data.frame_commanded_voltages_v[index]
-            if not np.isfinite(voltage) or not 0 <= voltage <= 5:
-                raise ValueError("per-frame commanded voltage must be finite and between 0 and 5 V")
-        camera_index = data.frame_camera_indices[index]
-        if not 1 <= camera_index <= profile.camera_count:
-            raise ValueError(f"{profile.display_name} has no camera {camera_index}")
-        wavelength = Wavelength(data.frame_wavelengths_nm[index])
-        if profile.camera_for(wavelength) != camera_index:
-            raise ValueError(f"{int(wavelength)} nm frames must come from camera {camera_index}")
-        source = data.frame_wavelength_sources[index]
-        if source not in {"controller", "phase_derived"}:
-            raise ValueError(f"unknown wavelength source {source!r}")
-        if source == "phase_derived" and profile is not RWD_PROFILE:
+        elif not np.all(np.isfinite(voltage) & (voltage >= 0) & (voltage <= 5)):
+            raise ValueError("per-frame commanded voltage must be finite and between 0 and 5 V")
+        cameras = np.asarray(data.frame_camera_indices, dtype=np.int64)
+        wavelengths = np.asarray(data.frame_wavelengths_nm, dtype=np.int64)
+        for camera_index in np.unique(cameras).tolist():
+            if not 1 <= camera_index <= profile.camera_count:
+                raise ValueError(f"{profile.display_name} has no camera {camera_index}")
+        for value in np.unique(wavelengths).tolist():
+            wavelength = Wavelength(value)
+            mismatched = cameras[wavelengths == value] != profile.camera_for(wavelength)
+            if np.any(mismatched):
+                camera_index = int(cameras[wavelengths == value][np.argmax(mismatched)])
+                raise ValueError(
+                    f"{int(wavelength)} nm frames must come from camera {camera_index}"
+                )
+        sources = set(np.unique(np.asarray(data.frame_wavelength_sources, dtype=object)))
+        for source in sources:
+            if source not in {"controller", "phase_derived"}:
+                raise ValueError(f"unknown wavelength source {source!r}")
+        if "phase_derived" in sources and profile is not RWD_PROFILE:
             raise ValueError("only RWD hardware may record phase-derived wavelengths")
-        if not np.isfinite(host_received_s):
+        if not np.all(np.isfinite(np.asarray(data.frame_host_received_s, dtype=np.float64))):
             raise ValueError("per-frame host receipt time must be finite")
-        if saturation.shape != (expected_roi_count,):
+        if saturation.shape != (frame_count, expected_roi_count):
             raise ValueError("per-frame saturation ROI count does not match configuration")
         if not np.all(np.isfinite(saturation)) or np.any((saturation < 0) | (saturation > 1)):
             raise ValueError("per-frame saturation fractions must be finite and within [0, 1]")
@@ -323,15 +387,18 @@ def _validate_inputs(
             )
 
     for wavelength, samples in data.traces.items():
-        previous_timestamp = -np.inf
-        for sample in samples:
-            if sample.wavelength_nm != wavelength:
+        if not samples:
+            continue
+        if isinstance(samples, TraceColumns):
+            if samples.wavelength_nm != wavelength:
                 raise ValueError("trace sample is stored under the wrong wavelength")
-            if len(sample.values) != expected_roi_count:
-                raise ValueError("trace sample ROI count does not match configuration")
-            if sample.timestamp_s <= previous_timestamp:
-                raise ValueError("trace timestamps must increase within each wavelength")
-            previous_timestamp = sample.timestamp_s
+        elif any(sample.wavelength_nm != wavelength for sample in samples):
+            raise ValueError("trace sample is stored under the wrong wavelength")
+        values = trace_values(samples, expected_roi_count)
+        if values.shape[1:] != (expected_roi_count,):
+            raise ValueError("trace sample ROI count does not match configuration")
+        if np.any(np.diff(trace_timestamps(samples)) <= 0):
+            raise ValueError("trace timestamps must increase within each wavelength")
 
 
 def _create_nwbfile(config: SessionConfig, roi: ROIConfig, data: AcquisitionData) -> NWBFile:
@@ -461,14 +528,8 @@ def _add_photometry_metadata_and_traces(
         )
         nwbfile.add_device(source)
         excitation_sources[wavelength] = source
-        frame_indices = [
-            index
-            for index, observed in enumerate(data.frame_wavelengths_nm)
-            if observed == int(wavelength)
-        ]
-        timestamps = np.asarray(
-            [data.frame_timestamps_s[index] for index in frame_indices], dtype=np.float64
-        )
+        selected = _frames_of(data, wavelength)
+        timestamps = np.asarray(data.frame_timestamps_s, dtype=np.float64)[selected]
         if rwd:
             nwbfile.add_stimulus(
                 TimeSeries(
@@ -478,12 +539,11 @@ def _add_photometry_metadata_and_traces(
                         "every observed exposure; not an optical-power measurement. An empty "
                         "series means the wavelength was configured but not observed."
                     ),
-                    data=np.asarray(
-                        [data.frame_commanded_power_percent[index] for index in frame_indices],
-                        dtype=np.float32,
+                    data=_series_data(
+                        np.asarray(data.frame_commanded_power_percent)[selected], np.float32
                     ),
                     unit="percent",
-                    timestamps=timestamps,
+                    timestamps=_series_data(timestamps, np.float64),
                 )
             )
             continue
@@ -494,12 +554,9 @@ def _add_photometry_metadata_and_traces(
                 "not an optical-power readback. An empty series means the wavelength was "
                 "configured but not observed before an interrupted stop."
             ),
-            data=np.asarray(
-                [data.frame_commanded_voltages_v[index] for index in frame_indices],
-                dtype=np.float32,
-            ),
+            data=_series_data(np.asarray(data.frame_commanded_voltages_v)[selected], np.float32),
             unit="volts",
-            timestamps=timestamps,
+            timestamps=_series_data(timestamps, np.float64),
         )
         nwbfile.add_stimulus(command)
         voltage_series[wavelength] = command
@@ -547,11 +604,10 @@ def _add_photometry_metadata_and_traces(
         samples = data.traces[channel.wavelength_nm]
         if not samples:
             continue
-        response_data = np.asarray(
-            [[sample.values[roi_index]] for sample in samples],
-            dtype=np.float32,
-        )
-        timestamps = np.asarray([sample.timestamp_s for sample in samples], dtype=np.float64)
+        response_data = trace_values(samples, len(config.enabled_rois))[
+            :, roi_index : roi_index + 1
+        ].copy()
+        timestamps = trace_timestamps(samples)
         region = table.create_region(
             name="fiber_photometry_table_region",
             region=row_indices[channel.wavelength_nm],
@@ -568,7 +624,7 @@ def _add_photometry_metadata_and_traces(
             ),
             data=H5DataIO(response_data, compression="gzip", compression_opts=1, shuffle=True),
             unit="counts",
-            timestamps=timestamps,
+            timestamps=_series_data(timestamps, np.float64),
             fiber_photometry_table_region=region,
         )
         nwbfile.add_acquisition(response)
@@ -848,14 +904,14 @@ def _add_events(
             "camera_timestamp_ns": data.frame_camera_timestamps_ns,
             "controller_sequence": data.frame_sequences,
             "wavelength_nm": data.frame_wavelengths_nm,
-            "wavelength_source": data.frame_wavelength_sources,
+            "wavelength_source": _wavelength_source_codes(data),
             "controller_tick_us": data.frame_ticks_us,
             intensity.column: intensities,
             "host_received_s": data.frame_host_received_s,
-            "roi_saturation_fraction": [
-                float(fractions[roi_index]) for fractions in data.frame_saturation_fractions
-            ],
-            "raw_saved": [saved >= 0 for saved in data.frame_saved_indices],
+            "roi_saturation_fraction": _saturation(data, len(config.enabled_rois))[
+                :, roi_index
+            ].astype(np.float64),
+            "raw_saved": np.asarray(data.frame_saved_indices, dtype=np.int64) >= 0,
             "raw_image_index": data.frame_saved_indices,
         },
     )
@@ -876,7 +932,7 @@ def _add_events(
             "timestamp": data.frame_timestamps_s,
             "controller_sequence": data.frame_sequences,
             "wavelength_nm": data.frame_wavelengths_nm,
-            "wavelength_source": data.frame_wavelength_sources,
+            "wavelength_source": _wavelength_source_codes(data),
             "controller_tick_us": data.frame_ticks_us,
             intensity.column: intensities,
         },
@@ -1027,10 +1083,10 @@ def _add_raw_frames(
         return
     profile = profile_for(config.source)
     codes = _control_codes(profile)
-    controls = np.asarray(
-        [codes[Wavelength(value)] for value in data.frame_wavelengths_nm],
-        dtype=np.uint8,
-    )
+    wavelengths = np.asarray(data.frame_wavelengths_nm, dtype=np.int64)
+    controls = np.zeros(len(wavelengths), dtype=np.uint8)
+    for value in np.unique(wavelengths).tolist():
+        controls[wavelengths == value] = codes[Wavelength(value)]
     devices = _camera_device_names(config)
     used_cameras = set(data.frame_camera_indices)
     device = nwbfile.devices[devices[next(iter(used_cameras))]] if len(used_cameras) == 1 else None
@@ -1068,7 +1124,7 @@ def _add_raw_frames(
         ),
         unit="counts",
         format="raw",
-        timestamps=np.asarray(data.frame_timestamps_s, dtype=np.float64),
+        timestamps=_series_data(data.frame_timestamps_s, np.float64),
         control=controls,
         control_description=_control_descriptions(profile),
         num_samples=np.uint64(frame_count),
@@ -1077,23 +1133,49 @@ def _add_raw_frames(
     nwbfile.add_acquisition(series)
 
 
-def _verify_rows(table, columns: tuple[str, ...], rows: Iterable[tuple], name: str) -> None:
-    """Compare every cell in bounded batches, including absent/extra tables and rows."""
+def _stored_column(table, column: str) -> np.ndarray:
+    """One whole stored column, with fixed-length text decoded to str."""
 
-    iterator = iter(rows)
-    offset = 0
-    while batch := list(islice(iterator, 1024)):
-        if table is None or len(table) < offset + len(batch):
+    stored = np.asarray(table[column][:])
+    if stored.dtype.kind == "S":
+        stored = np.char.decode(stored, "ascii")
+    return stored
+
+
+def _verify_columns(table, expected: Mapping[str, Iterable], name: str) -> None:
+    """Compare every cell of each column, read whole, including absent/extra tables and rows.
+
+    Reading a column in one piece decompresses each stored chunk once; comparing it in
+    1024-row slices decompressed the same chunks over and over.
+    """
+
+    counts = set()
+    for column, values in expected.items():
+        wanted = np.asarray(values if hasattr(values, "__len__") else list(values))
+        counts.add(len(wanted))
+        if table is None:
+            if len(wanted):
+                raise RuntimeError(f"NWB round-trip {name} count mismatch")
+            continue
+        if len(table) != len(wanted):
             raise RuntimeError(f"NWB round-trip {name} count mismatch")
-        for index, column in enumerate(columns):
-            expected = np.asarray([row[index] for row in batch])
-            stored = np.asarray(table[column][offset : offset + len(batch)])
-            numeric = expected.dtype.kind in "fci"
-            if not np.array_equal(stored, expected, equal_nan=numeric):
-                raise RuntimeError(f"NWB round-trip {name}.{column} mismatch")
-        offset += len(batch)
-    if (len(table) if table is not None else 0) != offset:
+        stored = _stored_column(table, column)
+        numeric = wanted.dtype.kind in "fci"
+        if not np.array_equal(stored, wanted, equal_nan=numeric):
+            raise RuntimeError(f"NWB round-trip {name}.{column} mismatch")
+    if table is not None and not expected and len(table):
         raise RuntimeError(f"NWB round-trip {name} count mismatch")
+
+
+def _verify_rows(table, columns: tuple[str, ...], rows: Iterable[tuple], name: str) -> None:
+    """Compare every cell, given expected rows; see ``_verify_columns``."""
+
+    materialized = list(rows)
+    if not materialized:
+        if table is not None and len(table):
+            raise RuntimeError(f"NWB round-trip {name} count mismatch")
+        return
+    _verify_columns(table, dict(zip(columns, zip(*materialized, strict=True), strict=True)), name)
 
 
 def _round_trip_verify(
@@ -1148,46 +1230,34 @@ def _round_trip_verify(
             "camera_timestamp_ns": data.frame_camera_timestamps_ns,
             "controller_sequence": data.frame_sequences,
             "wavelength_nm": data.frame_wavelengths_nm,
-            "wavelength_source": data.frame_wavelength_sources,
+            "wavelength_source": _wavelength_source_codes(data),
             "controller_tick_us": data.frame_ticks_us,
             "timestamp": data.frame_timestamps_s,
             intensity.column: intensity.values(data),
             "host_received_s": data.frame_host_received_s,
-            "roi_saturation_fraction": (
-                values[roi_index] for values in data.frame_saturation_fractions
-            ),
+            "roi_saturation_fraction": _saturation(data, len(config.enabled_rois))[
+                :, roi_index
+            ].astype(np.float64),
         }
-        _verify_rows(
+        _verify_columns(frame_events, exact_columns, "camera_frames")
+        _verify_columns(
             frame_events,
-            tuple(exact_columns),
-            zip(*exact_columns.values(), strict=True),
+            {
+                "raw_saved": np.asarray(data.frame_saved_indices, dtype=np.int64) >= 0,
+                "raw_image_index": data.frame_saved_indices,
+            },
             "camera_frames",
         )
-        _verify_rows(
-            frame_events,
-            ("raw_saved", "raw_image_index"),
-            ((index >= 0, index) for index in data.frame_saved_indices),
-            "camera_frames",
-        )
-        _verify_rows(
+        _verify_columns(
             excitation_events,
-            (
-                "timestamp",
-                "controller_sequence",
-                "wavelength_nm",
-                "wavelength_source",
-                "controller_tick_us",
-                intensity.column,
-            ),
-            zip(
-                data.frame_timestamps_s,
-                data.frame_sequences,
-                data.frame_wavelengths_nm,
-                data.frame_wavelength_sources,
-                data.frame_ticks_us,
-                intensity.values(data),
-                strict=True,
-            ),
+            {
+                "timestamp": data.frame_timestamps_s,
+                "controller_sequence": data.frame_sequences,
+                "wavelength_nm": data.frame_wavelengths_nm,
+                "wavelength_source": _wavelength_source_codes(data),
+                "controller_tick_us": data.frame_ticks_us,
+                intensity.column: intensity.values(data),
+            },
             "excitation_events",
         )
         _verify_rows(
@@ -1324,9 +1394,11 @@ def _round_trip_verify(
             if not np.array_equal(series.timestamps[:], data.frame_timestamps_s):
                 raise RuntimeError("NWB round-trip raw frame timestamps mismatch")
             codes = _control_codes(profile_for(config.source))
-            if not np.array_equal(
-                series.control[:], [codes[Wavelength(w)] for w in data.frame_wavelengths_nm]
-            ):
+            wavelengths = np.asarray(data.frame_wavelengths_nm, dtype=np.int64)
+            expected_controls = np.zeros(len(wavelengths), dtype=np.uint8)
+            for value in np.unique(wavelengths).tolist():
+                expected_controls[wavelengths == value] = codes[Wavelength(value)]
+            if not np.array_equal(series.control[:], expected_controls):
                 raise RuntimeError("NWB round-trip raw frame wavelength control mismatch")
         table = nwbfile.lab_meta_data["FiberPhotometry"].fiber_photometry_table
         expected_rows = len(config.enabled_channels)
@@ -1341,15 +1413,12 @@ def _round_trip_verify(
             ):
                 raise RuntimeError(f"NWB round-trip trace shape mismatch for {name}")
             if expected_samples:
+                samples = data.traces[channel.wavelength_nm]
                 if not np.array_equal(
-                    nwbfile.acquisition[name].timestamps[:],
-                    [s.timestamp_s for s in data.traces[channel.wavelength_nm]],
+                    nwbfile.acquisition[name].timestamps[:], trace_timestamps(samples)
                 ):
                     raise RuntimeError(f"NWB round-trip trace timestamps mismatch for {name}")
-                expected_values = np.asarray(
-                    [sample.values[roi_index] for sample in data.traces[channel.wavelength_nm]],
-                    dtype=np.float32,
-                )
+                expected_values = trace_values(samples, len(config.enabled_rois))[:, roi_index]
                 if not np.array_equal(
                     nwbfile.acquisition[name].data[:, 0],
                     expected_values,
@@ -1357,22 +1426,15 @@ def _round_trip_verify(
                     raise RuntimeError(f"NWB round-trip trace values mismatch for {name}")
             suffix = "commanded_power" if intensity.unit == "percent" else "commanded_voltage"
             command_name = f"led_{int(channel.wavelength_nm)}_{suffix}"
-            frame_indices = [
-                index
-                for index, wavelength in enumerate(data.frame_wavelengths_nm)
-                if wavelength == int(channel.wavelength_nm)
-            ]
-            if frame_indices:
+            selected = _frames_of(data, channel.wavelength_nm)
+            if np.any(selected):
                 stored_commands = nwbfile.stimulus[command_name]
-                values = intensity.values(data)
-                expected_commands = np.asarray(
-                    [values[index] for index in frame_indices], dtype=np.float32
-                )
+                expected_commands = intensity.values(data)[selected].astype(np.float32)
                 if not np.array_equal(stored_commands.data[:], expected_commands):
                     raise RuntimeError(f"NWB round-trip intensity mismatch for {command_name}")
                 if not np.array_equal(
                     stored_commands.timestamps[:],
-                    [data.frame_timestamps_s[i] for i in frame_indices],
+                    np.asarray(data.frame_timestamps_s, dtype=np.float64)[selected],
                 ):
                     raise RuntimeError(
                         f"NWB round-trip intensity timestamps mismatch for {command_name}"

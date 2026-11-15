@@ -298,3 +298,26 @@ def test_nwb_filenames_name_session_animal_brain_region_and_fiber(tmp_path: Path
     assert partial.name == final.name.replace(".nwb", ".partial.nwb")
     long_region = roi.model_copy(update={"brain_region": "x" * 256})
     assert len(_roi_output_paths(config, long_region)[0].name) < 150
+
+
+def test_per_exposure_records_are_numeric_and_compressed(tmp_path: Path) -> None:
+    """Regression: per-exposure text and uncompressed ids and timestamps made a
+    70-minute, 509,342-exposure ROI file 74 MB, of which the traces were 1.2 MB."""
+
+    import h5py
+
+    config, data, _frames = _golden_data(tmp_path, raw_capture=False)
+    reports = write_session_nwbs(config, data, calibration_image=np.zeros((24, 32), np.uint16))
+
+    with h5py.File(reports[0].path, "r") as nwb:
+        for table in ("camera_frames", "excitation_events"):
+            group = nwb["events"][table]
+            for name, dataset in group.items():
+                assert dataset.dtype.kind in "biuf", f"{table}/{name} is {dataset.dtype}"
+                assert dataset.compression == "gzip", f"{table}/{name} is not compressed"
+            assert "1 = phase_derived" in group["wavelength_source"].attrs["description"]
+        for group in (nwb["acquisition"], nwb["stimulus"]["presentation"]):
+            for name, series in group.items():
+                if "timestamps" in series:
+                    assert series["timestamps"].compression == "gzip", name
+                    assert series["data"].compression == "gzip", name

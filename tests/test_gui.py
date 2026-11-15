@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.18"
+    assert __version__ == "0.4.1"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -338,8 +338,14 @@ def test_gui_previews_and_records_rwd_hardware(qtbot, tmp_path: Path) -> None:
     benches[-1].assert_all_off()
 
     window.warmup_check.setChecked(False)  # the warm-up reminder has its own test
+    from driftless_photometry.power import KeepAwake
+
+    states: list[int] = []
+    window._keep_awake = KeepAwake(set_state=lambda flags: states.append(flags) or 1)
     window.start_recording()
+    assert window._keep_awake.held  # Windows may not sleep while recording or saving
     qtbot.waitUntil(lambda: window._thread is None, timeout=30_000)
+    assert not window._keep_awake.held and states == [0x80000001, 0x80000000]
     assert window.last_error is None, window.last_error
     assert window.last_result is not None
     assert window.last_result.report.frame_count == 20
@@ -1593,7 +1599,8 @@ def test_gui_rows_menu_shows_only_checked_roi_traces(qtbot, tmp_path: Path) -> N
     viewport = window.trace_scroll.viewport().height()
     assert window.trace_workspace.height() >= viewport - 4
     assert window.trace_plots[3].height() >= viewport - 30 > 230
-    assert window.trace_plots[3].getAxis("bottom").labelText == "Session time"
+    assert window.trace_plots[3].getAxis("bottom").labelText.startswith("Session time")
+    assert window.trace_plots[3].getAxis("bottom").label.isVisible()
     assert window.trace_rows_button.text() == "ROI 4"
 
     window.trace_row_actions[1].setChecked(True)  # two rows share the area
@@ -1602,7 +1609,7 @@ def test_gui_rows_menu_shows_only_checked_roi_traces(qtbot, tmp_path: Path) -> N
     assert window.trace_plots[1].isVisible() and window.trace_plots[3].isVisible()
     assert window.trace_workspace.height() >= max(2 * 230, viewport - 4)
     assert abs(window.trace_plots[1].height() - window.trace_plots[3].height()) < 30
-    assert not window.trace_plots[1].getAxis("bottom").labelText
+    assert not window.trace_plots[1].getAxis("bottom").label.isVisible()  # only the bottom row
 
     window.trace_rows_menu.actions()[0].trigger()  # Select all
     qtbot.wait(50)
@@ -2052,3 +2059,92 @@ def test_gui_one_roi_trace_fills_the_trace_area(qtbot, tmp_path: Path) -> None:
     assert viewport > 230
     assert window.trace_workspace.height() >= viewport - 4
     assert window.trace_plots[0].height() >= viewport - 40
+
+
+def test_session_time_axis_switches_to_minutes_and_hours(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.gui.plot_interaction import SessionTimeAxis
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=2))
+    rows = list(window.trace_plots)
+    assert rows and all(
+        isinstance(window.trace_plots[row].getAxis("bottom"), SessionTimeAxis) for row in rows
+    )
+    plot = window.trace_plots[rows[-1]]
+    axis = plot.getAxis("bottom")
+
+    plot.setXRange(0, 45, padding=0)
+    assert axis.labelText == "Session time (s)"
+    plot.setXRange(0, 545, padding=0)
+    assert axis.labelText == "Session time (min:s)"
+    assert axis.tickStrings([60.0, 120.0, 540.0], 1.0, 60.0) == ["1:00", "2:00", "9:00"]
+    plot.setXRange(0, 7200, padding=0)
+    assert axis.labelText == "Session time (h:min:s)"
+    assert axis.tickStrings([3600.0, 5400.0], 1.0, 900.0) == ["1:00:00", "1:30:00"]
+    assert "ks" not in axis.labelString()
+
+
+def test_switching_from_a_small_dff_range_to_absolute_keeps_counts_unscaled(
+    qtbot, tmp_path: Path
+) -> None:
+    """Regression: a dF/F row at 0.3 % froze pyqtgraph's "milli" scale on its axis, so
+    50 counts read as 50000 after switching to Absolute."""
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=2))
+    _fill_traces(window, {405: (43.0, 0.001), 470: (43.0, 0.001), 565: (86.0, 0.001)}, rows=2)
+
+    _set_mode(window, "dff")
+    plot = window.trace_plots[0]
+    plot.setYRange(-0.1, 0.3, padding=0)
+    _set_mode(window, "absolute")
+    plot.setYRange(40.0, 90.0, padding=0)
+
+    for row in window.trace_plots:
+        for side in ("left", "right"):
+            axis = window.trace_plots[row].getAxis(side)
+            assert axis.autoSIPrefixScale == 1.0 and axis.labelUnitPrefix == ""
+    left = plot.getAxis("left")
+    assert left.tickStrings([50.0, 80.0], left.autoSIPrefixScale * left.scale, 10.0) == [
+        "50",
+        "80",
+    ]
+    assert "(counts)" in left.labelString()
+
+
+def test_thinned_trace_history_still_draws_and_keeps_real_gaps(qtbot, tmp_path: Path) -> None:
+    """Regression: after the display history was thinned, its old points sat more than
+    0.25 s apart, so every interval was taken for a pause and the old trace vanished.
+    Only real pauses, like a sequencer restart, may break the line."""
+
+    from driftless_photometry.gui.trace_display import MAX_HISTORY_POINTS
+    from driftless_photometry.live_trace import LiveTracePoint
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    config = demo_config(tmp_path, fiber_count=1)
+    window._prepare_trace_curves(config)
+    window._trace_plot_width_px = lambda: 1000.0
+    fiber = config.enabled_rois[0].fiber_id
+    wavelength = window._active_trace_wavelengths[0]
+    rate_hz, restart_s, pause_s = 40.0, 300.0, 0.5
+    times = np.arange(0.0, 2.5 * MAX_HISTORY_POINTS / rate_hz, 1 / rate_hz)
+    times = np.concatenate(
+        (times[times < restart_s], times[times >= restart_s + pause_s])
+    )  # one restart
+    for batch in np.array_split(times, len(times) // 400):
+        window._append_live_trace_points(
+            [LiveTracePoint(float(t), fiber, wavelength, 100.0 + np.sin(t)) for t in batch]
+        )
+    key = (wavelength, 0)
+    assert window._display_aggregated
+    assert window._trace_unthinned_from[key] > restart_s  # the old part was thinned
+
+    window._set_trace_horizon(None)
+    window._refresh_trace_wavelength(wavelength)
+    x, y = window._curves[key].getData()
+    assert np.count_nonzero(np.isnan(y)) == 1  # the restart, and nothing else
+    gap = x[np.isnan(y)][0]
+    assert restart_s - 1 < gap < restart_s + pause_s + 1

@@ -230,3 +230,33 @@ def test_refresh_interval_follows_screen_resolution() -> None:
     assert refresh_interval_s(600.0, 1500.0) == 0.4
     assert refresh_interval_s(3600.0, 1500.0) == 1.0
     assert refresh_interval_s(15.0, 0.0) == 0.1
+
+
+def test_time_axis_mode_follows_the_visible_end() -> None:
+    from driftless_photometry.gui.trace_display import time_axis_mode
+
+    assert [time_axis_mode(v) for v in (0, 59.9, 60, 3599, 3600, 9000)] == [
+        "s", "s", "min", "min", "h", "h",
+    ]  # fmt: skip
+
+
+def test_time_ticks_use_round_clock_steps() -> None:
+    from driftless_photometry.gui.trace_display import time_tick_spacing
+
+    assert time_tick_spacing(15, 15) == (1.0, 0.2)
+    assert time_tick_spacing(545, 15) == (60.0, 15.0)
+    assert time_tick_spacing(7200, 15) == (600.0, 120.0)
+    assert time_tick_spacing(7200, 6) == (1800.0, 600.0)
+    assert time_tick_spacing(0, 10) == (1.0, 0.5)
+
+
+def test_session_time_labels() -> None:
+    from driftless_photometry.gui.trace_display import format_session_time as fmt
+
+    assert fmt(12, 1, "s") == "12"
+    assert fmt(12.5, 0.5, "s") == "12.5"
+    assert fmt(65, 5, "min") == "1:05"
+    assert fmt(500.5, 0.5, "min") == "8:20.5"
+    assert fmt(119.999, 1, "min") == "2:00"  # rounding carries into the minute
+    assert fmt(3900, 300, "h") == "1:05:00"
+    assert fmt(-30, 10, "min") == "-0:30"

@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from driftless_photometry.hardware import (
     decode_rwd_usb_capture,
     write_rwd_usb_decode_csv,
 )
+from driftless_photometry.power import KeepAwake
 from driftless_photometry.storage import discover_session_spools, recover_session_spool
 
 LEGACY_RWD_SPOOL_SUFFIX = ".rwd-spool"
@@ -60,11 +63,41 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="check the RWD controller and both cameras without switching any LED on",
     )
+    mode.add_argument(
+        "--audit-recording",
+        type=Path,
+        metavar="PATH",
+        help="check RWD NWB files (one file or a session folder) against the rig's "
+        "acceptance thresholds, read-only; exit 1 if any check fails",
+    )
+    mode.add_argument(
+        "--bench-record",
+        type=Path,
+        metavar="SETTINGS",
+        help="bench validation: record with an RWD settings JSON without a window, then "
+        "audit the result (Ctrl+C stops and saves)",
+    )
     parser.add_argument(
         "--report",
         type=Path,
         metavar="PATH",
-        help="also write the --check-devices result to this JSON file",
+        help="also write the --check-devices, --audit-recording, or --bench-record result "
+        "to this JSON file",
+    )
+    parser.add_argument(
+        "--flash-line",
+        type=int,
+        choices=range(1, 5),
+        metavar="LINE",
+        help="with --audit-recording or --bench-record: also measure the TTL-to-exposure "
+        "offset from flashes driven together with this TTL input",
+    )
+    parser.add_argument(
+        "--restart-every",
+        type=float,
+        metavar="SECONDS",
+        help="with --bench-record: restart the sequencer this often, to test the restart "
+        "path on hardware",
     )
     parser.add_argument(
         "--port",
@@ -77,8 +110,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="also write every decoded controller frame to CSV (with --decode-rwd-usb-capture)",
     )
-    parser.add_argument("--duration", type=float, default=5.0, help="recording duration in seconds")
-    parser.add_argument("--output", type=Path, default=Path("demo-output"))
+    parser.add_argument(
+        "--duration",
+        type=float,
+        help="recording duration in seconds (default 5; --bench-record: the settings' own)",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="output folder (default demo-output; --bench-record: the settings' own)",
+    )
     parser.add_argument("--fibers", type=int, default=3, choices=range(1, 10))
     parser.add_argument("--raw", action="store_true", help="embed original uint16 frames")
     parser.add_argument(
@@ -124,17 +165,174 @@ def _check_devices(port: str | None, report_path: Path | None) -> int:
     return 0 if report.ok else 1
 
 
+def _write_result(result: object, report_path: Path | None) -> None:
+    text = json.dumps(result, indent=2)
+    if report_path is not None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(text + "\n", encoding="utf-8")
+    if sys.stdout is not None:
+        print(text)
+
+
+def _audit(path: Path, flash_line: int | None) -> dict:
+    from driftless_photometry.rig_validation import (
+        audit_session,
+        measure_ttl_flash_offsets,
+        recording_files,
+    )
+
+    result = audit_session(path)
+    if flash_line is not None:
+        flashes = [measure_ttl_flash_offsets(file, flash_line) for file in recording_files(path)]
+        result["ttl_flash_offsets"] = flashes
+        result["passed"] = result["passed"] and all(f["passed"] is not False for f in flashes)
+    return result
+
+
+def _peak_memory_mb() -> float | None:
+    """This process's peak memory so far, for the storage-scale gate."""
+
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = Counters()
+        counters.cb = ctypes.sizeof(counters)
+        # A private handle, so these prototypes do not change ctypes.windll's shared one.
+        kernel = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        query = kernel.K32GetProcessMemoryInfo
+        query.argtypes = (wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD)
+        query.restype = wintypes.BOOL
+        if not query(kernel.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+            return None
+        return round(counters.PeakWorkingSetSize / 2**20, 1)
+    import resource
+
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(peak / (2**20 if sys.platform == "darwin" else 2**10), 1)
+
+
+def _bench_record(args: argparse.Namespace, rig_factory=None, clock=time.monotonic) -> dict:
+    """Record headless with RWD settings, optionally restarting on a schedule, then audit."""
+
+    from driftless_photometry.config import RWD_PROFILE, profile_for
+    from driftless_photometry.settings import import_settings
+
+    config = import_settings(args.bench_record)
+    if profile_for(config.source) is not RWD_PROFILE:
+        raise SystemExit("--bench-record needs RWD settings")
+    updates: dict = {}
+    if args.output is not None:
+        updates["output_directory"] = args.output
+    if args.duration is not None:
+        updates["recording_duration_s"] = args.duration
+    config = config.model_copy(update=updates) if updates else config
+    if rig_factory is None:
+        from driftless_photometry.hardware.rwd_rig import RWDRig
+
+        rig_factory = RWDRig
+    rig = rig_factory(config)
+    every = args.restart_every
+    next_restart = [clock() + every] if every else [float("inf")]
+
+    def progress(_progress) -> None:
+        now = clock()
+        if now >= next_restart[0]:
+            rig.request_restart(f"every {every:g} s")
+            next_restart[0] = now + every
+
+    outcome: dict = {}
+    finalizing: list[float] = []
+
+    def finalization(_progress) -> None:
+        if not finalizing:
+            finalizing.append(time.monotonic())
+
+    def record() -> None:
+        try:
+            outcome["result"] = AcquisitionEngine().run(
+                config,
+                rig,
+                duration_s=config.recording_duration_s,
+                on_progress=progress,
+                on_finalization=finalization,
+            )
+        except BaseException as error:  # reported on the main thread
+            outcome["error"] = error
+
+    worker = threading.Thread(target=record, name="dbf-bench-record")
+    started = time.monotonic()
+    with KeepAwake():
+        worker.start()
+        while worker.is_alive():
+            try:
+                worker.join(0.5)
+            except KeyboardInterrupt:
+                rig.stop()
+    finished = time.monotonic()
+    if "error" in outcome:
+        raise outcome["error"]
+    result = outcome["result"]
+    finalize_start = finalizing[0] if finalizing else finished
+    files = [report.path for report in result.reports]
+    folder = files[0].parent
+    audit = _audit(folder, args.flash_line)
+    audit["stopped_by_request"] = result.stopped_by_request
+    audit["recording_wall_s"] = round(finalize_start - started, 1)
+    audit["finalization_s"] = round(finished - finalize_start, 1)
+    audit["peak_memory_mb"] = _peak_memory_mb()
+    audit["dbf_version"] = __version__
+    audit["nwb_paths"] = [str(path) for path in files]
+    (folder / "rig-audit.json").write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
+    return audit
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.rwd_usb_csv is not None and args.decode_rwd_usb_capture is None:
         parser.error("--rwd-usb-csv requires --decode-rwd-usb-capture")
-    if (args.report is not None or args.port is not None) and not args.check_devices:
-        parser.error("--report and --port require --check-devices")
+    if args.port is not None and not args.check_devices:
+        parser.error("--port requires --check-devices")
+    if args.report is not None and not (
+        args.check_devices or args.audit_recording or args.bench_record
+    ):
+        parser.error("--report requires --check-devices, --audit-recording, or --bench-record")
+    if args.flash_line is not None and not (args.audit_recording or args.bench_record):
+        parser.error("--flash-line requires --audit-recording or --bench-record")
+    if args.restart_every is not None and not args.bench_record:
+        parser.error("--restart-every requires --bench-record")
+    if args.restart_every is not None and args.restart_every <= 0:
+        parser.error("--restart-every must be positive")
     if args.realtime and not args.headless:
         parser.error("--realtime requires --headless")
     if args.check_devices:
         return _check_devices(args.port, args.report)
+    if args.audit_recording is not None:
+        result = _audit(args.audit_recording, args.flash_line)
+        _write_result(result, args.report)
+        return 0 if result["passed"] else 1
+    if args.bench_record is not None:
+        result = _bench_record(args)
+        _write_result(result, args.report)
+        return 0 if result["passed"] else 1
+    duration_s = 5.0 if args.duration is None else args.duration
+    output = Path("demo-output") if args.output is None else args.output
     if args.decode_rwd_usb_capture is not None:
         decoded = decode_rwd_usb_capture(args.decode_rwd_usb_capture)
         if args.rwd_usb_csv is not None:
@@ -195,24 +393,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         from driftless_photometry.gui.app import run_gui
 
         return run_gui(
-            output_directory=args.output,
-            default_duration_s=args.duration,
+            output_directory=output,
+            default_duration_s=duration_s,
             default_fibers=args.fibers,
             default_raw=args.raw,
             demo=args.demo,
         )
 
     config = demo_config(
-        args.output,
+        output,
         fiber_count=args.fibers,
         raw_capture=args.raw,
-        recording_duration_s=args.duration,
+        recording_duration_s=duration_s,
     )
     engine = AcquisitionEngine()
     result = engine.run(
         config,
         SimulatedRig(config, realtime=args.realtime),
-        duration_s=args.duration,
+        duration_s=duration_s,
     )
     print(
         json.dumps(

@@ -352,7 +352,8 @@ The shared engine records `RWDRig` packets like any other source:
 Each per-ROI NWB file then contains:
 
 - `events/camera_frames` with `camera_index`, `camera_timestamp_ns`,
-  `wavelength_source` (`phase_derived`), and `commanded_power_percent`;
+  `wavelength_source` (code `1`, phase-derived; DBF 0.3.x stored the text
+  `phase_derived`), and `commanded_power_percent`;
   `excitation_events` carries the wavelength source and power too;
 - `stimulus/led_<nm>_commanded_power`, a core `TimeSeries` in percent, one value per
   observed exposure. OFRS's power ratio is not a voltage, so RWD files have no
@@ -369,7 +370,10 @@ Each per-ROI NWB file then contains:
 `SimulatedRig` refuses RWD settings, so an RWD recording can never be simulated by the
 Custom simulator.
 
-**Remaining bench items:**
+**Remaining bench items** (the checks and tools for each are in
+[the rig validation plan](rwd-rig-validation.md); `RWDRig.request_restart`, used by
+`dbf --bench-record --restart-every`, forces restarts so their path can run on
+hardware):
 
 - The absolute TTL-to-exposure offset error. It needs a reference signal tied to the
   exposures, such as a camera's exposure-active output wired to a board input.

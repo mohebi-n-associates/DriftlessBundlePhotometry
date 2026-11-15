@@ -8,6 +8,85 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.4.1 - 2026-11-15
+
+The first version of the 0.4 line, which works toward a validated RWD rig. The checks
+themselves need the rig; see `docs/rwd-rig-validation.md`. There is no 0.4.0.
+
+### Changed
+
+- **NWB files are about 30 times smaller.** A 70-minute, 8-fiber session saved 74 MB
+  per ROI file, of which the photometry traces were 1.2 MB.
+  - The rest was per-exposure bookkeeping. Above all, the text `phase_derived` was
+    stored once per exposure in two tables, about 49 MB, since HDF5 cannot compress
+    variable-length text.
+  - `wavelength_source` is now a small number, `0` = controller-reported and `1` =
+    phase-derived, explained in the column's description.
+  - Row ids, every trace and LED-power timestamp, and the LED-power values are now
+    compressed losslessly. Every value is still stored, and files from earlier versions
+    still read.
+  - The same simulated session now takes 2.4 MB per file.
+- **Saving is about 6 times faster.** On a simulated 70-minute, 8-fiber, 120 Hz
+  session, saving after Stop went from 316 s to 55 s.
+  - Most of the time was spent reading the recording back from its on-disk buffer.
+    That code looked up every field once per exposure, and each lookup unpacked the
+    stored array again. Each chunk is now read once.
+  - The check that reads back each written file now compares whole columns instead
+    of 1024-row slices.
+- **Long recordings save in bounded memory.** A recording loaded back for saving held
+  each exposure as Python objects, about 930 bytes each, so a 22-hour session at 120 Hz
+  would have needed about 9 GB. It is now held as columns, and every check and write
+  works on whole columns. The simulated 70-minute session saves in 34 s with a 527 MB
+  peak (0.3.18: 316 s, 955 MB), and a 4.6-hour one in 104 s with a 1.35 GB peak.
+- **The trace time axis reads in minutes and hours.** It shows seconds while the view
+  ends before 1 min, then min:s (`1:00`, `2:30`), then h:min:s (`1:30:00`) past an hour.
+  Ticks fall on round clock steps such as 10 s, 1 min, 5 min, or 15 min. The label names
+  the format in use, and long recordings no longer show "ks" units.
+
+### Added
+
+- **The PC stays awake while recording.** Windows is asked not to sleep from **Record**
+  until the files are saved, so a long recording can no longer be stopped by sleep
+  when nobody touches the PC. The display may still turn off. `dbf --bench-record` does
+  the same.
+- **Recording audit.** `dbf --audit-recording PATH` checks a finished RWD NWB file,
+  or every file in a session folder, without changing them. It checks:
+  - contiguous exposures, each run on the trigger grid, and the LED cycle and camera
+    routing;
+  - that every gap is explained by an invalid span or a pause;
+  - camera clocks against the grid, and invalid time;
+  - TTL edge order and board-tick spacing;
+  - lost camera frames;
+  - that a session's ROI files agree.
+
+  It exits with 1 when a check fails, and `--report` saves the result as JSON.
+- **Bench recording.** `dbf --bench-record SETTINGS.json` records with saved RWD
+  settings and no window, then audits the result.
+  - `--restart-every S` restarts the sequencer on a schedule, to test the restart path
+    on hardware. Requested restarts are logged as such, and their invalid spans do not
+    count against the invalid-time limit.
+  - The audit is saved as `rig-audit.json` with the recording and saving times and the
+    peak memory. Ctrl+C stops and saves.
+- **TTL-to-exposure offset measurement.** With `--flash-line N`, the audit finds
+  flashes driven together with TTL input N in the traces. It estimates each onset from
+  the partly lit exposure and reports how far the TTL edges are from it.
+- **Pulse-train phase across restarts.** The audit reports whether a steady TTL pulse
+  train kept its phase across sequencer restarts. This shows whether the R821's
+  outputs pause while its sequencer is stopped.
+
+### Fixed
+
+- **Absolute traces could read 1000 times too high.** After switching from dF/F to
+  Absolute, a row whose dF/F axis had shown under 1 % kept a hidden "milli" scale, so
+  43 counts showed as 43000. This was a pyqtgraph quirk, and it affected the axis
+  numbers only. DBF now resets that scale whenever it relabels a trace axis.
+- **Older traces vanished from long recordings.** To keep memory bounded, the display
+  thins older history to bucket extremes once a trace passes about 32,000 points
+  (13 minutes at 120 Hz). Its gap check then took every thinned interval for a pause, so
+  the line was broken everywhere and only the newest stretch stayed visible. Pauses are
+  now found before thinning, so only real ones, such as a sequencer restart, break the
+  line. Display only: recorded data was never affected.
+
 ## 0.3.18 - 2026-11-14
 
 ### Added

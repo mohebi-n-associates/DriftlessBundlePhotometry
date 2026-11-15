@@ -49,6 +49,7 @@ from .rwd_controller_protocol import (
 )
 from .rwd_outputs import OutputProgramRun
 from .rwd_timing import (
+    BENCH_RESTART_REASON,
     RWDBrightnessCheck,
     RWDCameraFrame,
     RWDContinuityBreak,
@@ -161,6 +162,7 @@ class RWDRig:
         self._pending_gains: dict[int | None, float] = {}
         self._pending_power: dict[Wavelength, float] = {}
         self._output_triggers: list[tuple[int, str]] = []
+        self._restart_requests: list[str] = []
         self.identity: RWDControllerIdentity | None = None
         self.port: str | None = None
 
@@ -205,6 +207,29 @@ class RWDRig:
             triggers, self._output_triggers = self._output_triggers, []
         return triggers
 
+    def request_restart(self, reason: str = "bench validation") -> None:
+        """Ask the running session to restart its sequencer once (thread-safe).
+
+        For bench validation only: it exercises the restart path (stop, drain, a new run,
+        the first-frame phase checks, and the invalid span) on hardware, where no natural
+        restart has been seen. The restart is recorded like any other, with ``reason``.
+        It waits for the current run's first recorded frame and is ignored while
+        sequential excitation is paused.
+        """
+
+        with self._gain_lock:
+            self._restart_requests.append(reason)
+
+    def _take_restart_request(self) -> str | None:
+        with self._gain_lock:
+            if not self._restart_requests:
+                return None
+            return self._restart_requests.pop(0)
+
+    def _restart_pending(self) -> bool:
+        with self._gain_lock:
+            return bool(self._restart_requests)
+
     def request_led_power(self, wavelength: Wavelength, percent: float) -> None:
         """Ask the running session to change one enabled LED's power (thread-safe).
 
@@ -239,6 +264,8 @@ class RWDRig:
         # Clear now, not when the generator starts: a Stop that arrives before the
         # first packet is requested must still end the session.
         self._stop.clear()
+        with self._gain_lock:
+            self._restart_requests.clear()
         return self._session_packets(duration_s, start, cycle)
 
     def _session_packets(
@@ -269,6 +296,8 @@ class RWDRig:
                 output_triggers=self._take_output_triggers,
                 pending_power=self._take_pending_power,
                 recording_stop=self._recording_stop,
+                restart_pending=self._restart_pending,
+                restart_request=self._take_restart_request,
             )
             yield from session.run(duration_s, start, cycle)
         finally:
@@ -347,8 +376,12 @@ class _RWDSession:
         output_triggers: Callable[[], list[tuple[int, str]]] = list,
         pending_power: Callable[[], dict[Wavelength, float]] = dict,
         recording_stop: bool = False,
+        restart_pending: Callable[[], bool] = lambda: False,
+        restart_request: Callable[[], str | None] = lambda: None,
     ) -> None:
         self._recording_stop = recording_stop
+        self._restart_pending = restart_pending
+        self._restart_request = restart_request
         self._pending_power = pending_power
         self._pending_gain = pending_gain
         self._output_triggers = output_triggers
@@ -472,6 +505,11 @@ class _RWDSession:
                     continue
                 if frame is not None:
                     self._accept(frame)
+                if self._run_emitted and self._restart_pending():
+                    reason = self._restart_request()
+                    if reason is not None:
+                        self._restart(f"{BENCH_RESTART_REASON}: {reason}")
+                        continue
                 self._check_stall(frame_received=frame is not None)
                 for packet in self._emit_ready(duration_s):
                     if packet is None:

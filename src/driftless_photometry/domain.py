@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -18,6 +19,11 @@ WavelengthSource = Literal["controller", "phase_derived"]
 ``phase_derived`` means it was derived from camera identity and the sequence position
 after a sequencer restart; only the RWD system does this (see the agent contract).
 """
+WAVELENGTH_SOURCE_CODES: dict[str, int] = {"controller": 0, "phase_derived": 1}
+"""How spools and NWB files store each exposure's wavelength source, as one small integer."""
+WAVELENGTH_SOURCE_NAMES: dict[int, str] = {
+    code: name for name, code in WAVELENGTH_SOURCE_CODES.items()
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +97,117 @@ class TraceSample:
     wavelength_nm: Wavelength
     values: NDArray[np.float32]
     saturation_fractions: NDArray[np.float32]
+
+
+class Column(Sequence):
+    """A read-only per-frame column held as one NumPy array, used like a list.
+
+    A long recording loaded back for saving has millions of exposures. As Python lists
+    of boxed numbers and per-frame objects, each exposure took about 930 bytes, so a
+    22 h session would need about 9 GB; as columns it takes under 200. Indexing returns
+    Python scalars (or a row, for 2-D columns), ``np.asarray`` shares the array without
+    copying, and a column equals any sequence with the same items.
+    """
+
+    __slots__ = ("array",)
+
+    def __init__(self, array: np.ndarray) -> None:
+        self.array = array
+
+    def __len__(self) -> int:
+        return len(self.array)
+
+    def __getitem__(self, index):
+        item = self.array[index]
+        if isinstance(index, slice):
+            return Column(item)
+        return item if item.ndim else item.item()
+
+    def __iter__(self):
+        if self.array.ndim == 1:
+            return iter(self.array.tolist())
+        return iter(self.array)
+
+    def __array__(self, dtype=None, copy=None):
+        return self.array if dtype is None else self.array.astype(dtype, copy=False)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Column):
+            other = other.array
+        elif not isinstance(other, (Sequence, np.ndarray)) or isinstance(other, str):
+            return NotImplemented
+        other_array = np.asarray(other)
+        return self.array.shape == other_array.shape and bool(
+            np.array_equal(self.array, other_array)
+        )
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __repr__(self) -> str:
+        return f"Column({self.array!r})"
+
+
+class TraceColumns(Sequence):
+    """One wavelength's trace samples as columns; items are built as ``TraceSample``s.
+
+    ``values`` and ``saturation_fractions`` are ``[time, roi]`` arrays.
+    """
+
+    def __init__(
+        self,
+        wavelength_nm: Wavelength,
+        *,
+        timestamps_s: np.ndarray,
+        frame_ids: np.ndarray,
+        sequences: np.ndarray,
+        controller_ticks_us: np.ndarray,
+        values: np.ndarray,
+        saturation_fractions: np.ndarray,
+    ) -> None:
+        self.wavelength_nm = wavelength_nm
+        self.timestamps_s = timestamps_s
+        self.frame_ids = frame_ids
+        self.sequences = sequences
+        self.controller_ticks_us = controller_ticks_us
+        self.values = values
+        self.saturation_fractions = saturation_fractions
+
+    def __len__(self) -> int:
+        return len(self.timestamps_s)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        return TraceSample(
+            timestamp_s=float(self.timestamps_s[index]),
+            frame_id=int(self.frame_ids[index]),
+            sequence=int(self.sequences[index]),
+            controller_tick_us=int(self.controller_ticks_us[index]),
+            wavelength_nm=self.wavelength_nm,
+            values=self.values[index],
+            saturation_fractions=self.saturation_fractions[index],
+        )
+
+
+def trace_timestamps(samples: Sequence[TraceSample]) -> NDArray[np.float64]:
+    """Every sample's timestamp, without building a sample at a time from columns."""
+
+    if isinstance(samples, TraceColumns):
+        return np.asarray(samples.timestamps_s, dtype=np.float64)
+    return np.asarray([sample.timestamp_s for sample in samples], dtype=np.float64)
+
+
+def trace_values(samples: Sequence[TraceSample], expected_rois: int) -> NDArray[np.float32]:
+    """Every sample's per-ROI values as a ``[time, roi]`` array."""
+
+    if isinstance(samples, TraceColumns):
+        return np.asarray(samples.values, dtype=np.float32)
+    if not samples:
+        return np.empty((0, expected_rois), dtype=np.float32)
+    rows = [np.asarray(sample.values, dtype=np.float32) for sample in samples]
+    if any(row.shape != (expected_rois,) for row in rows):
+        raise ValueError("trace sample ROI count does not match configuration")
+    return np.stack(rows)
 
 
 @dataclass(frozen=True, slots=True)

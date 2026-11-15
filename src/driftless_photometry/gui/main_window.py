@@ -83,6 +83,7 @@ from driftless_photometry.domain import NOTE_MAX_CHARACTERS, EventMark, InvalidT
 from driftless_photometry.hardware import StartCondition
 from driftless_photometry.hardware.rwd_controller_protocol import trigger_period_s
 from driftless_photometry.live_trace import LiveTracePoint, camera_live_trace_points
+from driftless_photometry.power import KeepAwake
 from driftless_photometry.roi import extract_circular_rois, rois_for_camera
 from driftless_photometry.settings import (
     SETTINGS_SUFFIX,
@@ -108,7 +109,13 @@ from .choice_combo import ChoiceCombo
 from .crosstalk import CrosstalkDialog
 from .gc_thread import install_main_thread_gc
 from .output_program import OutputProgramDialog, describe_program
-from .plot_interaction import ScrollableTraceWorkspace, SecondaryTraceViewBox, TraceViewBox
+from .plot_interaction import (
+    ScrollableTraceWorkspace,
+    SecondaryTraceViewBox,
+    SessionTimeAxis,
+    TraceViewBox,
+    disable_si_prefix,
+)
 from .slots import button_slot, slot
 from .theme import PLOT_COLORS, load_theme, save_theme, stylesheet
 from .timing_diagram import TimingDiagram
@@ -122,6 +129,7 @@ from .trace_display import (
     compact_history,
     downsample_min_max,
     fitted_control_f0,
+    gap_midpoints,
     refresh_interval_s,
     rolling_f0,
     trailing_mean,
@@ -449,6 +457,11 @@ class MainWindow(QMainWindow):
         self._last_camera_images: dict[int, np.ndarray] = {}
         self._curves: dict[tuple[int, int], pg.PlotDataItem] = {}
         self._trace_times: dict[tuple[int, int], array] = {}
+        self._keep_awake = KeepAwake()
+        # Thinning the display history spreads its old points apart, so pauses there are
+        # found before thinning: the gaps' midpoints, and where unthinned samples begin.
+        self._trace_gaps: dict[tuple[int, int], list[float]] = {}
+        self._trace_unthinned_from: dict[tuple[int, int], float] = {}
         self._trace_values: dict[tuple[int, int], array] = {}
         self._trace_roi_indices: dict[str, int] = {}
         self._active_trace_wavelengths: tuple[int, ...] = _CUSTOM_TRACE_WAVELENGTHS
@@ -1757,14 +1770,19 @@ class MainWindow(QMainWindow):
             view_box.sigRangeChangedManually.connect(
                 slot(view_box, self._on_trace_range_changed_manually, row)
             )
-            plot = self.trace_workspace.addPlot(row=row, col=0, viewBox=view_box)
+            plot = self.trace_workspace.addPlot(
+                row=row,
+                col=0,
+                viewBox=view_box,
+                axisItems={"bottom": SessionTimeAxis("bottom")},
+            )
             title = f"ROI {row + 1} - {roi.label} / {roi.animal_id}"
             self._trace_titles[row] = title
             plot.setTitle(title, color=PLOT_COLORS[self._theme].title, size="10pt")
             plot.showGrid(x=True, y=True, alpha=0.22)
             _label_trace_axis(plot, dff=display_mode in _DFF_MODES)
-            if row == len(rois) - 1:
-                plot.setLabel("bottom", "Session time", units="s")
+            # The time axis names its own units; only the bottom row shows its label.
+            plot.getAxis("bottom").showLabel(row == len(rois) - 1)
             if row == 0:
                 plot.addLegend(offset=(10, 5), colCount=3)
             plot.setClipToView(True)
@@ -1827,10 +1845,7 @@ class MainWindow(QMainWindow):
                 self.trace_workspace.ci.removeItem(plot)
                 layout_rows.discard(row)
             plot.setVisible(shown)
-            if row == bottom_row:
-                plot.setLabel("bottom", "Session time", units="s")
-            else:
-                plot.getAxis("bottom").showLabel(False)
+            plot.getAxis("bottom").showLabel(row == bottom_row)
         total = len(self.trace_plots)
         if len(shown_rows) == total:
             self.trace_rows_button.setText("All ROIs")
@@ -3715,6 +3730,9 @@ class MainWindow(QMainWindow):
         self._worker = worker
         self._progress_duration_s = config.recording_limit_s
         self._set_busy_controls(True)
+        # Windows must not sleep during a recording or while it saves; released when the
+        # worker thread ends, however it ends.
+        self._keep_awake.acquire()
         thread.start()
 
     def _toggle_live_view(self) -> None:
@@ -4095,6 +4113,8 @@ class MainWindow(QMainWindow):
         }
         self._trace_times.clear()
         self._trace_values.clear()
+        self._trace_gaps.clear()
+        self._trace_unthinned_from.clear()
         self._reset_roi_values()
         self._trace_horizon_s = HORIZONS[0][1]
         self._trace_manual_x_range = None
@@ -4235,7 +4255,7 @@ class MainWindow(QMainWindow):
             return
         color = _WAVELENGTH_COLORS[wavelength]
         axis = plot.getAxis("right")
-        axis.enableAutoSIPrefix(False)
+        disable_si_prefix(axis)
         dff = self.trace_mode_combo.currentData() in _DFF_MODES
         plot.setLabel(
             "right",
@@ -4406,8 +4426,15 @@ class MainWindow(QMainWindow):
                 max_points=budget,
             )
             # A restart or other pause leaves a break in the line, not a straight join.
+            unthinned_from = self._trace_unthinned_from.get(key, -np.inf)
+            unthinned = selected_times[
+                int(np.searchsorted(selected_times, unthinned_from, side="left")) :
+            ]
             display_times, display_values = break_at_gaps(
-                selected_times, display_times, display_values
+                unthinned,
+                display_times,
+                display_values,
+                known_gaps_s=np.asarray(self._trace_gaps.get(key, ())),
             )
             self._curves[key].setData(
                 display_times,
@@ -4608,9 +4635,15 @@ class MainWindow(QMainWindow):
                 self._roi_value_timer.start()
             if len(times) > MAX_HISTORY_POINTS:
                 self._display_aggregated = True
+                history = np.frombuffer(times, dtype=np.float64)
+                unthinned_from = self._trace_unthinned_from.get(key, -np.inf)
+                unthinned = history[int(np.searchsorted(history, unthinned_from, side="left")) :]
+                self._trace_gaps.setdefault(key, []).extend(gap_midpoints(unthinned).tolist())
                 x, y = compact_history(
                     np.asarray(times), np.asarray(self._trace_values[key]), MAX_HISTORY_POINTS // 2
                 )
+                # compact_history keeps the newest sample, so samples after it are unthinned.
+                self._trace_unthinned_from[key] = float(x[-1])
                 self._trace_times[key] = array("d", x)
                 self._trace_values[key] = array("f", y)
                 self.frame_counter.setToolTip(
@@ -4953,6 +4986,7 @@ class MainWindow(QMainWindow):
             message.exec()
 
     def _on_thread_finished(self) -> None:
+        self._keep_awake.release()
         self._drain_display()
         self._warmup.leds_off()
         self._operation_uses_leds = False
@@ -5077,11 +5111,11 @@ def _label_trace_axis(plot: pg.PlotItem, *, dff: bool) -> None:
     they pass 1000, so the prefixes are off.
     """
 
-    plot.getAxis("left").enableAutoSIPrefix(False)
     if dff:
         plot.setLabel("left", "dF/F", units="%")
     else:
         plot.setLabel("left", "Mean pixel intensity", units="counts")
+    disable_si_prefix(plot.getAxis("left"))
 
 
 def _gain_control() -> tuple[QWidget, QSlider, QDoubleSpinBox]:
