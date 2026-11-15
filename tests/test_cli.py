@@ -12,7 +12,7 @@ def test_cli_reports_short_name_and_version(capsys) -> None:
     with pytest.raises(SystemExit, match="0"):
         build_parser().parse_args(["--version"])
 
-    assert capsys.readouterr().out == "DBF 0.3.17\n"
+    assert capsys.readouterr().out == "DBF 0.3.18\n"
 
 
 def test_headless_cli_writes_machine_readable_result(tmp_path: Path, capsys) -> None:
@@ -117,3 +117,26 @@ def test_cli_checks_devices_without_leds_and_reports_json(monkeypatch, tmp_path,
 def test_cli_device_options_need_check_devices():
     with pytest.raises(SystemExit):
         main(["--report", "x.json"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "demo"),
+    [([], False), (["--gui"], False), (["--demo"], True), (["--fibers", "2"], False)],
+)
+def test_cli_opens_the_gui_unless_a_headless_mode_is_chosen(monkeypatch, argv, demo) -> None:
+    import driftless_photometry.gui.app as app
+
+    calls = []
+    monkeypatch.setattr(app, "run_gui", lambda **kwargs: calls.append(kwargs) or 0)
+
+    assert main(argv) == 0
+    assert len(calls) == 1 and calls[0]["demo"] is demo
+    assert calls[0]["default_fibers"] == (2 if "--fibers" in argv else 3)
+
+
+def test_cli_realtime_needs_headless(monkeypatch) -> None:
+    import driftless_photometry.gui.app as app
+
+    monkeypatch.setattr(app, "run_gui", lambda **kwargs: pytest.fail("GUI opened"))
+    with pytest.raises(SystemExit, match="2"):
+        main(["--realtime"])

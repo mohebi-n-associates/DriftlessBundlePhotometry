@@ -8,6 +8,54 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.3.18 - 2026-11-14
+
+### Added
+
+- **560 nm traces have their own y-axis in dF/F.** In the dF/F modes, 410/405 and
+  470 nm share each row's left axis and 560/565 nm uses a right axis labelled in its
+  pink, so a red signal of a very different size still fills the row. *Absolute*
+  keeps all three on the left axis, since counts share one unit. A vertical drag
+  zooms both axes to the same slice of the row, and double-click resets both. Heights
+  on the two axes are not comparable; read each trace from its own axis. Display only.
+- **A faster trace display for long spans.** Live traces redraw only as often as new
+  data moves them by a pixel: every 0.1 s at short spans, at most once a second at
+  long ones. Traces are drawn with a 1 px pen, antialiased only when sparse, since
+  wide antialiased lines were the slowest part of each repaint. TTL edges and invalid
+  spans are drawn as one item per row instead of one per edge, with TTL lines
+  thinned to one per pixel column; invalid spans still show their reason on hover.
+  For 8 ROIs at 3 wavelengths over 18 minutes with 614 TTL edges, a full update
+  dropped from about 1.9 s to about 0.14 s. Display only.
+
+### Fixed
+
+- **Recordings no longer lose frames when the trace display is smoothed.** With
+  *Smooth* on and a long time span shown (for example *Full*), each redraw of the
+  traces did seconds of work in pure Python, and the cost grew with recording length.
+  That starved camera delivery: frames were lost to a full host queue, every loss
+  forced a sequencer restart (about 5 s marked invalid), and the delayed frame arrival
+  times made restarts fail the camera alignment check several times in a row.
+  Smoothing is now vectorized and gives the same values; a full redraw of 8 ROIs at
+  3 wavelengths over 1000 s takes about 80 ms instead of about 2.8 s. Display only;
+  recorded samples were never smoothed.
+- **The 410/405 nm control stays hidden in *dF/F, control fit* when a preview or
+  recording starts.** If that mode was already selected, for example from the saved
+  defaults, each new preview or recording showed the control trace again until the
+  mode was changed. New traces now follow the current mode.
+- **No more NumPy `metadata on a dtype is not saved` warnings during RWD recordings.**
+  DBF's copy of each Alvium camera frame kept the camera SDK's dtype metadata, which
+  holds a reference to the SDK's frame buffer. Saving the per-wavelength reference
+  images then printed this warning in the console. Frames are now plain `uint16`
+  arrays that do not reference the SDK buffer. Recorded pixel values were never
+  affected.
+
+### Changed
+
+- **Plain `dbf` opens the GUI.** Running `dbf` with no mode now opens the desktop
+  application with hardware support, as `dbf --gui` does (`--gui` still works).
+  The short simulated recording without a window now needs `dbf --headless`, and
+  `--realtime` is accepted only with `--headless`.
+
 ## 0.3.17 - 2026-11-11
 
 ### Added

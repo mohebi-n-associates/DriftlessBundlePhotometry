@@ -1,3 +1,4 @@
+import time
 from array import array
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from driftless_photometry.gui.trace_display import (
     MAX_DISPLAY_POINTS,
     downsample_min_max,
     fitted_control_f0,
+    refresh_interval_s,
     rolling_f0,
     trailing_mean,
 )
@@ -25,6 +27,52 @@ def test_trailing_mean_uses_elapsed_time_and_preserves_input() -> None:
     np.testing.assert_allclose(smoothed, [1.0, 2.0, 4.0, 9.0])
     np.testing.assert_array_equal(values, original)
     np.testing.assert_array_equal(trailing_mean(times, values, window_s=0), values)
+
+
+def _reference_trailing_mean(times, values, window_s):
+    """The original sample-by-sample loop, kept as the definition of the window."""
+    output = np.full(len(values), np.nan)
+    left, running_sum, finite_count = 0, 0.0, 0
+    for right, value in enumerate(np.asarray(values, dtype=np.float64)):
+        if np.isfinite(value):
+            running_sum += value
+            finite_count += 1
+        while times[right] - times[left] > window_s:
+            if np.isfinite(values[left]):
+                running_sum -= values[left]
+                finite_count -= 1
+            left += 1
+        if finite_count:
+            output[right] = running_sum / finite_count
+    return output
+
+
+def test_trailing_mean_matches_the_sample_by_sample_definition() -> None:
+    rng = np.random.default_rng(7)
+    times = np.cumsum(rng.uniform(0.001, 0.05, 5_000))
+    values = rng.normal(100.0, 5.0, 5_000).astype(np.float32)
+    values[rng.choice(5_000, 200, replace=False)] = np.nan
+    values[1_000:1_200] = np.nan  # a window with no finite samples stays NaN
+    for window_s in (0.0, 0.03, 1.0, 7.5):
+        np.testing.assert_allclose(
+            trailing_mean(times, values, window_s=window_s),
+            _reference_trailing_mean(times, values, window_s),
+            rtol=1e-9,
+            equal_nan=True,
+        )
+
+
+def test_trailing_mean_stays_fast_over_long_recordings() -> None:
+    # The display smooths every ROI and wavelength on the GUI thread while recording;
+    # a slow pass holds the GIL and starves camera delivery (frames lost, 2026-11-14).
+    times = np.arange(200_000, dtype=np.float64) / 40.0
+    values = np.random.default_rng(1).random(200_000).astype(np.float32)
+    best = np.inf
+    for _ in range(3):
+        start = time.perf_counter()
+        trailing_mean(times, values, window_s=1.0)
+        best = min(best, time.perf_counter() - start)
+    assert best < 0.1
 
 
 def test_min_max_decimation_caps_points_and_preserves_brief_excursion() -> None:
@@ -173,3 +221,12 @@ def test_trace_lines_break_where_the_raw_samples_pause() -> None:
     coarse = steady[::40]
     _coarse_times, coarse_values = break_at_gaps(steady, coarse, np.ones(len(coarse)))
     assert not np.isnan(coarse_values).any()
+
+
+def test_refresh_interval_follows_screen_resolution() -> None:
+    # A short span redraws ten times a second; a long one only as often as new data
+    # moves the trace by a pixel, and at least once a second.
+    assert refresh_interval_s(15.0, 1500.0) == 0.1
+    assert refresh_interval_s(600.0, 1500.0) == 0.4
+    assert refresh_interval_s(3600.0, 1500.0) == 1.0
+    assert refresh_interval_s(15.0, 0.0) == 0.1

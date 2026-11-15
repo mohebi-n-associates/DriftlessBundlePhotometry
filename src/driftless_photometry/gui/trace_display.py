@@ -16,6 +16,23 @@ HORIZONS: tuple[tuple[str, float | None], ...] = (
 MAX_DISPLAY_POINTS = 4000
 MAX_HISTORY_POINTS = 8 * MAX_DISPLAY_POINTS
 
+MIN_REFRESH_INTERVAL_S = 0.1
+MAX_REFRESH_INTERVAL_S = 1.0
+
+
+def refresh_interval_s(span_s: float, width_px: float) -> float:
+    """How often a live trace spanning ``span_s`` on ``width_px`` pixels needs redrawing.
+
+    New data moves the trace by one pixel every ``span_s / width_px`` seconds, and a
+    redraw sooner changes nothing visible, so long spans redraw less often. The
+    interval stays between 0.1 s, so short spans look live, and 1 s, so the newest data
+    never waits long.
+    """
+
+    if width_px <= 0 or not np.isfinite(span_s):
+        return MIN_REFRESH_INTERVAL_S
+    return min(MAX_REFRESH_INTERVAL_S, max(MIN_REFRESH_INTERVAL_S, span_s / width_px))
+
 
 def compact_history(times: NDArray, values: NDArray, budget: int) -> tuple[NDArray, NDArray]:
     """Bound display memory, retaining endpoints and chronological bucket extrema."""
@@ -44,22 +61,17 @@ def trailing_mean(
         raise ValueError("smoothing timestamps must strictly increase")
     if window_s == 0 or len(x) == 0:
         return y.copy()
+    # Vectorized: this runs for every ROI and wavelength on the GUI thread, and a Python
+    # loop over a long recording held the GIL long enough to starve camera delivery.
+    # Sample i averages the finite samples j <= i with x[i] - x[j] <= window_s.
+    finite = np.isfinite(y)
+    sums = np.concatenate(([0.0], np.cumsum(np.where(finite, y, 0.0))))
+    counts = np.concatenate(([0], np.cumsum(finite)))
+    left = np.searchsorted(x, x - window_s, side="left")
+    right = np.arange(1, len(x) + 1)
+    window_counts = counts[right] - counts[left]
     output = np.full(len(y), np.nan, dtype=np.float64)
-    left = 0
-    running_sum = 0.0
-    finite_count = 0
-    for right, value in enumerate(y):
-        if np.isfinite(value):
-            running_sum += value
-            finite_count += 1
-        while x[right] - x[left] > window_s:
-            departing = y[left]
-            if np.isfinite(departing):
-                running_sum -= departing
-                finite_count -= 1
-            left += 1
-        if finite_count:
-            output[right] = running_sum / finite_count
+    np.divide(sums[right] - sums[left], window_counts, out=output, where=window_counts > 0)
     return output
 
 

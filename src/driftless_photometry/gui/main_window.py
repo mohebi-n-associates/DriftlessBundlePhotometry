@@ -108,7 +108,7 @@ from .choice_combo import ChoiceCombo
 from .crosstalk import CrosstalkDialog
 from .gc_thread import install_main_thread_gc
 from .output_program import OutputProgramDialog, describe_program
-from .plot_interaction import ScrollableTraceWorkspace, TraceViewBox
+from .plot_interaction import ScrollableTraceWorkspace, SecondaryTraceViewBox, TraceViewBox
 from .slots import button_slot, slot
 from .theme import PLOT_COLORS, load_theme, save_theme, stylesheet
 from .timing_diagram import TimingDiagram
@@ -122,9 +122,11 @@ from .trace_display import (
     compact_history,
     downsample_min_max,
     fitted_control_f0,
+    refresh_interval_s,
     rolling_f0,
     trailing_mean,
 )
+from .trace_markers import ShadedSpansItem, VerticalLinesItem
 from .warmup import WARMUP_COOLDOWN_S, LEDWarmup, format_minutes
 from .worker import (
     AcquisitionWorker,
@@ -137,7 +139,9 @@ from .worker import (
     default_rig_factory,
 )
 
-_TRACE_REFRESH_INTERVAL_S = 0.1
+_TRACE_PEN_WIDTH = 1.0
+"""Wide antialiased pens are slow to stroke in Qt's software renderer: at 1.8 px a
+redraw of 8 ROIs x 3 wavelengths took about 25 times as long as at 1 px."""
 # The wavelength images show each ROI's mean over this window, so its value is
 # readable instead of flickering frame to frame.
 _ROI_VALUE_INTERVAL_MS = 100
@@ -161,6 +165,10 @@ _WAVELENGTH_COLORS = {
     560: "#e05fa0",
     565: "#e05fa0",
 }
+
+_RIGHT_AXIS_WAVELENGTHS = frozenset({560, 565})
+"""In dF/F modes red traces get their own right y-axis; 405/410 and 470 share the left.
+Absolute counts share one unit, so every wavelength is drawn on the left axis then."""
 
 _WAVELENGTH_TITLES = {
     Wavelength.CONTROL_405: "405 nm — isosbestic control",
@@ -931,7 +939,10 @@ class MainWindow(QMainWindow):
             self._marker_shortcuts.append(shortcut)
         self._event_marks_shown: list[EventMark] = []
         self._event_graphics: list[list[tuple[object, object]]] = []
-        self._ttl_graphics: list[tuple[int, list[tuple[object, object]]]] = []
+        self._ttl_edges_shown: list[tuple[int, float]] = []
+        self._ttl_items: dict[tuple[int, int], VerticalLinesItem] = {}
+        self._invalid_spans: list[tuple[float, float, str]] = []
+        self._invalid_items: dict[int, ShadedSpansItem] = {}
 
         action_row = QHBoxLayout()
         self.preview_button = QPushButton("Run preview")
@@ -1724,6 +1735,7 @@ class MainWindow(QMainWindow):
         self.trace_workspace = ScrollableTraceWorkspace()
         self.trace_plots: dict[int, pg.PlotItem] = {}
         self.trace_view_boxes: dict[int, TraceViewBox] = {}
+        self.trace_secondary_views: dict[int, SecondaryTraceViewBox] = {}
         return self.trace_workspace
 
     def _configure_trace_plots(self, rois: tuple[ROIConfig, ...]) -> None:
@@ -1732,6 +1744,7 @@ class MainWindow(QMainWindow):
         self.trace_workspace.setFixedHeight(_TRACE_ROW_HEIGHT_PX * max(1, len(rois)))
         self.trace_plots = {}
         self.trace_view_boxes = {}
+        self.trace_secondary_views = {}
         self._trace_titles: dict[int, str] = {}
         self._trace_manual_x_range = None
         self._trace_roi_count = len(rois)
@@ -1755,8 +1768,10 @@ class MainWindow(QMainWindow):
             if row == 0:
                 plot.addLegend(offset=(10, 5), colCount=3)
             plot.setClipToView(True)
+            self.trace_secondary_views[row] = SecondaryTraceViewBox(plot)
             self.trace_plots[row] = plot
             self.trace_view_boxes[row] = view_box
+            self._style_right_trace_axis(row)
             self._render_trace_title(row)
         self._trace_rows_in_layout = set(self.trace_plots)
         self._fill_trace_focus_choices(rois)
@@ -2081,6 +2096,7 @@ class MainWindow(QMainWindow):
                 axis.setTextPen(colors.foreground)
         for row in getattr(self, "trace_plots", {}):
             self._render_trace_title(row)
+            self._style_right_trace_axis(row)
         for _plot, label in getattr(self, "_roi_labels", ()):
             label.fill = pg.mkBrush(*colors.label_fill)
             label.update()
@@ -2512,46 +2528,47 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Note added for {len(targets)} ROI(s)")
 
     def _show_ttl_edges(self, edges: Sequence[TTLEdge]) -> None:
+        """Draw TTL edges on every row: one batched item per row and input line."""
+
+        if not edges:
+            return
         for edge in edges:
-            color = _TTL_LINE_COLORS.get(edge.line, "#d3e8f2")
-            graphics = []
-            for plot in self.trace_plots.values():
-                line = pg.InfiniteLine(
-                    pos=edge.timestamp_s,
-                    angle=90,
-                    movable=False,
-                    pen=pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine),
-                )
-                line.setZValue(15)
-                line.setVisible(self._ttl_line_visible(edge.line))
-                plot.addItem(line)
-                graphics.append((plot, line))
-            self._ttl_graphics.append((edge.line, graphics))
-            if len(self._ttl_graphics) > _MAX_TTL_GRAPHICS:
-                _line, oldest = self._ttl_graphics.pop(0)
-                for plot, item in oldest:
-                    plot.removeItem(item)
+            self._ttl_edges_shown.append((edge.line, edge.timestamp_s))
+        del self._ttl_edges_shown[:-_MAX_TTL_GRAPHICS]  # only the most recent edges
+        for line in {edge.line for edge in edges} | set(self._ttl_line_items_lines()):
+            positions = [t for edge_line, t in self._ttl_edges_shown if edge_line == line]
+            for row, plot in self.trace_plots.items():
+                item = self._ttl_items.get((row, line))
+                if item is None:
+                    color = _TTL_LINE_COLORS.get(line, "#d3e8f2")
+                    item = VerticalLinesItem(pg.mkPen(color, width=1, style=Qt.PenStyle.DashLine))
+                    item.setZValue(15)
+                    item.setVisible(self._ttl_line_visible(line))
+                    plot.addItem(item, ignoreBounds=True)
+                    self._ttl_items[(row, line)] = item
+                item.set_positions(positions)
+
+    def _ttl_line_items_lines(self) -> set[int]:
+        return {line for _row, line in self._ttl_items}
 
     def _show_invalid_times(self, intervals: Sequence[InvalidTimeInterval]) -> None:
         """Shade each invalid span (such as a sequencer restart) on every trace row."""
 
+        if not intervals:
+            return
         for interval in intervals:
-            graphics = []
-            for plot in self.trace_plots.values():
-                region = pg.LinearRegionItem(
-                    values=(interval.start_time_s, interval.stop_time_s),
-                    movable=False,
-                    brush=pg.mkBrush(_INVALID_SPAN_RGBA),
-                    pen=pg.mkPen(None),
-                )
-                region.setZValue(-5)
-                region.setToolTip(f"Invalid: {interval.reason}")
-                plot.addItem(region)
-                graphics.append((plot, region))
-            self._invalid_graphics.append(graphics)
-            if len(self._invalid_graphics) > _MAX_INVALID_GRAPHICS:
-                for plot, item in self._invalid_graphics.pop(0):
-                    plot.removeItem(item)
+            self._invalid_spans.append(
+                (interval.start_time_s, interval.stop_time_s, interval.reason)
+            )
+        del self._invalid_spans[:-_MAX_INVALID_GRAPHICS]
+        for row, plot in self.trace_plots.items():
+            item = self._invalid_items.get(row)
+            if item is None:
+                item = ShadedSpansItem(pg.mkBrush(_INVALID_SPAN_RGBA))
+                item.setZValue(-5)
+                plot.addItem(item, ignoreBounds=True)
+                self._invalid_items[row] = item
+            item.set_spans(self._invalid_spans)
 
     def _ttl_line_visible(self, line: int) -> bool:
         check = self.ttl_line_checks.get(line)
@@ -2560,10 +2577,8 @@ class MainWindow(QMainWindow):
     def _apply_ttl_marker_visibility(self, *_args: object) -> None:
         for check in self.ttl_line_checks.values():
             check.setEnabled(self.ttl_marker_check.isChecked())
-        for line, graphics in self._ttl_graphics:
-            visible = self._ttl_line_visible(line)
-            for _plot, item in graphics:
-                item.setVisible(visible)
+        for (_row, line), item in self._ttl_items.items():
+            item.setVisible(self._ttl_line_visible(line))
 
     def _record_note_history(self, mark: EventMark) -> None:
         index = self._trace_roi_indices.get(mark.fiber_id) if mark.fiber_id else None
@@ -4064,8 +4079,10 @@ class MainWindow(QMainWindow):
             self._snr_note = None
         self._event_marks_shown = []
         self._event_graphics = []
-        self._ttl_graphics = []
-        self._invalid_graphics: list[list[tuple[pg.PlotItem, pg.LinearRegionItem]]] = []
+        self._ttl_edges_shown: list[tuple[int, float]] = []
+        self._ttl_items: dict[tuple[int, int], VerticalLinesItem] = {}
+        self._invalid_spans: list[tuple[float, float, str]] = []
+        self._invalid_items: dict[int, ShadedSpansItem] = {}
         self.notes_history.clear()
         self._note_entries: list[list] = []
         self._rebuild_note_roi_checks(config.enabled_rois)
@@ -4089,16 +4106,28 @@ class MainWindow(QMainWindow):
         self._last_trace_render_s = {
             wavelength: -np.inf for wavelength in self._active_trace_wavelengths
         }
+        self._last_trace_range_s = -np.inf
         for index, _roi in enumerate(config.enabled_rois):
+            plot = self.trace_plots[index]
             for wavelength in self._active_trace_wavelengths:
-                curve = self.trace_plots[index].plot(
-                    name=f"{wavelength} nm" if index == 0 else None,
-                    pen=pg.mkPen(_WAVELENGTH_COLORS[wavelength], width=1.8),
-                )
-                curve.setVisible(self.trace_wavelength_checks[wavelength].isChecked())
+                name = f"{wavelength} nm" if index == 0 else None
+                pen = pg.mkPen(_WAVELENGTH_COLORS[wavelength], width=_TRACE_PEN_WIDTH)
+                if wavelength in _RIGHT_AXIS_WAVELENGTHS:
+                    # Placed on the left or right axis by _place_red_trace_curves.
+                    curve = pg.PlotDataItem(name=name, pen=pen)
+                    curve.setClipToView(True)
+                    plot.vb.addItem(curve)
+                    if name is not None and plot.legend is not None:
+                        plot.legend.addItem(curve, name)
+                else:
+                    curve = plot.plot(name=name, pen=pen)
                 self._curves[(wavelength, index)] = curve
                 self._trace_times[(wavelength, index)] = array("d")
                 self._trace_values[(wavelength, index)] = array("f")
+        # New curves follow the current mode too: control-fit dF/F hides the control,
+        # and dF/F puts red traces on the right axis.
+        self._place_red_trace_curves()
+        self._apply_trace_visibility()
         self._update_trace_horizon_availability(0.0)
 
     def _set_trace_horizon(self, seconds: float | None) -> None:
@@ -4106,8 +4135,7 @@ class MainWindow(QMainWindow):
         self._trace_manual_x_range = None
         for value, button in self.horizon_buttons.items():
             button.setChecked(value == seconds)
-        for plot in self.trace_plots.values():
-            plot.enableAutoRange(axis="y", enable=True)
+        self._autorange_trace_y()
         self._refresh_all_trace_curves()
 
     def _set_trace_horizon_from_button_id(self, button_id: int) -> None:
@@ -4141,8 +4169,7 @@ class MainWindow(QMainWindow):
 
     def _reset_trace_zoom(self) -> None:
         self._trace_manual_x_range = None
-        for plot in self.trace_plots.values():
-            plot.enableAutoRange(axis="y", enable=True)
+        self._autorange_trace_y()
         self._refresh_all_trace_curves()
 
     def _apply_trace_visibility(self, *_args: object) -> None:
@@ -4157,6 +4184,75 @@ class MainWindow(QMainWindow):
             curve.setVisible(
                 self.trace_wavelength_checks[wavelength].isChecked() and wavelength != hidden
             )
+        for row in self.trace_plots:
+            self._style_right_trace_axis(row)
+
+    def _dual_trace_axes(self) -> bool:
+        """Whether red traces use the right axis: only in dF/F, not absolute counts."""
+
+        return self.trace_mode_combo.currentData() in _DFF_MODES
+
+    def _place_red_trace_curves(self) -> None:
+        """Move each red trace to the right axis in dF/F, and to the left otherwise."""
+
+        dual = self._dual_trace_axes()
+        for (wavelength, row), curve in self._curves.items():
+            if wavelength not in _RIGHT_AXIS_WAVELENGTHS:
+                continue
+            target = self.trace_secondary_views[row] if dual else self.trace_plots[row].vb
+            current = curve.getViewBox()
+            if current is target:
+                continue
+            # Reparent within the scene. ViewBox.removeItem would take the curve out of
+            # the scene, and re-adding it unparented briefly attaches it to the window
+            # widget rather than a view box, which pyqtgraph cannot handle.
+            if isinstance(current, pg.ViewBox) and curve in current.addedItems:
+                current.addedItems.remove(curve)
+            target.addItem(curve)
+            if isinstance(current, pg.ViewBox):
+                current.updateAutoRange()
+
+    def _right_axis_wavelength(self) -> int | None:
+        """The shown red wavelength drawn on each row's right axis, if any."""
+
+        if not self._dual_trace_axes():
+            return None
+        for wavelength in getattr(self, "_active_trace_wavelengths", ()):
+            if (
+                wavelength in _RIGHT_AXIS_WAVELENGTHS
+                and self.trace_wavelength_checks[wavelength].isChecked()
+            ):
+                return wavelength
+        return None
+
+    def _style_right_trace_axis(self, row: int) -> None:
+        """Show the right axis, labelled in the red trace's colour, only while it is shown."""
+
+        plot = self.trace_plots[row]
+        wavelength = self._right_axis_wavelength()
+        if wavelength is None:
+            plot.hideAxis("right")
+            return
+        color = _WAVELENGTH_COLORS[wavelength]
+        axis = plot.getAxis("right")
+        axis.enableAutoSIPrefix(False)
+        dff = self.trace_mode_combo.currentData() in _DFF_MODES
+        plot.setLabel(
+            "right",
+            f"{wavelength} nm" + (" dF/F" if dff else " intensity"),
+            units="%" if dff else "counts",
+            color=color,
+        )
+        axis.setPen(color)
+        axis.setTextPen(color)
+        plot.showAxis("right")
+
+    def _autorange_trace_y(self) -> None:
+        for row, plot in self.trace_plots.items():
+            plot.enableAutoRange(axis="y", enable=True)
+            secondary = self.trace_secondary_views.get(row)
+            if secondary is not None:
+                secondary.enableAutoRange(axis="y", enable=True)
 
     def _apply_trace_mode(self, *_args: object) -> None:
         mode = self.trace_mode_combo.currentData()
@@ -4169,9 +4265,11 @@ class MainWindow(QMainWindow):
                 "dff_rolling": "F0: median of the preceding window",
             }.get(mode, "median F0 per ROI and wavelength")
         )
-        for plot in self.trace_plots.values():
+        self._place_red_trace_curves()
+        for row, plot in self.trace_plots.items():
             _label_trace_axis(plot, dff=is_dff)
-            plot.enableAutoRange(axis="y", enable=True)
+            self._style_right_trace_axis(row)
+        self._autorange_trace_y()
         self._apply_trace_visibility()
         self._refresh_all_trace_curves()
 
@@ -4190,6 +4288,14 @@ class MainWindow(QMainWindow):
                 if available
                 else f"{label} needs {seconds:g} s of data; {duration_s:g} s is available."
             )
+
+    def _trace_plot_width_px(self) -> float:
+        plot = next(iter(self.trace_plots.values()), None)
+        return 0.0 if plot is None else float(plot.width())
+
+    def _trace_refresh_interval_s(self, visible: tuple[float, float] | None) -> float:
+        span_s = 0.0 if visible is None else visible[1] - visible[0]
+        return refresh_interval_s(span_s, self._trace_plot_width_px())
 
     def _trace_point_budget(self) -> int:
         plot = next(iter(self.trace_plots.values()), None)
@@ -4307,6 +4413,9 @@ class MainWindow(QMainWindow):
                 display_times,
                 display_values,
                 connect="finite",
+                # A dense trace is a band of per-pixel extrema, where antialiasing changes
+                # nothing visible but costs a third of the redraw.
+                antialias=len(display_times) <= self._trace_plot_width_px(),
             )
         self._set_all_trace_x_ranges(start_s, stop_s)
 
@@ -4526,15 +4635,24 @@ class MainWindow(QMainWindow):
             available_span = self._trace_latest_s - self._trace_first_s + 1 / 30
             self._update_trace_horizon_availability(available_span)
         visible = self._trace_manual_x_range or self._visible_trace_range()
-        if visible is not None:
+        # Redraw and scroll only when new data moves the traces by about a pixel. The
+        # microsecond allowance keeps batches exactly one interval apart from being
+        # skipped by floating-point rounding.
+        interval_s = self._trace_refresh_interval_s(visible) - 1e-6
+        if (
+            visible is not None
+            and self._trace_latest_s is not None
+            and self._trace_latest_s - self._last_trace_range_s >= interval_s
+        ):
             self._set_all_trace_x_ranges(*visible)
+            self._last_trace_range_s = self._trace_latest_s
         for wavelength_nm in affected_wavelengths:
             latest = max(
                 self._trace_times[(wavelength_nm, index)][-1]
                 for index in range(self._trace_roi_count)
                 if self._trace_times[(wavelength_nm, index)]
             )
-            if latest - self._last_trace_render_s[wavelength_nm] >= _TRACE_REFRESH_INTERVAL_S:
+            if latest - self._last_trace_render_s[wavelength_nm] >= interval_s:
                 self._refresh_trace_wavelength(wavelength_nm)
                 self._last_trace_render_s[wavelength_nm] = latest
 

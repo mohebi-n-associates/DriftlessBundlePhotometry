@@ -58,7 +58,7 @@ before starting DBF, because only one program can use the controller's port.
 
 ## Set up a recording
 
-1. Start DBF (`dbf --gui` or the installed shortcut) and choose **RWD** under
+1. Start DBF (`dbf` or the installed shortcut) and choose **RWD** under
    *Acquisition system*. `dbf --demo` is restricted to the Custom simulator.
 2. **Excitation:** enable the LEDs you need and set each one's power in percent. The
    board can run one LED, 410+470, 470+560, or all three; it has no 410+560 mode.
@@ -235,6 +235,18 @@ recording so far, which removes shared artifacts such as bleaching and motion. T
 410 nm trace is hidden in that mode. *dF/F, rolling F0* uses the median of the
 preceding *Baseline* seconds, which follows slow drift. All of them change only the
 display.
+
+In *Absolute*, all three wavelengths share each row's left y-axis, since they share
+one unit (counts). In the dF/F modes, 410 and 470 nm share the left y-axis and 560 nm
+has its own right y-axis, labelled in the 560 nm trace's pink, so each fills the row at
+its own scale. Heights on the two axes are then not comparable: a 560 nm peak drawn as
+tall as a 470 nm peak can be a different size, so read its value from the right axis.
+A vertical drag zooms both axes to the same slice of the row; double-click resets both.
+
+The trace display adapts to the span shown. Long spans redraw only as often as new
+data moves the traces by a pixel (at most once a second), traces are drawn as min/max
+per pixel column, and TTL lines are thinned to one per pixel column. None of this
+changes recorded data.
 
 If the display history is aggregated, its hint identifies this and live dF/F is an
 approximation. Saved raw samples and events remain complete. Only the most recent

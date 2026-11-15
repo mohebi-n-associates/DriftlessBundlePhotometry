@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import weakref
 from typing import Literal
 
 import pyqtgraph as pg
@@ -24,6 +25,26 @@ class TraceViewBox(pg.ViewBox):
     def __init__(self) -> None:
         super().__init__(enableMenu=False)
         self.setMouseMode(self.RectMode)
+        # Views drawn on a second y-axis of the same row; a vertical zoom takes the same
+        # slice of the plot height on each of them. Held weakly: they refer back to this
+        # view, and a Python reference cycle between Qt objects must not form.
+        self.linked_y_views: weakref.WeakSet[pg.ViewBox] = weakref.WeakSet()
+
+    def zoom_y(self, low: float, high: float) -> None:
+        """Show ``low``-``high`` here and the same height fraction on linked y views."""
+
+        own_low, own_high = self.viewRange()[1]
+        span = own_high - own_low
+        if span > 0:
+            for view in list(self.linked_y_views):
+                view_low, view_high = view.viewRange()[1]
+                view_span = view_high - view_low
+                view.setYRange(
+                    view_low + (low - own_low) / span * view_span,
+                    view_low + (high - own_low) / span * view_span,
+                    padding=0.0,
+                )
+        self.setYRange(low, high, padding=0.0)
 
     def mouseDragEvent(self, event: object, axis: int | None = None) -> None:
         if axis is not None or event.button() != Qt.MouseButton.LeftButton:
@@ -49,7 +70,7 @@ class TraceViewBox(pg.ViewBox):
         else:
             low, high = data_rect.top(), data_rect.bottom()
             if high > low:
-                self.setYRange(low, high, padding=0.0)
+                self.zoom_y(low, high)
                 self.range_selected.emit("y", low, high)
 
     def mouseDoubleClickEvent(self, event: object) -> None:
@@ -62,6 +83,37 @@ class TraceViewBox(pg.ViewBox):
 
     def wheelEvent(self, event: object, axis: int | None = None) -> None:
         event.ignore()
+
+
+class SecondaryTraceViewBox(pg.ViewBox):
+    """A trace row's right-axis view: x follows the row's main view, y is its own.
+
+    It is a child of the plot item, so it lays out, hides, and is removed with its row,
+    and it sits just under the main view so every mouse gesture still reaches the main
+    view; that view forwards vertical zooms here through ``linked_y_views``.
+    """
+
+    def __init__(self, plot: pg.PlotItem) -> None:
+        super().__init__(enableMenu=False)
+        self.setMouseEnabled(x=False, y=False)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setAcceptHoverEvents(False)
+        self._main = weakref.ref(plot.vb)
+        self.setParentItem(plot)
+        self.setZValue(plot.vb.zValue() - 1)
+        self.setXLink(plot.vb)
+        axis = plot.getAxis("right")
+        axis.linkToView(self)
+        axis.setGrid(False)  # the left axis's grid serves the whole row
+        plot.vb.sigResized.connect(self.follow_main_view)
+        if isinstance(plot.vb, TraceViewBox):
+            plot.vb.linked_y_views.add(self)
+        self.follow_main_view()
+
+    def follow_main_view(self, *_args: object) -> None:
+        main = self._main()
+        if main is not None:
+            self.setGeometry(main.geometry())
 
 
 class ScrollableTraceWorkspace(pg.GraphicsLayoutWidget):
