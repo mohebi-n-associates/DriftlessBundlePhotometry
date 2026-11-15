@@ -28,10 +28,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Driftless Bundle Photometry")
     parser.add_argument("--version", action="version", version=f"DBF {__version__}")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--headless", action="store_true", help="run a simulated recording")
+    mode.add_argument(
+        "--headless", action="store_true", help="run a simulated recording without a window"
+    )
     mode.add_argument("--demo", action="store_true", help="open the desktop GUI demo")
     mode.add_argument(
-        "--gui", action="store_true", help="open the desktop GUI with hardware support"
+        "--gui",
+        action="store_true",
+        help="open the desktop GUI with hardware support (the default with no mode)",
     )
     mode.add_argument(
         "--recover-spool",
@@ -127,6 +131,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--rwd-usb-csv requires --decode-rwd-usb-capture")
     if (args.report is not None or args.port is not None) and not args.check_devices:
         parser.error("--report and --port require --check-devices")
+    if args.realtime and not args.headless:
+        parser.error("--realtime requires --headless")
     if args.check_devices:
         return _check_devices(args.port, args.report)
     if args.decode_rwd_usb_capture is not None:
@@ -184,7 +190,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0
-    if args.demo or args.gui:
+    if not args.headless:
+        # With no mode, as with --gui, open the desktop GUI with hardware support.
         from driftless_photometry.gui.app import run_gui
 
         return run_gui(

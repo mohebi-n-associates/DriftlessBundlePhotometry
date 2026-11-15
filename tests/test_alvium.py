@@ -1,3 +1,4 @@
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -29,7 +30,9 @@ class FakeFeature:
 class FakeFrame:
     def __init__(self, frame_id: int, status: str = COMPLETE) -> None:
         self.frame_id, self.status = frame_id, status
-        self.pixels = np.full((4, 6, 1), frame_id, dtype=np.uint16)
+        # VmbPy keeps its frame buffer alive through the array's dtype metadata.
+        dtype = np.dtype(np.uint16, metadata={"VmbPy_buffer": bytearray(48)})
+        self.pixels = np.full((4, 6, 1), frame_id, dtype=dtype)
 
     def get_status(self) -> str:
         return self.status
@@ -150,12 +153,28 @@ def test_configures_hardware_trigger_and_restores_settings() -> None:
     assert frame.image.dtype == np.uint16
     assert frame.image.shape == (4, 6)
     assert frame.image.base is None
+    assert frame.image.dtype.metadata is None
     for camera in (green, red):
         assert camera.values["TriggerMode"] == "Off"
         assert camera.values["PixelFormat"] == "Mono8"
         assert camera.values["ReverseX"] is False
         assert not camera.open and camera.handler is None
     assert not system.entered
+
+
+def test_frames_do_not_keep_the_vmbpy_buffer_or_warn_when_saved(tmp_path) -> None:
+    camera = FakeCamera("1")
+    with _cameras(FakeSystem([camera, FakeCamera("2")])) as cameras:
+        camera.emit(FakeFrame(3))
+        frame = cameras.get(timeout_s=0.1)
+
+    assert frame is not None
+    assert frame.image.dtype == np.dtype(np.uint16)
+    assert frame.image.dtype.metadata is None
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        np.save(tmp_path / "frame.npy", frame.image, allow_pickle=False)
+    assert np.array_equal(np.load(tmp_path / "frame.npy"), np.full((4, 6), 3))
 
 
 def test_incomplete_frames_and_queue_overflow_are_counted_and_requeued() -> None:

@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.3.17"
+    assert __version__ == "0.3.18"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -621,7 +621,7 @@ def test_gui_overlays_wavelengths_per_roi_with_visibility_controls(qtbot, tmp_pa
 
     assert len(window.trace_plots) == 2
     assert len(window._curves) == 6
-    assert all(len(plot.listDataItems()) == 3 for plot in window.trace_plots.values())
+    assert all(len(plot.vb.addedItems) >= 3 for plot in window.trace_plots.values())
     assert "animal-01" in window.trace_plots[0].titleLabel.text
 
     window.trace_wavelength_checks[Wavelength.GREEN_470].setChecked(False)
@@ -1164,6 +1164,110 @@ def test_gui_dff_control_fit_takes_f0_from_the_fitted_control(qtbot, tmp_path: P
     assert window._build_config().display.mode == "dff_fit"
 
 
+def test_control_fit_hides_the_control_on_curves_built_later(qtbot, tmp_path: Path) -> None:
+    # Saved defaults can select control-fit dF/F before a preview builds its curves.
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("dff_fit"))
+
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=2))
+
+    for index in range(2):
+        assert not window._curves[(405, index)].isVisible()
+        assert window._curves[(470, index)].isVisible()
+
+
+def _fill_traces(window, swings: dict[int, tuple[float, float]], rows: int) -> None:
+    """Give each wavelength a baseline level and a relative sine swing."""
+    times = np.arange(0.0, 10.0, 0.1)
+    for wavelength, (level, swing) in swings.items():
+        for index in range(rows):
+            window._trace_times[(wavelength, index)] = array("d", times + 0.01 * index)
+            values = level * (1 + swing * np.sin(times))
+            window._trace_values[(wavelength, index)] = array("f", values)
+    window._trace_first_s = 0.0
+    window._trace_latest_s = float(times[-1])
+    window._set_trace_horizon(None)
+
+
+def _set_mode(window, mode: str) -> None:
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData(mode))
+
+
+def test_red_traces_get_their_own_right_axis_in_dff_only(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=2))
+    # 470 swings by 1 % and 565 by 50 %: on one dF/F axis 470 would look flat.
+    _fill_traces(window, {405: (90.0, 0.01), 470: (100.0, 0.01), 565: (3000.0, 0.5)}, rows=2)
+
+    _set_mode(window, "absolute")  # one unit, so one shared axis
+    for row in range(2):
+        plot = window.trace_plots[row]
+        assert all(window._curves[(nm, row)].getViewBox() is plot.vb for nm in (405, 470, 565))
+        assert not plot.getAxis("right").isVisible()
+    assert "565 nm" in window.trace_plots[0].legend.items[2][1].text
+
+    _set_mode(window, "dff")
+    for row in range(2):
+        plot = window.trace_plots[row]
+        secondary = window.trace_secondary_views[row]
+        assert window._curves[(405, row)].getViewBox() is plot.vb
+        assert window._curves[(470, row)].getViewBox() is plot.vb
+        assert window._curves[(565, row)].getViewBox() is secondary
+        right = plot.getAxis("right")
+        assert right.isVisible() and right.linkedView() is secondary
+        assert right.textPen().color().name() == "#e05fa0"
+        assert secondary.zValue() < plot.vb.zValue()  # mouse gestures reach the main view
+        plot.vb.updateAutoRange()
+        secondary.updateAutoRange()
+        left_low, left_high = plot.vb.viewRange()[1]
+        right_low, right_high = secondary.viewRange()[1]
+        assert left_high - left_low < 10  # 470 fills the left axis
+        assert right_high - right_low > 50  # 565 fills its own
+
+    window.trace_wavelength_checks[565].setChecked(False)
+    assert not window.trace_plots[0].getAxis("right").isVisible()
+    window.trace_wavelength_checks[565].setChecked(True)
+    assert window.trace_plots[0].getAxis("right").isVisible()
+
+    window._apply_theme("light")
+    assert window.trace_plots[0].getAxis("right").textPen().color().name() == "#e05fa0"
+
+    _set_mode(window, "absolute")
+    assert window._curves[(565, 0)].getViewBox() is window.trace_plots[0].vb
+    assert not window.trace_plots[0].getAxis("right").isVisible()
+
+
+def test_vertical_zoom_takes_the_same_slice_of_the_right_axis(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=1))
+    main, secondary = window.trace_view_boxes[0], window.trace_secondary_views[0]
+    main.setYRange(0.0, 100.0, padding=0.0)
+    secondary.setYRange(1000.0, 2000.0, padding=0.0)
+
+    main.zoom_y(25.0, 75.0)
+
+    assert np.allclose(main.viewRange()[1], (25.0, 75.0))
+    assert np.allclose(secondary.viewRange()[1], (1250.0, 1750.0))
+    window._reset_trace_zoom()
+    assert secondary.autoRangeEnabled()[1]
+
+
+def test_rows_without_a_red_wavelength_hide_the_right_axis(qtbot, tmp_path: Path) -> None:
+    config = demo_config(tmp_path, fiber_count=1)
+    channels = tuple(
+        channel.model_copy(update={"enabled": int(channel.wavelength_nm) != 565})
+        for channel in config.channels
+    )
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(config.model_copy(update={"channels": channels}))
+
+    assert not window.trace_plots[0].getAxis("right").isVisible()
+
+
 def test_gui_measures_led_power_after_asking(qtbot, tmp_path: Path, monkeypatch) -> None:
     from driftless_photometry.hardware.rwd_devices import LEDPowerReading
 
@@ -1402,7 +1506,6 @@ def test_gui_live_view_draws_traces_and_roi_readouts(qtbot, tmp_path: Path) -> N
 
 
 def test_gui_draws_ttl_edges_with_toggles_and_keeps_per_roi_notes(qtbot, tmp_path: Path) -> None:
-    import pyqtgraph as pg
     from pynwb import NWBHDF5IO
 
     window = MainWindow(output_directory=tmp_path, default_fibers=2, default_duration_s=2.5)
@@ -1424,26 +1527,12 @@ def test_gui_draws_ttl_edges_with_toggles_and_keeps_per_roi_notes(qtbot, tmp_pat
     assert window.last_error is None, window.last_error
     assert not window.note_edit.isEnabled()
 
-    def ttl_lines(row):
-        items = window.trace_plots[row].items
-        return [
-            i
-            for i in items
-            if isinstance(i, pg.InfiniteLine)
-            and i.pen.style() == Qt.PenStyle.DashLine
-            and i.pen.widthF() == 1
-        ]
-
-    assert window._ttl_graphics and ttl_lines(0)
+    assert window._ttl_edges_shown
+    assert any(len(item.positions) for (row, _l), item in window._ttl_items.items() if row == 0)
     window.ttl_line_checks[1].setChecked(False)
-    assert all(
-        not item.isVisible()
-        for line, graphics in window._ttl_graphics
-        if line == 1
-        for _plot, item in graphics
-    )
+    assert all(not item.isVisible() for (_r, line), item in window._ttl_items.items() if line == 1)
     window.ttl_marker_check.setChecked(False)
-    assert all(not item.isVisible() for _l, g in window._ttl_graphics for _p, item in g)
+    assert all(not item.isVisible() for item in window._ttl_items.values())
     history = window.notes_history.toPlainText()
     assert "ROI 2 · fiber 2 bumped" in history
     assert "ROI 1, ROI 2 · saline injection" in history
@@ -1670,6 +1759,85 @@ def test_gui_flags_a_dark_roi_on_its_trace_row(qtbot, tmp_path: Path) -> None:
             ]
         )
     assert "⚠" not in window.trace_plots[1].titleLabel.text
+
+
+def test_long_trace_spans_redraw_at_screen_resolution(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.live_trace import LiveTracePoint
+
+    def redraws(horizon_s: float | None) -> int:
+        window = MainWindow(output_directory=tmp_path, default_fibers=1)
+        qtbot.addWidget(window)
+        config = demo_config(tmp_path, fiber_count=1)
+        window._prepare_trace_curves(config)
+        window._trace_plot_width_px = lambda: 1000.0
+        window._set_trace_horizon(horizon_s)
+        fiber = config.enabled_rois[0].fiber_id
+        wavelength = window._active_trace_wavelengths[0]
+        calls = []
+        original = window._refresh_trace_wavelength
+        window._refresh_trace_wavelength = lambda nm: calls.append(step) or original(nm)
+        for step in range(3000):  # 300 s in 0.1 s display batches
+            window._append_live_trace_points(
+                [LiveTracePoint(step / 10 + k / 40, fiber, wavelength, 100.0) for k in range(4)]
+            )
+        return sum(1 for when in calls if when >= 2000)  # the last 100 s
+
+    # A 15 s span on 1000 px redraws every 0.1 s batch. Full spans 200-300 s by then,
+    # so a pixel takes 0.2-0.3 s and redraws come every second or third batch.
+    assert redraws(15.0) == 1000
+    assert 330 <= redraws(None) <= 500
+
+
+def test_dense_traces_draw_thin_without_antialiasing(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=1))
+    window._trace_plot_width_px = lambda: 400.0
+    times = np.arange(0.0, 300.0, 0.025)
+    for wavelength in window._active_trace_wavelengths:
+        window._trace_times[(wavelength, 0)] = array("d", times)
+        window._trace_values[(wavelength, 0)] = array("f", 100 + np.sin(times))
+    window._trace_first_s, window._trace_latest_s = 0.0, float(times[-1])
+
+    window._set_trace_horizon(None)  # 12,000 samples per trace on 400 px
+    curve = window._curves[(470, 0)]
+    assert curve.opts["pen"].widthF() == 1.0
+    assert curve.opts["antialias"] is False
+    assert len(curve.getData()[0]) > 400
+
+    window._set_trace_horizon(15.0)  # 600 samples: sparse enough to smooth the line
+    window._trace_plot_width_px = lambda: 1000.0
+    window._refresh_all_trace_curves()
+    assert curve.opts["antialias"] is True
+
+
+def test_ttl_edges_are_batched_per_row_and_input(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.domain import TTLEdge
+    from driftless_photometry.gui.trace_markers import VerticalLinesItem
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._prepare_trace_curves(demo_config(tmp_path, fiber_count=2))
+
+    def edge(t: float, line: int, n: int) -> TTLEdge:
+        return TTLEdge(t, n, line, f"behavior_{line}", "rising", True, n)
+
+    edges = [edge(i * 0.5, 1 + i % 2, i) for i in range(600)]
+    window._show_ttl_edges(edges)
+
+    for row in range(2):
+        items = [i for i in window.trace_plots[row].items if isinstance(i, VerticalLinesItem)]
+        assert len(items) == 2  # one per TTL input, not one per edge
+        assert sorted(len(i.positions) for i in items) == [300, 300]
+    item = window._ttl_items[(0, 1)]
+    window.trace_plots[0].setXRange(0.0, 300.0, padding=0.0)
+    assert len(item.visible_positions()) == 300  # line 1's edges, 1 s apart, all in view
+    item._pixel_width = lambda: 3.0  # 3 s per pixel: 300 s of view on 100 columns
+    assert len(item.visible_positions()) == 100  # one line per pixel column
+
+    window._show_ttl_edges([edge(400.0 + i, 1, 600 + i) for i in range(2000)])
+    assert len(window._ttl_edges_shown) == 2000  # only the most recent edges are kept
+    assert len(window._ttl_items[(0, 2)].positions) == 0
 
 
 def test_gui_wavelength_images_show_each_roi_mean_per_window(qtbot, tmp_path: Path) -> None:

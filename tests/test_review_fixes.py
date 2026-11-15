@@ -209,10 +209,12 @@ def test_invalid_spans_reach_the_display_and_are_shaded_on_every_row(qtbot, tmp_
     qtbot.addWidget(window)
     window._prepare_trace_curves(config)
     window._show_invalid_times((span,))
-    assert len(window._invalid_graphics) == 1
+    assert window._invalid_spans == [(2.0, 4.0, "RWD sequencer restart")]
     for plot in window.trace_plots.values():
-        regions = [i for i in plot.items if i.__class__.__name__ == "LinearRegionItem"]
-        assert [r.getRegion() for r in regions] == [(2.0, 4.0)]
+        regions = [i for i in plot.items if i.__class__.__name__ == "ShadedSpansItem"]
+        assert [r.spans for r in regions] == [[(2.0, 4.0, "RWD sequencer restart")]]
+        assert regions[0].reasons_at(3.0) == ["RWD sequencer restart"]
+        assert regions[0].reasons_at(5.0) == []
 
     fiber = config.enabled_rois[0].fiber_id
     times = [t / 40 for t in range(80)] + [4 + t / 40 for t in range(80)]
@@ -222,4 +224,4 @@ def test_invalid_spans_reach_the_display_and_are_shaded_on_every_row(qtbot, tmp_
     assert np.isnan(y).sum() == 1  # no line drawn across the restart
 
     window._prepare_trace_curves(config)  # a new run starts clean
-    assert window._invalid_graphics == []
+    assert window._invalid_spans == [] and window._invalid_items == {}

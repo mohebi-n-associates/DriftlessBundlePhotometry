@@ -271,7 +271,11 @@ class AlviumTriggeredCameras:
                 if frame.get_status() != complete:
                     self._incomplete += 1
                     return
-                image = np.array(frame.as_numpy_ndarray()[..., 0], dtype=np.uint16, copy=True)
+                # Copy into a fresh array: VmbPy's dtype carries its frame buffer as
+                # metadata, which np.array(..., dtype=np.uint16) would keep.
+                pixels = frame.as_numpy_ndarray()[..., 0]
+                image = np.empty(pixels.shape, dtype=np.uint16)
+                image[...] = pixels
                 record = AlviumFrame(
                     user_id,
                     int(frame.get_id()),

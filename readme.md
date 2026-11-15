@@ -1,6 +1,6 @@
 # Driftless Bundle Photometry
 
-**Version 0.3.17** · [What's new](WHATS_NEW.md)
+**Version 0.3.18** · [What's new](WHATS_NEW.md)
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
@@ -205,10 +205,10 @@ conda activate dbf
 python -m pytest
 ```
 
-From the activated environment, `dbf --demo` opens the desktop application with the
-simulator and `dbf --gui` opens it with hardware support. Plain `dbf`, with no
-options, records a short simulated session without a window and prints the NWB files
-it wrote under `demo-output/` (`--output` chooses another folder).
+From the activated environment, plain `dbf` (or `dbf --gui`) opens the desktop
+application with hardware support, and `dbf --demo` opens it with the simulator.
+`dbf --headless` records a short simulated session without a window and prints the NWB
+files it wrote under `demo-output/` (`--output` chooses another folder).
 
 For RWD hardware, also install the hardware extras into that environment:
 `python -m pip install -e ".[rwd,power-meter]"`, then check the rig with
@@ -284,7 +284,7 @@ dbf --demo
 ```
 
 Demo mode always runs the Custom simulator and ignores hardware defaults. Open
-`dbf --gui` or the installed desktop shortcut to use physical RWD hardware.
+`dbf` or the installed desktop shortcut to use physical RWD hardware.
 The GUI also offers **Review setup…**, a Stop button available on every tab
 (Escape), and **Configuration → Recover an interrupted recording…**.
 
