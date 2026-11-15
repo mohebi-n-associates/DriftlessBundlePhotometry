@@ -96,12 +96,51 @@ def format_session_time(value_s: float, spacing_s: float, mode: TimeAxisMode) ->
 
 
 def compact_history(times: NDArray, values: NDArray, budget: int) -> tuple[NDArray, NDArray]:
-    """Bound display memory, retaining endpoints and chronological bucket extrema."""
-    x, y = downsample_min_max(times[1:-1], values[1:-1], first_index=1, max_points=budget - 2)
-    x = np.concatenate((times[:1], x, times[-1:]))
-    y = np.concatenate((values[:1], y, values[-1:]))
-    unique = np.concatenate(([True], np.diff(x) > 0))
-    return x[unique], y[unique]
+    """Bound display memory to ``budget`` points, keeping recent samples and extrema.
+
+    The newest quarter of the budget stays unthinned. Older samples fall into time
+    buckets, half evenly spaced and half narrowing toward the present, and each bucket
+    keeps its minimum and maximum in time order. The buckets are set by time, not by
+    point count, so compacting an already compacted history again only merges
+    neighbouring buckets, and every stretch of the session keeps points however often
+    this runs. (Halving by point count thinned the oldest data again on every pass, until
+    the first hour of a long recording was a few points joined by straight lines.)
+    """
+
+    x = np.asarray(times, dtype=np.float64)
+    y = np.asarray(values, dtype=np.float64)
+    if x.ndim != 1 or y.ndim != 1 or x.shape != y.shape:
+        raise ValueError("times and values must be one-dimensional arrays of equal length")
+    if budget < 16:
+        raise ValueError("budget must be at least 16")
+    if len(x) <= budget:
+        return x.copy(), y.copy()
+    recent = budget // 4
+    split = len(x) - recent
+    newest = x[-1]
+    youngest_age = newest - x[split - 1]
+    oldest_age = newest - x[0]
+    # Half the buckets are even in time, so the Full view has a floor everywhere; half
+    # narrow with age, so the recent minutes and hours stay detailed.
+    half = (budget - recent) // 4
+    edges = np.linspace(x[0], x[split - 1], half + 1)
+    if youngest_age > 0 and oldest_age > youngest_age:
+        ages = youngest_age * (oldest_age / youngest_age) ** np.linspace(1.0, 0.0, half + 1)
+        edges = np.union1d(edges, newest - ages)
+    bucket_count = len(edges) - 1
+    old_x, old_y = x[:split], y[:split]
+    buckets = np.clip(np.searchsorted(edges, old_x, side="right") - 1, 0, bucket_count - 1)
+    finite = np.isfinite(old_y)
+    buckets, positions = buckets[finite], np.flatnonzero(finite)
+    finite_y = old_y[finite]
+    by_value = np.lexsort((finite_y, buckets))
+    first = np.concatenate(([True], np.diff(buckets[by_value]) != 0))
+    last = np.concatenate((first[1:], [True]))
+    kept = np.unique(np.concatenate((positions[by_value[first]], positions[by_value[last]])))
+    return (
+        np.concatenate((old_x[kept], x[split:])),
+        np.concatenate((old_y[kept], y[split:])),
+    )
 
 
 def trailing_mean(

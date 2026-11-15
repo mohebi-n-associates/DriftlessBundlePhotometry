@@ -9,7 +9,7 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.4.1
+**Current baseline:** 0.4.2
 
 **Last updated:** 2026-11-15
 
@@ -29,6 +29,8 @@ rig is validated.
   spool is read once per chunk into compact columns, and every check and write works on
   whole columns), about 30 times smaller files (per-exposure records numeric and
   compressed), and the PC kept awake while recording.
+- **Software — done in 0.4.2:** live trace history thinned by time buckets, so the start
+  of a long recording stays visible (found on a 2.5-hour rig recording, 2026-11-15).
 - **Software — open:** the streaming finalizer in the storage-scale gate below, only if
   V7 shows saving the longest planned session still exceeds the agreed time or memory
   budget.

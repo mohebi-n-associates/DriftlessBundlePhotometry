@@ -8,6 +8,18 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.4.2 - 2026-11-15
+
+### Fixed
+
+- **The start of a long recording faded to a few straight lines.** Each thinning pass
+  halved the whole display history by point count, so data already thinned was thinned
+  again every few minutes. After 2.5 hours the first hour of each trace was two points.
+  Thinning now uses time buckets, half spread evenly over the session and half
+  narrowing toward the present, and keeps the newest samples untouched. Thinning
+  again only merges neighbouring buckets. A simulated 2.6-hour trace keeps about 2,300
+  points for its first hour, and a 22-hour trace about 200. Display only.
+
 ## 0.4.1 - 2026-11-15
 
 The first version of the 0.4 line, which works toward a validated RWD rig. The checks

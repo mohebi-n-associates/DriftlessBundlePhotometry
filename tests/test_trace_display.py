@@ -9,12 +9,53 @@ from driftless_photometry.gui.main_window import MainWindow
 from driftless_photometry.gui.trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
+    compact_history,
     downsample_min_max,
     fitted_control_f0,
     refresh_interval_s,
     rolling_f0,
     trailing_mean,
 )
+
+
+def test_repeated_history_compaction_keeps_the_oldest_hours_visible() -> None:
+    # Regression: compaction halved the whole history by point count on every pass, so
+    # after 2.5 h at 40 Hz the first hour of the live trace was two points.
+    rate, budget = 40.0, 16_000
+    times = np.empty(0)
+    values = np.empty(0)
+    total = int(2.6 * 3600 * rate)
+    for start in range(0, total, 4000):
+        new_times = np.arange(start, min(total, start + 4000)) / rate
+        new_values = np.sin(new_times)
+        if start == 4000:
+            new_values[123] = 50.0  # a brief spike early in the session
+        times = np.concatenate((times, new_times))
+        values = np.concatenate((values, new_values))
+        if len(times) > 2 * budget:
+            times, values = compact_history(times, values, budget)
+
+    assert len(times) <= 2 * budget
+    assert np.all(np.diff(times) > 0)
+    for hour in range(2):
+        assert np.count_nonzero((times >= hour * 3600) & (times < (hour + 1) * 3600)) > 1000
+    assert values.max() == 50.0
+    newest = times >= times[-1] - 60
+    assert np.count_nonzero(newest) == 60 * rate + 1
+
+
+def test_history_compaction_keeps_recent_samples_and_bucket_extrema() -> None:
+    times = np.arange(1000, dtype=np.float64)
+    values = np.cos(times)
+    values[10] = np.nan
+
+    x, y = compact_history(times, values, 100)
+
+    assert len(x) <= 100
+    np.testing.assert_array_equal(x[-25:], times[-25:])
+    assert np.all(np.isfinite(y))
+    assert y.max() == values[np.isfinite(values)].max()
+    assert y.min() == values[np.isfinite(values)].min()
 
 
 def test_trailing_mean_uses_elapsed_time_and_preserves_input() -> None:
