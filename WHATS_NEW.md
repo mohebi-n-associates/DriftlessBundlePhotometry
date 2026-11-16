@@ -6,14 +6,9 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-### Documentation
+_No unreleased changes._
 
-- **The readme now opens with how to prepare the PC for long recordings.** On the
-  bench PC, camera-1 restarts traced to Dell SupportAssist's 30-minute hardware sweeps
-  and to Windows' overnight automatic maintenance. Windows Search indexing the
-  recordings folder adds disk load. The section says how to turn each off.
-
-## 0.4.3 - 2026-11-15
+## 0.4.3 - 2026-11-16
 
 ### Fixed
 
@@ -24,6 +19,13 @@ version, move its completed entries into a dated version section.
   those averages, weighted by sample count, for the trace, the control fit, and the dF/F
   baseline. Smoothing now means the same over the whole trace. With *Smooth* at 0 the
   extremes still show, so brief peaks stay visible. Display only.
+
+### Documentation
+
+- **The readme now opens with how to prepare the PC for long recordings.** On the
+  bench PC, camera-1 restarts traced to Dell SupportAssist's 30-minute hardware sweeps
+  and to Windows' overnight automatic maintenance. Windows Search indexing the
+  recordings folder adds disk load. The section says how to turn each off.
 
 ## 0.4.2 - 2026-11-15
 
