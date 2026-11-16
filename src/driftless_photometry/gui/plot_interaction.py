@@ -9,6 +9,13 @@ import pyqtgraph as pg
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtWidgets import QScrollArea
 
+from .trace_display import (
+    TIME_AXIS_LABELS,
+    format_session_time,
+    time_axis_mode,
+    time_tick_spacing,
+)
+
 
 def dominant_drag_axis(start: QPointF, stop: QPointF) -> Literal["x", "y"]:
     """Choose one zoom axis; the longer drag dimension wins."""
@@ -83,6 +90,55 @@ class TraceViewBox(pg.ViewBox):
 
     def wheelEvent(self, event: object, axis: int | None = None) -> None:
         event.ignore()
+
+
+def disable_si_prefix(axis: pg.AxisItem) -> None:
+    """Show an axis's values unscaled, without an SI prefix on its units.
+
+    pyqtgraph's ``enableAutoSIPrefix(False)`` still computes a prefix from the current
+    range and keeps its scale. Called while a dF/F row showed 0.3 %, it froze "milli",
+    and the row's counts then read 1000 times too high (50 counts as 50000).
+    """
+
+    axis.enableAutoSIPrefix(False)
+    axis.autoSIPrefixScale = 1.0
+    axis.labelUnitPrefix = ""
+    axis._updateLabel()
+
+
+class SessionTimeAxis(pg.AxisItem):
+    """A session-time axis whose units follow the visible range.
+
+    Seconds while the view ends before a minute, then min:s, then h:min:s, on round
+    clock steps (10 s, 1 min, 5 min, 15 min, ...). The label names the format in use.
+    """
+
+    _PX_PER_MAJOR_TICK = 90.0
+
+    def __init__(self, orientation: str = "bottom", **kwargs) -> None:
+        super().__init__(orientation, **kwargs)
+        disable_si_prefix(self)  # never "ks" for a long recording
+        self.mode = "s"
+        self.labelText = TIME_AXIS_LABELS[self.mode]
+        self._updateLabel()
+
+    def setRange(self, mn: float, mx: float) -> None:
+        super().setRange(mn, mx)
+        if not hasattr(self, "mode"):
+            return  # AxisItem's own constructor sets a first range
+        mode = time_axis_mode(max(abs(mn), abs(mx)))
+        if mode != self.mode:
+            self.mode = mode
+            self.labelText = TIME_AXIS_LABELS[mode]
+            self.labelUnits = ""
+            self._updateLabel()
+
+    def tickSpacing(self, minVal: float, maxVal: float, size: float):
+        major, minor = time_tick_spacing(maxVal - minVal, size / self._PX_PER_MAJOR_TICK)
+        return [(major, 0.0), (minor, 0.0)]
+
+    def tickStrings(self, values, scale: float, spacing: float) -> list[str]:
+        return [format_session_time(value, spacing, self.mode) for value in values]
 
 
 class SecondaryTraceViewBox(pg.ViewBox):

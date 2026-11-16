@@ -278,9 +278,10 @@ same log and maps.
 - For every exposure:
   - its camera, the camera's own frame number and timestamp, and the commanded LED
     power in percent;
-  - `wavelength_source = phase_derived`. The RWD controller does not report which LED
-    fired, so DBF works it out from the camera and the position in the LED cycle after
-    each sequencer start.
+  - `wavelength_source = 1`, meaning phase-derived (0 would mean reported by the
+    controller; files from DBF 0.3.x store the words instead). The RWD controller does
+    not report which LED fired, so DBF works it out from the camera and the position in
+    the LED cycle after each sequencer start.
 - TTL input edges with the board's raw millisecond ticks.
 - Event marks: each marker and named TTL event, with its source (key, button, or ttl)
   and, for TTL events, the pulse width.
@@ -307,6 +308,15 @@ Every file embeds the complete settings, so *Load NWB…* restores the whole set
 | "RWD trigger period … not the commanded …" | The board's timing does not match what DBF expects at this frame rate | Choose another frame rate and report it |
 | `rwd_sequencer_restart` events in a file | A frame was missing or off its timing, so DBF restarted | The gap is marked invalid; frequent restarts point to a camera or USB problem |
 
+## Long recordings
+
+DBF keeps Windows from sleeping from **Record** until the files are saved; the
+display may still turn off. Saving takes longer for longer recordings. In simulation
+on the rig PC, an 8-fiber session at 120 Hz saved in about 35 s after 70 minutes and
+about 105 s after 4.6 hours, with a peak of 1.35 GB of memory. Expect roughly 9 minutes
+and 6 GB after 22 hours. Until it is saved, a recording's on-disk buffer takes about
+0.15 GB per hour at 120 Hz with 8 fibers, and the saved files far less.
+
 ## Known limits
 
 For interrupted recordings, open **Configuration → Recover an interrupted
@@ -322,3 +332,7 @@ NWB validation finishes.
 - The new first-arrival gate and failure cleanup changes have simulator tests and
   require physical fault/latency revalidation, including high frame rates.
 - Whether TTL outputs pause during a restart has not been measured.
+
+These limits are being closed by the bench checks in
+[RWD rig validation](rwd-rig-validation.md). To audit any recording against the rig's
+acceptance thresholds, run `dbf --audit-recording` on its session folder.

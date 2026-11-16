@@ -440,3 +440,29 @@ def test_schema_v4_spools_without_an_event_mark_log_still_load(tmp_path: Path) -
 
     assert loaded.schema_version == 4
     assert loaded.data.event_marks == []
+
+
+def test_loading_reads_each_chunk_array_once(tmp_path: Path, monkeypatch) -> None:
+    """Regression: the loader looked every field up per frame, and an NpzFile lookup
+    unpacks the array again each time; a 70-minute recording took minutes to load."""
+
+    config = demo_config(tmp_path, fiber_count=2, width_px=32, height_px=24)
+    spool = SessionSpool(config, chunk_size=8, queue_size=64)
+    _submit_frames(spool, 40)
+    spool.close()
+    lookups = []
+    original = np.lib.npyio.NpzFile.__getitem__
+
+    def counting(self, key):
+        lookups.append(key)
+        return original(self, key)
+
+    monkeypatch.setattr(np.lib.npyio.NpzFile, "__getitem__", counting)
+    loaded = load_session_spool(spool.path)
+
+    assert loaded.data.frame_ids == list(range(1, 41))
+    first_wavelength = next(iter(loaded.data.traces))
+    assert [s.sequence for s in loaded.data.traces[first_wavelength]][:2] == [0, 3]
+    chunks = len(list((spool.path / "chunks").glob("chunk_*.npz")))
+    fields = len(lookups) / chunks
+    assert fields <= 16, f"{fields:.0f} array reads per chunk of 8 frames"

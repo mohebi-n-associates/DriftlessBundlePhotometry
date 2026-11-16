@@ -3,18 +3,114 @@ from array import array
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from driftless_photometry.config import Wavelength, demo_config
 from driftless_photometry.gui.main_window import MainWindow
 from driftless_photometry.gui.trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
+    compact_history,
+    compact_history_with_means,
     downsample_min_max,
     fitted_control_f0,
     refresh_interval_s,
     rolling_f0,
     trailing_mean,
 )
+
+
+def test_repeated_history_compaction_keeps_the_oldest_hours_visible() -> None:
+    # Regression: compaction halved the whole history by point count on every pass, so
+    # after 2.5 h at 40 Hz the first hour of the live trace was two points.
+    rate, budget = 40.0, 16_000
+    times = np.empty(0)
+    values = np.empty(0)
+    total = int(2.6 * 3600 * rate)
+    for start in range(0, total, 4000):
+        new_times = np.arange(start, min(total, start + 4000)) / rate
+        new_values = np.sin(new_times)
+        if start == 4000:
+            new_values[123] = 50.0  # a brief spike early in the session
+        times = np.concatenate((times, new_times))
+        values = np.concatenate((values, new_values))
+        if len(times) > 2 * budget:
+            times, values = compact_history(times, values, budget)
+
+    assert len(times) <= 2 * budget
+    assert np.all(np.diff(times) > 0)
+    for hour in range(2):
+        assert np.count_nonzero((times >= hour * 3600) & (times < (hour + 1) * 3600)) > 1000
+    assert values.max() == 50.0
+    newest = times >= times[-1] - 60
+    assert np.count_nonzero(newest) == 60 * rate + 1
+
+
+def test_history_compaction_keeps_recent_samples_and_bucket_extrema() -> None:
+    times = np.arange(1000, dtype=np.float64)
+    values = np.cos(times)
+    values[10] = np.nan
+
+    x, y = compact_history(times, values, 100)
+
+    assert len(x) <= 100
+    np.testing.assert_array_equal(x[-25:], times[-25:])
+    assert np.all(np.isfinite(y))
+    assert y.max() == values[np.isfinite(values)].max()
+    assert y.min() == values[np.isfinite(values)].min()
+
+
+def _noisy_history(hours: float, rate: float = 40.0, budget: int = 16_000):
+    """A noisy trace thinned the way the live display thins it, with its averages."""
+
+    rng = np.random.default_rng(3)
+    times = values = means = weights = np.empty(0)
+    total = int(hours * 3600 * rate)
+    for start in range(0, total, 4000):
+        new_times = np.arange(start, min(total, start + 4000)) / rate
+        new_values = 100.0 + rng.normal(0.0, 1.0, len(new_times))
+        times = np.concatenate((times, new_times))
+        values = np.concatenate((values, new_values))
+        means = np.concatenate((means, new_values))
+        weights = np.concatenate((weights, np.ones(len(new_times))))
+        if len(times) > 2 * budget:
+            times, values, means, weights = compact_history_with_means(
+                times, values, means, weights, budget
+            )
+    return total, times, values, means, weights
+
+
+def test_history_compaction_averages_account_for_every_sample() -> None:
+    total, _, _, means, weights = _noisy_history(1.0)
+
+    assert weights.sum() == pytest.approx(total)
+    # Every sample's value is in the weighted averages, so the overall mean is exact.
+    assert np.sum(weights * means) / weights.sum() == pytest.approx(100.0, abs=0.02)
+
+
+def test_smoothed_old_history_is_not_noisier_than_recent_history() -> None:
+    # Regression: smoothing averaged the kept bucket extremes of older history, which
+    # are seconds apart, so it averaged almost nothing there. Old stretches looked far
+    # noisier than recent ones, though the noise never changed.
+    _, times, values, means, weights = _noisy_history(1.2)
+    old = times < 1800
+    recent = times > times[-1] - 60
+
+    extremes = trailing_mean(times, values, window_s=1.0)
+    averaged = trailing_mean(times, means, window_s=1.0, weights=weights)
+
+    assert np.std(extremes[old]) > 5 * np.std(extremes[recent])
+    assert np.std(averaged[old]) < 1.5 * np.std(averaged[recent])
+
+
+def test_weighted_trailing_mean_counts_each_point_by_its_weight() -> None:
+    times = np.asarray([0.0, 1.0, 2.0])
+    values = np.asarray([0.0, 10.0, np.nan])
+    weights = np.asarray([3.0, 1.0, 5.0])
+
+    smoothed = trailing_mean(times, values, window_s=5.0, weights=weights)
+
+    np.testing.assert_allclose(smoothed, [0.0, 2.5, 2.5])
 
 
 def test_trailing_mean_uses_elapsed_time_and_preserves_input() -> None:
@@ -230,3 +326,33 @@ def test_refresh_interval_follows_screen_resolution() -> None:
     assert refresh_interval_s(600.0, 1500.0) == 0.4
     assert refresh_interval_s(3600.0, 1500.0) == 1.0
     assert refresh_interval_s(15.0, 0.0) == 0.1
+
+
+def test_time_axis_mode_follows_the_visible_end() -> None:
+    from driftless_photometry.gui.trace_display import time_axis_mode
+
+    assert [time_axis_mode(v) for v in (0, 59.9, 60, 3599, 3600, 9000)] == [
+        "s", "s", "min", "min", "h", "h",
+    ]  # fmt: skip
+
+
+def test_time_ticks_use_round_clock_steps() -> None:
+    from driftless_photometry.gui.trace_display import time_tick_spacing
+
+    assert time_tick_spacing(15, 15) == (1.0, 0.2)
+    assert time_tick_spacing(545, 15) == (60.0, 15.0)
+    assert time_tick_spacing(7200, 15) == (600.0, 120.0)
+    assert time_tick_spacing(7200, 6) == (1800.0, 600.0)
+    assert time_tick_spacing(0, 10) == (1.0, 0.5)
+
+
+def test_session_time_labels() -> None:
+    from driftless_photometry.gui.trace_display import format_session_time as fmt
+
+    assert fmt(12, 1, "s") == "12"
+    assert fmt(12.5, 0.5, "s") == "12.5"
+    assert fmt(65, 5, "min") == "1:05"
+    assert fmt(500.5, 0.5, "min") == "8:20.5"
+    assert fmt(119.999, 1, "min") == "2:00"  # rounding carries into the minute
+    assert fmt(3900, 300, "h") == "1:05:00"
+    assert fmt(-30, 10, "min") == "-0:30"

@@ -34,13 +34,156 @@ def refresh_interval_s(span_s: float, width_px: float) -> float:
     return min(MAX_REFRESH_INTERVAL_S, max(MIN_REFRESH_INTERVAL_S, span_s / width_px))
 
 
+TimeAxisMode = str  # "s", "min", or "h"
+
+TIME_AXIS_LABELS = {
+    "s": "Session time (s)",
+    "min": "Session time (min:s)",
+    "h": "Session time (h:min:s)",
+}
+
+_NICE_TIME_STEPS_S = (
+    0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30,
+    60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400,
+)  # fmt: skip
+
+
+def time_axis_mode(visible_max_s: float) -> TimeAxisMode:
+    """Seconds below a minute, min:s below an hour, then h:min:s."""
+
+    if visible_max_s < 60:
+        return "s"
+    return "min" if visible_max_s < 3600 else "h"
+
+
+def time_tick_spacing(span_s: float, max_ticks: float) -> tuple[float, float]:
+    """Major and minor tick steps: round clock steps, at most ``max_ticks`` majors."""
+
+    if not np.isfinite(span_s) or span_s <= 0:
+        return 1.0, 0.5
+    wanted = span_s / max(1.0, max_ticks)
+    major = next((s for s in _NICE_TIME_STEPS_S if s >= wanted), _NICE_TIME_STEPS_S[-1])
+    smaller = [
+        s
+        for s in _NICE_TIME_STEPS_S
+        if s < major and abs(major / s - round(major / s)) < 1e-9 and major / s <= 6
+    ]
+    if not smaller:
+        return float(major), float(major / 2)
+    # About four or five minor steps per major one: 1 min -> 15 s, 10 min -> 2 min.
+    minor = min(smaller, key=lambda s: (abs(major / s - 4.5), major / s))
+    return float(major), float(minor)
+
+
+def format_session_time(value_s: float, spacing_s: float, mode: TimeAxisMode) -> str:
+    """One tick label: ``12`` in seconds mode, ``8:20`` in minutes, ``1:05:00`` in hours.
+
+    Fractions of a second are shown only when ticks are less than a second apart.
+    """
+
+    decimals = 0 if spacing_s >= 1 else min(2, int(np.ceil(-np.log10(spacing_s) - 1e-9)))
+    sign = "-" if value_s < 0 else ""
+    value = round(abs(value_s), decimals)
+    if mode == "s":
+        return f"{sign}{value:.{decimals}f}"
+    seconds = value % 60
+    width = 2 if decimals == 0 else 3 + decimals
+    second_text = f"{seconds:0{width}.{decimals}f}"
+    minutes = int(value // 60)
+    if mode == "min":
+        return f"{sign}{minutes}:{second_text}"
+    return f"{sign}{minutes // 60}:{minutes % 60:02d}:{second_text}"
+
+
 def compact_history(times: NDArray, values: NDArray, budget: int) -> tuple[NDArray, NDArray]:
-    """Bound display memory, retaining endpoints and chronological bucket extrema."""
-    x, y = downsample_min_max(times[1:-1], values[1:-1], first_index=1, max_points=budget - 2)
-    x = np.concatenate((times[:1], x, times[-1:]))
-    y = np.concatenate((values[:1], y, values[-1:]))
-    unique = np.concatenate(([True], np.diff(x) > 0))
-    return x[unique], y[unique]
+    """Bound display memory to ``budget`` points, keeping recent samples and extrema.
+
+    See ``compact_history_with_means``, which this calls without averages.
+    """
+
+    x, y, _, _ = compact_history_with_means(times, values, values, np.ones(len(values)), budget)
+    return x, y
+
+
+def compact_history_with_means(
+    times: NDArray,
+    values: NDArray,
+    means: NDArray,
+    weights: NDArray,
+    budget: int,
+) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+    """Bound display memory to ``budget`` points, keeping recent samples and extrema.
+
+    The newest quarter of the budget stays unthinned. Older samples fall into time
+    buckets, half evenly spaced and half narrowing toward the present, and each bucket
+    keeps its minimum and maximum in time order. The buckets are set by time, not by
+    point count, so compacting an already compacted history again only merges
+    neighbouring buckets, and every stretch of the session keeps points however often
+    this runs. (Halving by point count thinned the oldest data again on every pass, until
+    the first hour of a long recording was a few points joined by straight lines.)
+
+    ``means`` and ``weights`` give each point the average of the samples it stands for
+    and how many there are: the value itself and 1 for an original sample. Each kept
+    point gets its bucket's weighted average and an equal share of its weight, so a
+    smoothed view can average the samples rather than the extremes that were kept.
+    """
+
+    x = np.asarray(times, dtype=np.float64)
+    y = np.asarray(values, dtype=np.float64)
+    m = np.asarray(means, dtype=np.float64)
+    w = np.asarray(weights, dtype=np.float64)
+    if x.ndim != 1 or x.shape != y.shape or x.shape != m.shape or x.shape != w.shape:
+        raise ValueError(
+            "times, values, means, and weights must be one-dimensional arrays of equal length"
+        )
+    if budget < 16:
+        raise ValueError("budget must be at least 16")
+    if len(x) <= budget:
+        return x.copy(), y.copy(), m.copy(), w.copy()
+    recent = budget // 4
+    split = len(x) - recent
+    newest = x[-1]
+    youngest_age = newest - x[split - 1]
+    oldest_age = newest - x[0]
+    # Half the buckets are even in time, so the Full view has a floor everywhere; half
+    # narrow with age, so the recent minutes and hours stay detailed.
+    half = (budget - recent) // 4
+    edges = np.linspace(x[0], x[split - 1], half + 1)
+    if youngest_age > 0 and oldest_age > youngest_age:
+        ages = youngest_age * (oldest_age / youngest_age) ** np.linspace(1.0, 0.0, half + 1)
+        edges = np.union1d(edges, newest - ages)
+    bucket_count = len(edges) - 1
+    old_x, old_y = x[:split], y[:split]
+    all_buckets = np.clip(np.searchsorted(edges, old_x, side="right") - 1, 0, bucket_count - 1)
+    finite = np.isfinite(old_y)
+    buckets, positions = all_buckets[finite], np.flatnonzero(finite)
+    finite_y = old_y[finite]
+    by_value = np.lexsort((finite_y, buckets))
+    first = np.concatenate(([True], np.diff(buckets[by_value]) != 0))
+    last = np.concatenate((first[1:], [True]))
+    kept = np.unique(np.concatenate((positions[by_value[first]], positions[by_value[last]])))
+    old_m, old_w = m[:split], w[:split]
+    averaged = finite & np.isfinite(old_m) & (old_w > 0)
+    weight_sums = np.bincount(
+        all_buckets[averaged], weights=old_w[averaged], minlength=bucket_count
+    )
+    weighted_sums = np.bincount(
+        all_buckets[averaged], weights=(old_w * old_m)[averaged], minlength=bucket_count
+    )
+    kept_buckets = all_buckets[kept]
+    kept_per_bucket = np.bincount(kept_buckets, minlength=bucket_count)
+    bucket_weight = weight_sums[kept_buckets]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kept_means = np.where(
+            bucket_weight > 0, weighted_sums[kept_buckets] / bucket_weight, np.nan
+        )
+    kept_weights = bucket_weight / kept_per_bucket[kept_buckets]
+    return (
+        np.concatenate((old_x[kept], x[split:])),
+        np.concatenate((old_y[kept], y[split:])),
+        np.concatenate((kept_means, m[split:])),
+        np.concatenate((kept_weights, w[split:])),
+    )
 
 
 def trailing_mean(
@@ -48,8 +191,13 @@ def trailing_mean(
     values: NDArray[np.floating],
     *,
     window_s: float,
+    weights: NDArray[np.floating] | None = None,
 ) -> NDArray[np.float64]:
-    """Return a display-only time-windowed trailing mean in linear time."""
+    """Return a display-only time-windowed trailing mean in linear time.
+
+    ``weights``, if given, counts how many samples each value stands for, as in a
+    thinned display history whose points carry their bucket's average.
+    """
 
     x = np.asarray(times, dtype=np.float64)
     y = np.asarray(values, dtype=np.float64)
@@ -64,14 +212,21 @@ def trailing_mean(
     # Vectorized: this runs for every ROI and wavelength on the GUI thread, and a Python
     # loop over a long recording held the GIL long enough to starve camera delivery.
     # Sample i averages the finite samples j <= i with x[i] - x[j] <= window_s.
-    finite = np.isfinite(y)
-    sums = np.concatenate(([0.0], np.cumsum(np.where(finite, y, 0.0))))
-    counts = np.concatenate(([0], np.cumsum(finite)))
+    if weights is None:
+        w = np.ones(len(y), dtype=np.float64)
+    else:
+        w = np.asarray(weights, dtype=np.float64)
+        if w.shape != y.shape:
+            raise ValueError("weights must match values")
+    finite = np.isfinite(y) & (w > 0)
+    sums = np.concatenate(([0.0], np.cumsum(np.where(finite, w * y, 0.0))))
+    counts = np.concatenate(([0.0], np.cumsum(np.where(finite, w, 0.0))))
     left = np.searchsorted(x, x - window_s, side="left")
     right = np.arange(1, len(x) + 1)
     window_counts = counts[right] - counts[left]
     output = np.full(len(y), np.nan, dtype=np.float64)
-    np.divide(sums[right] - sums[left], window_counts, out=output, where=window_counts > 0)
+    # Weights are at least 0.5, so a smaller difference is cumulative-sum rounding.
+    np.divide(sums[right] - sums[left], window_counts, out=output, where=window_counts > 0.25)
     return output
 
 
@@ -248,27 +403,43 @@ GAP_MIN_S = 0.25
 GAP_FACTOR = 4.0
 
 
-def break_at_gaps(
-    raw_times: NDArray[np.float64],
-    display_times: NDArray[np.float64],
-    display_values: NDArray[np.floating],
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Insert a NaN wherever the raw samples pause, so the line is not drawn across it.
+def gap_midpoints(raw_times: NDArray[np.float64]) -> NDArray[np.float64]:
+    """The middle of every pause in ``raw_times``, which must be unthinned samples."""
 
-    Gaps are found in ``raw_times`` (the samples behind the display), not in the
-    downsampled display points, whose spacing grows with the visible span.
-    """
-
-    values = np.asarray(display_values, dtype=np.float64)
-    if len(raw_times) < 3 or len(display_times) == 0:
-        return display_times, values
+    raw_times = np.asarray(raw_times, dtype=np.float64)
+    if len(raw_times) < 3:
+        return np.empty(0, dtype=np.float64)
     recent = np.diff(raw_times[-512:])
     period = float(np.median(recent)) if len(recent) else 0.0
     threshold = max(GAP_MIN_S, GAP_FACTOR * period)
     gaps = np.flatnonzero(np.diff(raw_times) > threshold)
-    if len(gaps) == 0:
+    return (raw_times[gaps] + raw_times[gaps + 1]) / 2.0
+
+
+def break_at_gaps(
+    raw_times: NDArray[np.float64],
+    display_times: NDArray[np.float64],
+    display_values: NDArray[np.floating],
+    known_gaps_s: NDArray[np.float64] | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Insert a NaN wherever the samples paused, so the line is not drawn across it.
+
+    Gaps are found in ``raw_times``, unthinned samples behind the display, not in the
+    downsampled display points, whose spacing grows with the visible span. Where the
+    display history was thinned, its points are far apart everywhere, so gaps found
+    before thinning are passed as ``known_gaps_s`` instead (midpoints, in seconds).
+    """
+
+    values = np.asarray(display_values, dtype=np.float64)
+    if len(display_times) == 0:
         return display_times, values
-    middles = (raw_times[gaps] + raw_times[gaps + 1]) / 2.0
+    middles = gap_midpoints(raw_times)
+    if known_gaps_s is not None and len(known_gaps_s):
+        known = np.asarray(known_gaps_s, dtype=np.float64)
+        known = known[(known > display_times[0]) & (known < display_times[-1])]
+        middles = np.sort(np.concatenate((known, middles)))
+    if len(middles) == 0:
+        return display_times, values
     positions = np.searchsorted(display_times, middles)
     return (
         np.insert(display_times, positions, middles),

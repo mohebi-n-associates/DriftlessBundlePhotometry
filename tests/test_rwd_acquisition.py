@@ -86,14 +86,17 @@ def test_rwd_recording_writes_camera_aware_nwbs(tmp_path: Path) -> None:
     with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
         nwbfile = io.read()
         frames = nwbfile.events["camera_frames"].to_dataframe()
-        assert set(frames["wavelength_source"]) == {"phase_derived"}
+        # Stored as a code since 0.4.1 (1 = phase_derived), documented on the column.
+        assert set(frames["wavelength_source"]) == {1}
+        description = nwbfile.events["camera_frames"]["wavelength_source"].description
+        assert "1 = phase_derived" in description
         assert set(frames.loc[frames["wavelength_nm"] == 560, "camera_index"]) == {2}
         assert set(frames.loc[frames["wavelength_nm"] != 560, "camera_index"]) == {1}
         assert (frames["camera_timestamp_ns"] > 0).all()
         assert "commanded_voltage_v" not in frames.columns
         assert set(frames["commanded_power_percent"]) == {5.0, 12.5}
         excitation = nwbfile.events["excitation_events"].to_dataframe()
-        assert set(excitation["wavelength_source"]) == {"phase_derived"}
+        assert set(excitation["wavelength_source"]) == {1}
         power = nwbfile.stimulus["led_470_commanded_power"]
         assert power.unit == "percent"
         assert set(np.asarray(power.data[:])) == {12.5}

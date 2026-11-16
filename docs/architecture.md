@@ -50,7 +50,8 @@ The RWD backend (`hardware.rwd_rig`) works under a scoped, documented exception 
 the wavelength rule above. The RWD controller reports no per-exposure records, so
 identity is phase-derived from each sequencer restart, combined with camera identity,
 and checked by hardware frame-ID and timestamp gap detection. Every RWD exposure
-records `wavelength_source = "phase_derived"`. RWD frames carry a camera index:
+records its wavelength source as phase-derived (`wavelength_source` code 1 in NWB files
+since 0.4.1, the text `"phase_derived"` before). RWD frames carry a camera index:
 camera-2 frames (560 nm) are measured with each fiber's camera-2 circle. Controller
 frames are flag-delimited and CRC-checked, so the codec reports each malformed frame
 and resumes at the next flag.

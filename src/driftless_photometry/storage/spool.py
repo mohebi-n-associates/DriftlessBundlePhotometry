@@ -23,13 +23,17 @@ from driftless_photometry.diagnostics import SpoolDiagnostics
 from driftless_photometry.domain import (
     MEAN_REFERENCE_FRAMES,
     MEAN_REFERENCE_START_S,
+    WAVELENGTH_SOURCE_CODES,
+    WAVELENGTH_SOURCE_NAMES,
     AcquisitionData,
+    Column,
     DroppedFrameEvent,
     EventMark,
     FramePacket,
     InvalidTimeInterval,
     MeanReferenceImage,
     SystemEvent,
+    TraceColumns,
     TraceSample,
     TTLEdge,
 )
@@ -48,8 +52,8 @@ _CHUNK_INDEX = "chunks.jsonl"
 """Schema v4+: one line per committed chunk, appended and fsynced. Earlier schemas kept
 the list in the manifest, which made each commit rewrite every earlier entry and fell
 behind at 120 frames/s after about 9000 chunks (bench, 2026-10-21)."""
-_WAVELENGTH_SOURCE_CODES = {"controller": 0, "phase_derived": 1}
-_WAVELENGTH_SOURCES = {code: name for name, code in _WAVELENGTH_SOURCE_CODES.items()}
+_WAVELENGTH_SOURCE_CODES = WAVELENGTH_SOURCE_CODES
+_WAVELENGTH_SOURCES = WAVELENGTH_SOURCE_NAMES
 
 
 class SpoolError(RuntimeError):
@@ -595,6 +599,118 @@ class SessionSpool:
         _atomic_write_json(self.path / "manifest.json", self._manifest)
 
 
+_FRAME_FIELDS = (
+    "frame_ids",
+    "timestamps_s",
+    "sequences",
+    "controller_ticks_us",
+    "wavelengths_nm",
+    "commanded_voltages_v",
+    "commanded_power_percent",
+    "camera_indices",
+    "wavelength_sources",
+    "camera_timestamps_ns",
+    "host_received_s",
+    "values",
+    "saturation_fractions",
+)
+_SOURCE_NAMES = np.asarray(
+    [WAVELENGTH_SOURCE_NAMES[code] for code in sorted(WAVELENGTH_SOURCE_NAMES)], dtype=object
+)
+
+
+def _fill_frame_columns(
+    data: AcquisitionData, parts: dict[str, list[np.ndarray]], config: SessionConfig
+) -> None:
+    """Hold every frame field as one column, and each wavelength's trace as columns.
+
+    Per-frame Python objects took about 930 bytes per exposure, about 9 GB for a 22 h
+    recording at 120 Hz; columns take under 200 bytes.
+    """
+
+    roi_count = len(config.enabled_rois)
+
+    def joined(name: str, dtype, empty_shape=(0,)) -> np.ndarray:
+        if not parts.get(name):
+            return np.empty(empty_shape, dtype=dtype)
+        return np.concatenate(parts[name]).astype(dtype, copy=False)
+
+    sequences = joined("sequences", np.int64)
+    timestamps = joined("timestamps_s", np.float64)
+    if len(sequences):
+        steps = np.diff(sequences)
+        if sequences[0] < 0 or np.any(steps <= 0):
+            raise SpoolError("controller sequences are not strictly increasing")
+        # A gap in the controller's exposure sequence is a dropped frame, and an
+        # invalid span from the frame before it (none before the first frame).
+        if sequences[0] > 0:
+            data.dropped_frames.append(
+                DroppedFrameEvent(
+                    timestamp_s=float(timestamps[0]),
+                    expected_sequence=0,
+                    observed_sequence=int(sequences[0]),
+                    missing_count=int(sequences[0]),
+                )
+            )
+        for index in (np.flatnonzero(steps > 1) + 1).tolist():
+            expected = int(sequences[index - 1]) + 1
+            observed = int(sequences[index])
+            data.dropped_frames.append(
+                DroppedFrameEvent(
+                    timestamp_s=float(timestamps[index]),
+                    expected_sequence=expected,
+                    observed_sequence=observed,
+                    missing_count=observed - expected,
+                )
+            )
+            data.invalid_times.append(
+                InvalidTimeInterval(
+                    start_time_s=float(timestamps[index - 1]),
+                    stop_time_s=float(timestamps[index]),
+                    reason=f"missing {observed - expected} controller exposure record(s)",
+                    source_event="controller_sequence_gap",
+                )
+            )
+    frame_ids = joined("frame_ids", np.int64)
+    ticks = joined("controller_ticks_us", np.int64)
+    wavelengths = joined("wavelengths_nm", np.int64)
+    values = joined("values", np.float32, (0, roi_count))
+    saturation = joined("saturation_fractions", np.float32, (0, roi_count))
+    codes = joined("wavelength_sources", np.int64)
+    count = len(frame_ids)
+    data.frame_ids = Column(frame_ids)
+    data.frame_timestamps_s = Column(timestamps)
+    data.frame_sequences = Column(sequences)
+    data.frame_ticks_us = Column(ticks)
+    data.frame_wavelengths_nm = Column(wavelengths)
+    data.frame_commanded_voltages_v = Column(joined("commanded_voltages_v", np.float64))
+    data.frame_commanded_power_percent = Column(joined("commanded_power_percent", np.float64))
+    data.frame_camera_indices = Column(joined("camera_indices", np.int64))
+    if np.any((codes < 0) | (codes >= len(_SOURCE_NAMES))):
+        raise SpoolError("spool holds an unknown wavelength source code")
+    data.frame_wavelength_sources = Column(_SOURCE_NAMES[codes])
+    data.frame_camera_timestamps_ns = Column(joined("camera_timestamps_ns", np.int64))
+    data.frame_host_received_s = Column(joined("host_received_s", np.float64))
+    data.frame_saturation_fractions = Column(saturation)
+    data.frame_saved_indices = Column(
+        np.arange(count, dtype=np.int64)
+        if config.camera.raw_capture
+        else np.full(count, -1, dtype=np.int64)
+    )
+    for value in np.unique(wavelengths).tolist():
+        wavelength = Wavelength(value)
+        selected = wavelengths == value
+        data.traces[wavelength] = TraceColumns(
+            wavelength,
+            timestamps_s=timestamps[selected],
+            frame_ids=frame_ids[selected],
+            sequences=sequences[selected],
+            controller_ticks_us=ticks[selected],
+            values=values[selected],
+            saturation_fractions=saturation[selected],
+        )
+
+
 def load_session_spool(path: Path) -> LoadedSpool:
     """Load and checksum all committed chunks, including an incomplete spool."""
 
@@ -608,99 +724,43 @@ def load_session_spool(path: Path) -> LoadedSpool:
     raw_chunk_paths: list[Path] = []
     first_frame: np.ndarray | None = None
     last_frame: np.ndarray | None = None
-    global_saved_index = 0
-    expected_sequence = 0
-    previous_timestamp: float | None = None
     channel_voltages = {
         int(channel.wavelength_nm): float(channel.voltage_v or 0.0)
         for channel in config.enabled_channels
     }
+    parts: dict[str, list[np.ndarray]] = {}
     for entry in _chunk_entries(path, manifest, schema_version):
         chunk_path = path / entry["file"]
         if _sha256(chunk_path) != entry["sha256"]:
             raise SpoolError(f"spool chunk checksum mismatch: {chunk_path.name}")
-        with np.load(chunk_path, allow_pickle=False) as chunk:
+        with np.load(chunk_path, allow_pickle=False) as npz:
+            # Read each array once: an NpzFile lookup unpacks its array again every time,
+            # and looking fields up per frame took minutes for an hour-long recording.
+            chunk = {name: npz[name] for name in npz.files if name != "frames"}
             count = len(chunk["frame_ids"])
             if count != entry["count"]:
                 raise SpoolError(f"spool chunk count mismatch: {chunk_path.name}")
             if config.camera.raw_capture:
                 raw_chunk_paths.append(chunk_path)
+                frames = npz["frames"]
                 if first_frame is None:
-                    first_frame = chunk["frames"][0].astype(np.uint16, copy=True)
-                last_frame = chunk["frames"][-1].astype(np.uint16, copy=True)
-            for index in range(count):
-                wavelength = Wavelength(int(chunk["wavelengths_nm"][index]))
-                if schema_version >= 2:
-                    commanded_voltage_v = float(chunk["commanded_voltages_v"][index])
-                    host_received_s = float(chunk["host_received_s"][index])
-                else:
-                    commanded_voltage_v = channel_voltages[int(wavelength)]
-                    host_received_s = float(chunk["timestamps_s"][index])
-                if schema_version >= 3:
-                    commanded_power_percent = float(chunk["commanded_power_percent"][index])
-                    camera_index = int(chunk["camera_indices"][index])
-                    wavelength_source = _WAVELENGTH_SOURCES[int(chunk["wavelength_sources"][index])]
-                    camera_timestamp_ns = int(chunk["camera_timestamps_ns"][index])
-                else:
-                    commanded_power_percent = float("nan")
-                    camera_index = 1
-                    wavelength_source = "controller"
-                    camera_timestamp_ns = -1
-                sample = TraceSample(
-                    timestamp_s=float(chunk["timestamps_s"][index]),
-                    frame_id=int(chunk["frame_ids"][index]),
-                    sequence=int(chunk["sequences"][index]),
-                    controller_tick_us=int(chunk["controller_ticks_us"][index]),
-                    wavelength_nm=wavelength,
-                    values=chunk["values"][index].astype(np.float32, copy=True),
-                    saturation_fractions=chunk["saturation_fractions"][index].astype(
-                        np.float32, copy=True
-                    ),
-                )
-                if sample.sequence < expected_sequence:
-                    raise SpoolError("controller sequences are not strictly increasing")
-                if sample.sequence > expected_sequence:
-                    data.dropped_frames.append(
-                        DroppedFrameEvent(
-                            timestamp_s=sample.timestamp_s,
-                            expected_sequence=expected_sequence,
-                            observed_sequence=sample.sequence,
-                            missing_count=sample.sequence - expected_sequence,
-                        )
-                    )
-                    if previous_timestamp is not None:
-                        data.invalid_times.append(
-                            InvalidTimeInterval(
-                                start_time_s=previous_timestamp,
-                                stop_time_s=sample.timestamp_s,
-                                reason=(
-                                    f"missing {sample.sequence - expected_sequence} controller "
-                                    "exposure record(s)"
-                                ),
-                                source_event="controller_sequence_gap",
-                            )
-                        )
-                expected_sequence = sample.sequence + 1
-                data.traces[wavelength].append(sample)
-                data.frame_ids.append(sample.frame_id)
-                data.frame_timestamps_s.append(sample.timestamp_s)
-                data.frame_sequences.append(sample.sequence)
-                data.frame_ticks_us.append(sample.controller_tick_us)
-                data.frame_wavelengths_nm.append(int(wavelength))
-                data.frame_commanded_voltages_v.append(commanded_voltage_v)
-                data.frame_commanded_power_percent.append(commanded_power_percent)
-                data.frame_camera_indices.append(camera_index)
-                data.frame_wavelength_sources.append(wavelength_source)
-                data.frame_camera_timestamps_ns.append(camera_timestamp_ns)
-                data.frame_host_received_s.append(host_received_s)
-                data.frame_saturation_fractions.append(sample.saturation_fractions.copy())
-                data.frame_saved_indices.append(
-                    global_saved_index if config.camera.raw_capture else -1
-                )
-                if config.camera.raw_capture:
-                    global_saved_index += 1
-                previous_timestamp = sample.timestamp_s
-
+                    first_frame = frames[0].astype(np.uint16, copy=True)
+                last_frame = frames[-1].astype(np.uint16, copy=True)
+        if schema_version < 2:
+            chunk["commanded_voltages_v"] = np.asarray(
+                [channel_voltages[int(w)] for w in chunk["wavelengths_nm"]], dtype=np.float64
+            )
+            chunk["host_received_s"] = chunk["timestamps_s"]
+        if schema_version < 3:
+            chunk["commanded_power_percent"] = np.full(count, np.nan)
+            chunk["camera_indices"] = np.ones(count, dtype=np.int64)
+            chunk["wavelength_sources"] = np.full(
+                count, WAVELENGTH_SOURCE_CODES["controller"], dtype=np.uint8
+            )
+            chunk["camera_timestamps_ns"] = np.full(count, -1, dtype=np.int64)
+        for name in _FRAME_FIELDS:
+            parts.setdefault(name, []).append(chunk[name])
+    _fill_frame_columns(data, parts, config)
     complete = bool(manifest["complete"])
     data.ttl_edges.extend(
         TTLEdge(**record) for record in _log_records(path / "ttl_edges.jsonl", complete)

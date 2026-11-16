@@ -144,6 +144,7 @@ file set passes validation. Never label an unvalidated partial file as complete.
   modules that touch hardware. `hardware.rwd_board_simulator` and
   `hardware.rwd_rig_simulator` are their test and simulator stand-ins.
 - `acquisition`: explicit state machine and coordination; no GUI dependencies.
+- `rig_validation`: read-only acceptance audits of finished recordings; it never writes.
 - `storage`: append-safe spool/recovery and NWB finalization/validation.
 - `gui`: PySide6/pyqtgraph presentation; communicates with workers through signals.
 

@@ -9,9 +9,40 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.3.18
+**Current baseline:** 0.4.3
 
-**Last updated:** 2026-10-24
+**Last updated:** 2026-11-15
+
+## Current line: 0.4.x — RWD rig validated for animal recordings
+
+Decided 2026-11-15: the 0.4 line is the RWD rig, validated end to end on its shared
+trigger grid. The Custom controller and Thorlabs camera (Phases 3–5) move to a later
+version. By the owner's choice the line began at 0.4.1 (2026-11-15), with the validation
+tools and the saving fixes; there is no 0.4.0. A version number alone does not mean the
+rig is validated.
+
+- **Software — done (simulator-tested):** the read-only recording audit
+  (`dbf --audit-recording`), headless bench recording with scheduled sequencer
+  restarts (`dbf --bench-record`, `--restart-every`), the flash-based TTL-to-exposure
+  offset measurement (`--flash-line`), and proposed acceptance thresholds.
+- **Software — done in 0.4.1:** about 9 times faster saving and bounded memory (the
+  spool is read once per chunk into compact columns, and every check and write works on
+  whole columns), about 30 times smaller files (per-exposure records numeric and
+  compressed), and the PC kept awake while recording.
+- **Software — done in 0.4.2:** live trace history thinned by time buckets, so the start
+  of a long recording stays visible (found on a 2.5-hour rig recording, 2026-11-15).
+- **Software — done in 0.4.3:** smoothing of thinned live history uses each bucket's
+  sample-weighted average, so older stretches are not shown noisier than recent ones.
+- **Software — open:** the streaming finalizer in the storage-scale gate below, only if
+  V7 shows saving the longest planned session still exceeds the agreed time or memory
+  budget.
+- **Hardware required:** checks V1–V8 in
+  [docs/rwd-rig-validation.md](docs/rwd-rig-validation.md): a clean 3 h run at 120 Hz,
+  a frame-rate sweep, the restart path, the TTL-to-exposure offset, TTL start, failure
+  paths with the LEDs observed, long-session saving, and display scaling.
+- **Exit:** every check passes on the R821 with the owner-confirmed thresholds, and
+  the results log in the validation document names each run's DBF version, settings,
+  and audit file. Only then is the rig called validated, from the version that passed.
 
 ## Review follow-up gates — 2026-10-22
 
@@ -822,8 +853,9 @@ dependencies and do not have a one-to-one relationship with version numbers.
 | 0.2.1 | Windows installer and synchronized GitHub/PyPI automation |
 | 0.3.0 | Controller and camera prototypes with separate bench reports |
 | 0.3.x | RWD setup and quality features, one patch version per tested feature (0.3.1–0.3.7 on 2026-10-24) |
-| 0.4.0 | Integrated Windows rig and shared-clock validation |
+| 0.4.x | RWD rig validated for animal recordings on its shared trigger grid ([checks](docs/rwd-rig-validation.md)), from 0.4.1; then bench-validated RWD features from the 0.3.x list, one patch version each |
 | 0.5.0 | Operator workflow, replay, analysis, and QC preview |
+| later | Custom controller and Thorlabs camera integrated rig (Phases 3–5), unscheduled |
 | 0.9.0 | Clean-machine, documentation, and release-candidate qualification |
 | 1.0.0 | Clean-machine release backed by full hardware, safety, and soak evidence |
 

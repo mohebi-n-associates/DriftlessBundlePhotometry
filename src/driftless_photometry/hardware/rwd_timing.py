@@ -39,6 +39,9 @@ from .rwd_controller_protocol import (
     trigger_period_s,
 )
 
+BENCH_RESTART_REASON = "restart requested for bench validation"
+"""Starts the reason of every restart made by ``RWDRig.request_restart``."""
+
 _LED_FOR_WAVELENGTH = {Wavelength(led.wavelength_nm): led for led in RWDLed}
 
 
