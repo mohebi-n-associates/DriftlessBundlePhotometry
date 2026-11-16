@@ -8,6 +8,18 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.4.3 - 2026-11-15
+
+### Fixed
+
+- **With *Smooth* on, older stretches of a long recording looked noisier than recent
+  ones.** The thinned history keeps each bucket's extremes, a few seconds apart, so
+  smoothing there averaged almost nothing and showed the noise's extremes. Each thinned
+  point now also carries the average of the samples it stands for, and smoothing uses
+  those averages, weighted by sample count, for the trace, the control fit, and the dF/F
+  baseline. Smoothing now means the same over the whole trace. With *Smooth* at 0 the
+  extremes still show, so brief peaks stay visible. Display only.
+
 ## 0.4.2 - 2026-11-15
 
 ### Fixed
@@ -19,13 +31,6 @@ _No unreleased changes._
   narrowing toward the present, and keeps the newest samples untouched. Thinning
   again only merges neighbouring buckets. A simulated 2.6-hour trace keeps about 2,300
   points for its first hour, and a 22-hour trace about 200. Display only.
-- **With *Smooth* on, older stretches of a long recording looked noisier than recent
-  ones.** The thinned history keeps each bucket's extremes, a few seconds apart, so
-  smoothing there averaged almost nothing and showed the noise's extremes. Each thinned
-  point now also carries the average of the samples it stands for, and smoothing uses
-  those averages, weighted by sample count, for the trace, the control fit, and the dF/F
-  baseline. Smoothing now means the same over the whole trace. With *Smooth* at 0 the
-  extremes still show, so brief peaks stay visible. Display only.
 
 ## 0.4.1 - 2026-11-15
 
