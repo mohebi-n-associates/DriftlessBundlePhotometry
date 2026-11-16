@@ -98,6 +98,22 @@ def format_session_time(value_s: float, spacing_s: float, mode: TimeAxisMode) ->
 def compact_history(times: NDArray, values: NDArray, budget: int) -> tuple[NDArray, NDArray]:
     """Bound display memory to ``budget`` points, keeping recent samples and extrema.
 
+    See ``compact_history_with_means``, which this calls without averages.
+    """
+
+    x, y, _, _ = compact_history_with_means(times, values, values, np.ones(len(values)), budget)
+    return x, y
+
+
+def compact_history_with_means(
+    times: NDArray,
+    values: NDArray,
+    means: NDArray,
+    weights: NDArray,
+    budget: int,
+) -> tuple[NDArray, NDArray, NDArray, NDArray]:
+    """Bound display memory to ``budget`` points, keeping recent samples and extrema.
+
     The newest quarter of the budget stays unthinned. Older samples fall into time
     buckets, half evenly spaced and half narrowing toward the present, and each bucket
     keeps its minimum and maximum in time order. The buckets are set by time, not by
@@ -105,16 +121,25 @@ def compact_history(times: NDArray, values: NDArray, budget: int) -> tuple[NDArr
     neighbouring buckets, and every stretch of the session keeps points however often
     this runs. (Halving by point count thinned the oldest data again on every pass, until
     the first hour of a long recording was a few points joined by straight lines.)
+
+    ``means`` and ``weights`` give each point the average of the samples it stands for
+    and how many there are: the value itself and 1 for an original sample. Each kept
+    point gets its bucket's weighted average and an equal share of its weight, so a
+    smoothed view can average the samples rather than the extremes that were kept.
     """
 
     x = np.asarray(times, dtype=np.float64)
     y = np.asarray(values, dtype=np.float64)
-    if x.ndim != 1 or y.ndim != 1 or x.shape != y.shape:
-        raise ValueError("times and values must be one-dimensional arrays of equal length")
+    m = np.asarray(means, dtype=np.float64)
+    w = np.asarray(weights, dtype=np.float64)
+    if x.ndim != 1 or x.shape != y.shape or x.shape != m.shape or x.shape != w.shape:
+        raise ValueError(
+            "times, values, means, and weights must be one-dimensional arrays of equal length"
+        )
     if budget < 16:
         raise ValueError("budget must be at least 16")
     if len(x) <= budget:
-        return x.copy(), y.copy()
+        return x.copy(), y.copy(), m.copy(), w.copy()
     recent = budget // 4
     split = len(x) - recent
     newest = x[-1]
@@ -129,17 +154,35 @@ def compact_history(times: NDArray, values: NDArray, budget: int) -> tuple[NDArr
         edges = np.union1d(edges, newest - ages)
     bucket_count = len(edges) - 1
     old_x, old_y = x[:split], y[:split]
-    buckets = np.clip(np.searchsorted(edges, old_x, side="right") - 1, 0, bucket_count - 1)
+    all_buckets = np.clip(np.searchsorted(edges, old_x, side="right") - 1, 0, bucket_count - 1)
     finite = np.isfinite(old_y)
-    buckets, positions = buckets[finite], np.flatnonzero(finite)
+    buckets, positions = all_buckets[finite], np.flatnonzero(finite)
     finite_y = old_y[finite]
     by_value = np.lexsort((finite_y, buckets))
     first = np.concatenate(([True], np.diff(buckets[by_value]) != 0))
     last = np.concatenate((first[1:], [True]))
     kept = np.unique(np.concatenate((positions[by_value[first]], positions[by_value[last]])))
+    old_m, old_w = m[:split], w[:split]
+    averaged = finite & np.isfinite(old_m) & (old_w > 0)
+    weight_sums = np.bincount(
+        all_buckets[averaged], weights=old_w[averaged], minlength=bucket_count
+    )
+    weighted_sums = np.bincount(
+        all_buckets[averaged], weights=(old_w * old_m)[averaged], minlength=bucket_count
+    )
+    kept_buckets = all_buckets[kept]
+    kept_per_bucket = np.bincount(kept_buckets, minlength=bucket_count)
+    bucket_weight = weight_sums[kept_buckets]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kept_means = np.where(
+            bucket_weight > 0, weighted_sums[kept_buckets] / bucket_weight, np.nan
+        )
+    kept_weights = bucket_weight / kept_per_bucket[kept_buckets]
     return (
         np.concatenate((old_x[kept], x[split:])),
         np.concatenate((old_y[kept], y[split:])),
+        np.concatenate((kept_means, m[split:])),
+        np.concatenate((kept_weights, w[split:])),
     )
 
 
@@ -148,8 +191,13 @@ def trailing_mean(
     values: NDArray[np.floating],
     *,
     window_s: float,
+    weights: NDArray[np.floating] | None = None,
 ) -> NDArray[np.float64]:
-    """Return a display-only time-windowed trailing mean in linear time."""
+    """Return a display-only time-windowed trailing mean in linear time.
+
+    ``weights``, if given, counts how many samples each value stands for, as in a
+    thinned display history whose points carry their bucket's average.
+    """
 
     x = np.asarray(times, dtype=np.float64)
     y = np.asarray(values, dtype=np.float64)
@@ -164,14 +212,21 @@ def trailing_mean(
     # Vectorized: this runs for every ROI and wavelength on the GUI thread, and a Python
     # loop over a long recording held the GIL long enough to starve camera delivery.
     # Sample i averages the finite samples j <= i with x[i] - x[j] <= window_s.
-    finite = np.isfinite(y)
-    sums = np.concatenate(([0.0], np.cumsum(np.where(finite, y, 0.0))))
-    counts = np.concatenate(([0], np.cumsum(finite)))
+    if weights is None:
+        w = np.ones(len(y), dtype=np.float64)
+    else:
+        w = np.asarray(weights, dtype=np.float64)
+        if w.shape != y.shape:
+            raise ValueError("weights must match values")
+    finite = np.isfinite(y) & (w > 0)
+    sums = np.concatenate(([0.0], np.cumsum(np.where(finite, w * y, 0.0))))
+    counts = np.concatenate(([0.0], np.cumsum(np.where(finite, w, 0.0))))
     left = np.searchsorted(x, x - window_s, side="left")
     right = np.arange(1, len(x) + 1)
     window_counts = counts[right] - counts[left]
     output = np.full(len(y), np.nan, dtype=np.float64)
-    np.divide(sums[right] - sums[left], window_counts, out=output, where=window_counts > 0)
+    # Weights are at least 0.5, so a smaller difference is cumulative-sum rounding.
+    np.divide(sums[right] - sums[left], window_counts, out=output, where=window_counts > 0.25)
     return output
 
 

@@ -1768,6 +1768,49 @@ def test_gui_flags_a_dark_roi_on_its_trace_row(qtbot, tmp_path: Path) -> None:
     assert "⚠" not in window.trace_plots[1].titleLabel.text
 
 
+def test_smoothed_trace_uses_averages_of_thinned_history(qtbot, tmp_path: Path) -> None:
+    # Regression: after thinning, smoothing averaged the kept extremes, so older parts
+    # of a long recording looked several times noisier than recent ones.
+    from driftless_photometry.live_trace import LiveTracePoint
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window.resize(1200, 700)
+    config = demo_config(tmp_path, fiber_count=1)
+    window._prepare_trace_curves(config)
+    fiber = config.enabled_rois[0].fiber_id
+    wavelength = window._active_trace_wavelengths[0]
+    key = (wavelength, 0)
+    rng = np.random.default_rng(5)
+    rate = 40.0
+    for start in range(0, 48_000, 400):
+        noise = rng.normal(0.0, 1.0, 400)
+        window._append_live_trace_points(
+            [
+                LiveTracePoint((start + k) / rate, fiber, wavelength, 100.0 + noise[k])
+                for k in range(400)
+            ]
+        )
+    assert key in window._trace_means  # the history was thinned
+    assert len(window._trace_means[key]) == len(window._trace_times[key])
+    assert sum(window._trace_weights[key]) == pytest.approx(48_000)
+
+    window.trace_mode_combo.setCurrentIndex(window.trace_mode_combo.findData("absolute"))
+    window.trace_smoothing_spin.setValue(1.0)
+    window._trace_horizon_s = None
+    window._refresh_trace_wavelength(wavelength)
+    drawn_times, drawn_values = window._curves[key].getData()
+    finite = np.isfinite(drawn_values)
+    old = finite & (drawn_times < 300)
+    recent = finite & (drawn_times > drawn_times[-1] - 60)
+    assert np.ptp(drawn_values[old]) < 1.5 * np.ptp(drawn_values[recent])
+
+    window.trace_smoothing_spin.setValue(0.0)
+    window._refresh_trace_wavelength(wavelength)
+    _, unsmoothed = window._curves[key].getData()
+    assert np.nanmax(unsmoothed) == pytest.approx(max(window._trace_values[key]))
+
+
 def test_long_trace_spans_redraw_at_screen_resolution(qtbot, tmp_path: Path) -> None:
     from driftless_photometry.live_trace import LiveTracePoint
 

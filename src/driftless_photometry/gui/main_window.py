@@ -126,7 +126,7 @@ from .trace_display import (
     MAX_HISTORY_POINTS,
     break_at_gaps,
     compact_duration,
-    compact_history,
+    compact_history_with_means,
     downsample_min_max,
     fitted_control_f0,
     gap_midpoints,
@@ -463,6 +463,12 @@ class MainWindow(QMainWindow):
         self._trace_gaps: dict[tuple[int, int], list[float]] = {}
         self._trace_unthinned_from: dict[tuple[int, int], float] = {}
         self._trace_values: dict[tuple[int, int], array] = {}
+        # Once a trace's history is thinned to bucket extremes, each point's average of
+        # the samples it stands for, and how many. Smoothing uses these, so it averages
+        # samples rather than the kept extremes. Unthinned traces have no entry: each
+        # point stands for itself.
+        self._trace_means: dict[tuple[int, int], array] = {}
+        self._trace_weights: dict[tuple[int, int], array] = {}
         self._trace_roi_indices: dict[str, int] = {}
         self._active_trace_wavelengths: tuple[int, ...] = _CUSTOM_TRACE_WAVELENGTHS
         self._active_config: SessionConfig | None = None
@@ -4113,6 +4119,8 @@ class MainWindow(QMainWindow):
         }
         self._trace_times.clear()
         self._trace_values.clear()
+        self._trace_means.clear()
+        self._trace_weights.clear()
         self._trace_gaps.clear()
         self._trace_unthinned_from.clear()
         self._reset_roi_values()
@@ -4351,18 +4359,19 @@ class MainWindow(QMainWindow):
             if first_index >= stop_index:
                 self._curves[key].setData([], [])
                 continue
-            all_values = np.frombuffer(
-                self._trace_values[key],
-                dtype=np.float32,
-            )
             smoothing_window_s = self.trace_smoothing_spin.value()
-            if smoothing_window_s > 0:
+            smoothing = smoothing_window_s > 0
+            # Smoothed views average samples, so thinned history contributes its bucket
+            # averages; unsmoothed views show the kept extremes, so brief peaks stay.
+            all_values, weights = self._trace_history(key, averages=smoothing)
+            if smoothing:
                 smoothing_start_s = times[first_index] - smoothing_window_s
                 smoothing_start = int(np.searchsorted(times, smoothing_start_s, side="left"))
                 smoothed = trailing_mean(
                     times[smoothing_start:stop_index],
                     all_values[smoothing_start:stop_index],
                     window_s=smoothing_window_s,
+                    weights=None if weights is None else weights[smoothing_start:stop_index],
                 )
                 values = smoothed[first_index - smoothing_start :]
             else:
@@ -4375,13 +4384,20 @@ class MainWindow(QMainWindow):
                     # F0 follows the raw control sample by sample, so it is smoothed
                     # like the signal; otherwise control noise passes straight into dF/F.
                     lead_times = times[smoothing_start:stop_index]
-                    lead_f0 = self._fitted_f0(control, index, times, all_values, lead_times)
+                    lead_f0 = self._fitted_f0(
+                        control, index, times, all_values, lead_times, means=True
+                    )
                     fitted_f0 = (
                         None
                         if lead_f0 is None
-                        else trailing_mean(lead_times, lead_f0, window_s=smoothing_window_s)[
-                            first_index - smoothing_start :
-                        ]
+                        else trailing_mean(
+                            lead_times,
+                            lead_f0,
+                            window_s=smoothing_window_s,
+                            weights=None
+                            if weights is None
+                            else weights[smoothing_start:stop_index],
+                        )[first_index - smoothing_start :]
                     )
                 else:
                     fitted_f0 = self._fitted_f0(control, index, times, all_values, selected_times)
@@ -4409,6 +4425,7 @@ class MainWindow(QMainWindow):
                         times[:baseline_stop],
                         all_values[:baseline_stop],
                         window_s=smoothing_window_s,
+                        weights=None if weights is None else weights[:baseline_stop],
                     )
                     if smoothing_window_s > 0
                     else all_values[:baseline_stop]
@@ -4461,6 +4478,8 @@ class MainWindow(QMainWindow):
         times: np.ndarray,
         values: np.ndarray,
         at_times: np.ndarray,
+        *,
+        means: bool = False,
     ) -> np.ndarray | None:
         key = (control, index)
         control_times = self._trace_times.get(key)
@@ -4470,9 +4489,25 @@ class MainWindow(QMainWindow):
             times,
             values,
             np.frombuffer(control_times, dtype=np.float64),
-            np.frombuffer(self._trace_values[key], dtype=np.float32),
+            self._trace_history(key, averages=means)[0],
             at_times,
         )
+
+    def _trace_history(
+        self, key: tuple[int, int], *, averages: bool
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """A trace's display values, and how many samples each stands for (None: one).
+
+        ``averages`` gives each thinned point its bucket's average, for smoothed views;
+        otherwise thinned points are the bucket extremes, so brief peaks stay visible.
+        """
+
+        if averages and key in self._trace_means:
+            return (
+                np.frombuffer(self._trace_means[key], dtype=np.float32),
+                np.frombuffer(self._trace_weights[key], dtype=np.float32),
+            )
+        return np.frombuffer(self._trace_values[key], dtype=np.float32), None
 
     def _refresh_all_trace_curves(self) -> None:
         for wavelength in self._active_trace_wavelengths:
@@ -4626,6 +4661,9 @@ class MainWindow(QMainWindow):
                 raise ValueError("live trace timestamps must increase per fiber/wavelength")
             times.append(point.timestamp_s)
             self._trace_values[key].append(point.value)
+            if key in self._trace_means:
+                self._trace_means[key].append(point.value)
+                self._trace_weights[key].append(1.0)
             window = self._roi_value_window.setdefault(
                 (point.wavelength_nm, point.fiber_id), [0.0, 0]
             )
@@ -4639,13 +4677,20 @@ class MainWindow(QMainWindow):
                 unthinned_from = self._trace_unthinned_from.get(key, -np.inf)
                 unthinned = history[int(np.searchsorted(history, unthinned_from, side="left")) :]
                 self._trace_gaps.setdefault(key, []).extend(gap_midpoints(unthinned).tolist())
-                x, y = compact_history(
-                    np.asarray(times), np.asarray(self._trace_values[key]), MAX_HISTORY_POINTS // 2
+                values = np.asarray(self._trace_values[key])
+                x, y, means, weights = compact_history_with_means(
+                    np.asarray(times),
+                    values,
+                    np.asarray(self._trace_means.get(key, values)),
+                    np.asarray(self._trace_weights.get(key, np.ones(len(values)))),
+                    MAX_HISTORY_POINTS // 2,
                 )
-                # compact_history keeps the newest sample, so samples after it are unthinned.
+                # Compaction keeps the newest sample, so samples after it are unthinned.
                 self._trace_unthinned_from[key] = float(x[-1])
                 self._trace_times[key] = array("d", x)
                 self._trace_values[key] = array("f", y)
+                self._trace_means[key] = array("f", means)
+                self._trace_weights[key] = array("f", weights)
                 self.frame_counter.setToolTip(
                     "Display history uses bucket extrema. Live dF/F "
                     "is approximate; original samples remain in the NWB."

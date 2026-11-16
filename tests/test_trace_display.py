@@ -3,6 +3,7 @@ from array import array
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from driftless_photometry.config import Wavelength, demo_config
 from driftless_photometry.gui.main_window import MainWindow
@@ -10,6 +11,7 @@ from driftless_photometry.gui.trace_display import (
     HORIZONS,
     MAX_DISPLAY_POINTS,
     compact_history,
+    compact_history_with_means,
     downsample_min_max,
     fitted_control_f0,
     refresh_interval_s,
@@ -56,6 +58,59 @@ def test_history_compaction_keeps_recent_samples_and_bucket_extrema() -> None:
     assert np.all(np.isfinite(y))
     assert y.max() == values[np.isfinite(values)].max()
     assert y.min() == values[np.isfinite(values)].min()
+
+
+def _noisy_history(hours: float, rate: float = 40.0, budget: int = 16_000):
+    """A noisy trace thinned the way the live display thins it, with its averages."""
+
+    rng = np.random.default_rng(3)
+    times = values = means = weights = np.empty(0)
+    total = int(hours * 3600 * rate)
+    for start in range(0, total, 4000):
+        new_times = np.arange(start, min(total, start + 4000)) / rate
+        new_values = 100.0 + rng.normal(0.0, 1.0, len(new_times))
+        times = np.concatenate((times, new_times))
+        values = np.concatenate((values, new_values))
+        means = np.concatenate((means, new_values))
+        weights = np.concatenate((weights, np.ones(len(new_times))))
+        if len(times) > 2 * budget:
+            times, values, means, weights = compact_history_with_means(
+                times, values, means, weights, budget
+            )
+    return total, times, values, means, weights
+
+
+def test_history_compaction_averages_account_for_every_sample() -> None:
+    total, _, _, means, weights = _noisy_history(1.0)
+
+    assert weights.sum() == pytest.approx(total)
+    # Every sample's value is in the weighted averages, so the overall mean is exact.
+    assert np.sum(weights * means) / weights.sum() == pytest.approx(100.0, abs=0.02)
+
+
+def test_smoothed_old_history_is_not_noisier_than_recent_history() -> None:
+    # Regression: smoothing averaged the kept bucket extremes of older history, which
+    # are seconds apart, so it averaged almost nothing there. Old stretches looked far
+    # noisier than recent ones, though the noise never changed.
+    _, times, values, means, weights = _noisy_history(1.2)
+    old = times < 1800
+    recent = times > times[-1] - 60
+
+    extremes = trailing_mean(times, values, window_s=1.0)
+    averaged = trailing_mean(times, means, window_s=1.0, weights=weights)
+
+    assert np.std(extremes[old]) > 5 * np.std(extremes[recent])
+    assert np.std(averaged[old]) < 1.5 * np.std(averaged[recent])
+
+
+def test_weighted_trailing_mean_counts_each_point_by_its_weight() -> None:
+    times = np.asarray([0.0, 1.0, 2.0])
+    values = np.asarray([0.0, 10.0, np.nan])
+    weights = np.asarray([3.0, 1.0, 5.0])
+
+    smoothed = trailing_mean(times, values, window_s=5.0, weights=weights)
+
+    np.testing.assert_allclose(smoothed, [0.0, 2.5, 2.5])
 
 
 def test_trailing_mean_uses_elapsed_time_and_preserves_input() -> None:
