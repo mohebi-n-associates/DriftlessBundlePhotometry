@@ -6,7 +6,12 @@ version, move its completed entries into a dated version section.
 
 ## Unreleased
 
-_No unreleased changes._
+### Documentation
+
+- **The readme now opens with how to prepare the PC for long recordings.** On the
+  bench PC, camera-1 restarts traced to Dell SupportAssist's 30-minute hardware sweeps
+  and to Windows' overnight automatic maintenance. Windows Search indexing the
+  recordings folder adds disk load. The section says how to turn each off.
 
 ## 0.4.3 - 2026-11-15
 

@@ -2,6 +2,32 @@
 
 **Version 0.4.3** · [What's new](WHATS_NEW.md)
 
+## Before long recordings: prepare the acquisition PC
+
+Background jobs on the recording PC can stall it long enough for a camera to deliver
+an incomplete frame. On RWD hardware, DBF then marks about 0.2 s invalid and restarts
+the sequencer to get back in step. Each restart is logged, and the data is still
+usable. On the bench PC (2026-11-15/16), every restart was on camera 1, which records
+two of the three wavelengths at 80 frames/s. They traced to these jobs:
+
+1. **Dell SupportAssist / TechHub hardware sweeps.** Dell's monitoring agent checks
+   drive and hardware health every 30 minutes, and restarts matched its sweep times
+   to the second. On Dell PCs, turn off automatic scans and data collection in
+   SupportAssist. Or, as an administrator, set the *Dell TechHub* and
+   *Dell SupportAssist* services to Manual, or uninstall SupportAssist.
+2. **Windows automatic maintenance.** Restarts clustered in its default overnight
+   window, about 02:00–04:30. In *Control Panel → Security and Maintenance →
+   Maintenance → Change maintenance settings*, move it to a time when nothing is
+   recorded. Also untick *Allow scheduled maintenance to wake up my computer*.
+3. **Windows Search indexing the recordings.** DBF writes many small files while it
+   records. In *Settings → Privacy & security → Searching Windows*, add the recording
+   output folder under *Exclude folders from enhanced search*.
+
+Also keep heavy work off the PC during a recording, and connect the cameras to a USB 3
+port on the back of the PC rather than the front panel. After a recording, run
+`dbf --audit-recording <recording folder>`. Its `restarts` line lists each restart and
+its cause, and the session log gives each one's clock time.
+
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
 
 The application supports up to nine circular fiber ROIs, interleaved multi-wavelength
