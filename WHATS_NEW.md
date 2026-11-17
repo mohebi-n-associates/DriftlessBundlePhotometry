@@ -8,6 +8,31 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
+## 0.4.4 - 2026-11-17
+
+### Changed
+
+- ***Lock ROI circles* also locks the number of ROIs.** While it is ticked, the
+  *Circular ROIs* count cannot be changed, so a stray click or scroll cannot add or
+  remove fibers. Untick it to change the count. Loading saved settings still sets the
+  count.
+- **The *Camera & fiber ROIs* tab no longer scrolls.** The camera images and the fiber
+  controls always fill the window together. The window now needs about 1130 pixels
+  of height (logical pixels, after Windows display scaling) to show the tab in full.
+
+### Fixed
+
+- **RWD previews and recordings with only 410 and 470 nm failed at high frame rates.**
+  With 560 nm off, camera 1 alternates 410 and 470 nm at an even spacing, so only the
+  first frame's arrival time proves which LED lit it. At 120 Hz that leaves under 3 ms
+  of slack, and DBF gave up after three restarts with "camera 1's first frame arrived
+  too late to establish wavelength phase". Selecting 410 + 470 nm alone now lowers the
+  frame rate to 60 Hz and holds it there, with a note under *Camera settings*.
+  Selecting 560 nm again restores the earlier frame rate and exposure, unless you
+  changed the rate in between. Loading a saved 410 + 470 nm setup at a faster rate
+  also lowers it. The 60 Hz cap comes from the bench-measured first-frame delay; it
+  still needs confirming on the rig.
+
 ## 0.4.3 - 2026-11-16
 
 ### Fixed

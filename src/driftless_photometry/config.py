@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -439,9 +439,16 @@ class SystemProfile:
     ttl_output_count: int
     hardware_failsafe: bool
     default_camera: CameraConfig
+    frame_rate_caps_hz: Mapping[frozenset[Wavelength], float] = field(default_factory=dict)
+    """Highest total frame rate for LED selections that only start reliably below it."""
 
     def camera_for(self, wavelength: Wavelength) -> int:
         return self.wavelength_cameras[wavelength]
+
+    def maximum_frame_rate_hz(self, wavelengths: Iterable[Wavelength]) -> float | None:
+        """The frame-rate cap for this LED selection, or None when the range applies."""
+
+        return self.frame_rate_caps_hz.get(frozenset(wavelengths))
 
     def maximum_exposure_us(self, frame_rate_hz: float) -> float | None:
         """RWD rule from OFRS: whole-millisecond frame period minus the board dead time."""
@@ -507,6 +514,14 @@ RWD_PROFILE = SystemProfile(
         exposure_us=10_000,
         requested_fps=20.0,
     ),
+    # 410 + 470 nm alone alternate on camera 1 at an even spacing, so only the first
+    # frame's arrival proves its wavelength: it must arrive within one trigger period
+    # plus one exposure of the start command. On the R821 the first frame took about
+    # 5.6 ms beyond its exposure (11 ms at 120 Hz), leaving under 3 ms of slack at
+    # 120 Hz; 60 Hz leaves about 11 ms. Bench-derived margin, not a bench-tested cap.
+    frame_rate_caps_hz={
+        frozenset({Wavelength.CONTROL_410, Wavelength.GREEN_470}): 60.0,
+    },
 )
 
 

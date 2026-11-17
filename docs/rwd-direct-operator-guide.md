@@ -65,7 +65,9 @@ before starting DBF, because only one program can use the controller's port.
 3. **Camera settings** (on *Camera & fiber ROIs*):
    - **Frame rate:** the total rate shared by the enabled LEDs. It must be a whole
      number between 10 and 250 Hz. With three LEDs at 30 Hz, each LED gets 10 frames
-     per second.
+     per second. With 410 + 470 nm alone, DBF holds the rate at 60 Hz or below,
+     because only the first frame's arrival time can prove its wavelength; selecting
+     560 nm again restores the earlier rate.
    - **Exposure:** at most (1000 ÷ frame rate, rounded down) ms minus 2.63 ms, and at
      least 0.5 ms. **Max** sets the longest exposure, which RWD recommends.
    - **Gain, camera 1 / camera 2:** each camera's gain in dB (0–48). Camera 2 images
@@ -297,7 +299,7 @@ Every file embeds the complete settings, so *Load NWB…* restores the whole set
 | --- | --- | --- |
 | LEDs still on after DBF stopped | DBF could not send the off sequence | Switch the unit off with its power switch |
 | "shutdown unconfirmed" | One or more off commands could not be confirmed | Use the unit's power switch; do not assume a closed window means LEDs or outputs are off |
-| "first frame arrived too late to establish wavelength phase" | Initial wavelength identity is ambiguous | Reduce the frame rate or camera/USB latency; DBF refuses to guess |
+| "first frame arrived too late to establish wavelength phase" | Initial wavelength identity is ambiguous | Reduce the frame rate or camera/USB latency; DBF refuses to guess. With 410 + 470 nm alone DBF caps the rate at 60 Hz |
 | "no FTDI serial port for an RWD controller was found" | The controller's USB cable or power is missing | Connect it, switch the unit on, press *Refresh* |
 | "several FTDI serial ports were found" | Another FTDI device is attached | Choose the controller's port in the RWD panel |
 | "did not acknowledge" or "sent nothing for more than 5 s" | The controller link was lost | The LEDs may still be on: use the power switch, reconnect, and try again |

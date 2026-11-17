@@ -532,10 +532,8 @@ class MainWindow(QMainWindow):
             ),
             "Acquire",
         )
-        self.tabs.addTab(
-            self._scrollable(self._build_calibration_tab(default_fibers)),
-            "Camera & fiber ROIs",
-        )
+        # Not scrollable: the images and fiber controls fit the window together.
+        self.tabs.addTab(self._build_calibration_tab(default_fibers), "Camera & fiber ROIs")
         self.tabs.addTab(self._build_wavelength_images_tab(), "Live wavelength images")
         root_layout.addWidget(self.tabs)
         self.setCentralWidget(root)
@@ -737,6 +735,9 @@ class MainWindow(QMainWindow):
             str, tuple[dict[Wavelength, QCheckBox], dict[Wavelength, QSlider], QGroupBox]
         ] = {}
         self._channel_readouts: dict[str, dict[Wavelength, QLabel]] = {}
+        # Frame rate and exposure from before an LED selection's cap lowered them.
+        self._frame_rate_cap_hz: int | None = None
+        self._timing_before_cap: tuple[int, float] | None = None
         for profile in (CUSTOM_PROFILE, RWD_PROFILE):
             controls_layout.addWidget(self._build_channel_group(profile))
         self.events_group = self._build_events_group()
@@ -1473,6 +1474,7 @@ class MainWindow(QMainWindow):
             row_layout.addWidget(slider)
             layout.addWidget(row)
             check.toggled.connect(self._update_timing_preview)
+            check.toggled.connect(self._apply_frame_rate_cap)
             checks[wavelength] = check
             sliders[wavelength] = slider
             readouts[wavelength] = readout
@@ -1597,14 +1599,21 @@ class MainWindow(QMainWindow):
         self.fps_spin.setRange(int(low), int(high))
         minimum_us = profile.minimum_exposure_us or 10.0
         self.exposure_spin.setMinimum(minimum_us / 1000)
+        self._frame_rate_cap_hz = None
+        self._timing_before_cap = None
         del blockers
-        self._update_exposure_limits()
+        self._apply_frame_rate_cap()
 
     def _load_camera_controls(self, camera: CameraConfig) -> None:
         if not hasattr(self, "fps_spin"):
             return
         widgets = (self.fps_spin, self.exposure_spin, self.gain_spin, self.gain2_spin)
         blockers = [QSignalBlocker(w) for w in widgets]
+        # Load the saved rate in full; the LED selection's cap is applied afterwards.
+        _low, high = self._active_profile.frame_rate_range_hz or (1.0, 500.0)
+        self.fps_spin.setMaximum(int(high))
+        self._frame_rate_cap_hz = None
+        self._timing_before_cap = None
         self.fps_spin.setValue(round(camera.requested_fps))
         self._update_exposure_limits()
         self.exposure_spin.setValue(camera.exposure_us / 1000)
@@ -1618,6 +1627,40 @@ class MainWindow(QMainWindow):
             slider.setValue(round(spin.value() * 10))
             del slider_blocker
         del blockers
+        self._apply_frame_rate_cap()
+
+    def _apply_frame_rate_cap(self, *_args: object) -> None:
+        """Hold the frame rate under the cap of the selected LEDs, restoring it after.
+
+        RWD 410 + 470 nm alone start reliably only up to 60 Hz. Selecting them lowers a
+        faster rate to the cap and remembers the rate and exposure; deselecting them
+        restores both unless the operator changed the rate in between.
+        """
+
+        profile = self._active_profile
+        if not hasattr(self, "fps_spin") or profile.kind not in self._channel_controls:
+            return
+        checks = self._channel_controls[profile.kind][0]
+        selected = [wavelength for wavelength, check in checks.items() if check.isChecked()]
+        cap = profile.maximum_frame_rate_hz(selected)
+        _low, high = profile.frame_rate_range_hz or (1.0, 500.0)
+        if cap is not None:
+            cap_hz = int(cap)
+            if self.fps_spin.value() > cap_hz and self._timing_before_cap is None:
+                self._timing_before_cap = (self.fps_spin.value(), self.exposure_spin.value())
+            self._frame_rate_cap_hz = cap_hz
+            self.fps_spin.setMaximum(cap_hz)  # lowers a faster rate through valueChanged
+        else:
+            saved = self._timing_before_cap
+            restore = saved is not None and self.fps_spin.value() == self._frame_rate_cap_hz
+            self._frame_rate_cap_hz = None
+            self._timing_before_cap = None
+            self.fps_spin.setMaximum(int(high))
+            if restore and saved is not None:
+                fps, exposure_ms = saved
+                self.fps_spin.setValue(fps)
+                self._update_exposure_limits()
+                self.exposure_spin.setValue(exposure_ms)
         self._update_exposure_limits()
 
     def _update_exposure_limits(self) -> None:
@@ -1632,6 +1675,12 @@ class MainWindow(QMainWindow):
             text = (
                 f"At {fps} Hz the exposure can be {self.exposure_spin.minimum():g} to "
                 f"{maximum_ms:.2f} ms; the RWD manual recommends the maximum."
+            )
+        if self._frame_rate_cap_hz is not None:
+            text += (
+                f" With 410 + 470 nm alone the frame rate is held at {self._frame_rate_cap_hz} "
+                "Hz or below so each recording can prove which LED lit its first frame; "
+                "the earlier rate returns when 560 nm is selected again."
             )
         self.camera_settings_hint.setText(
             text + " Raise the gain to find and focus the fiber face, then record at 0 dB."
@@ -1961,7 +2010,8 @@ class MainWindow(QMainWindow):
         fibers_form.addRow("Circular ROIs", self.fiber_count_spin)
         self.roi_lock_check = QCheckBox("Lock ROI circles")
         self.roi_lock_check.setToolTip(
-            "Stop circles from being moved or resized by accident; untick to edit them"
+            "Stop circles from being moved or resized, and the number of ROIs from being "
+            "changed, by accident; untick to edit them"
         )
         self.roi_lock_check.toggled.connect(self._apply_roi_lock)
         fibers_form.addRow("", self.roi_lock_check)
@@ -3131,7 +3181,7 @@ class MainWindow(QMainWindow):
         self._apply_roi_lock()
 
     def _apply_roi_lock(self, *_args: object) -> None:
-        """Locked circles ignore drags and hide their resize handles.
+        """Locked circles ignore drags, hide their resize handles, and keep their count.
 
         They are locked when the operator ticks Lock ROI circles, and always while a
         recording runs: its ROIs are fixed when it starts.
@@ -3140,6 +3190,8 @@ class MainWindow(QMainWindow):
         locked = getattr(self, "_recording_roi_lock", False) or (
             hasattr(self, "roi_lock_check") and self.roi_lock_check.isChecked()
         )
+        if hasattr(self, "fiber_count_spin"):
+            self.fiber_count_spin.setEnabled(not locked)
         for circle in (*self._roi_items, *self._roi_items_cam2):
             circle.translatable = not locked
             for handle in circle.getHandles():

@@ -1,6 +1,6 @@
 # Driftless Bundle Photometry
 
-**Version 0.4.3** · [What's new](WHATS_NEW.md)
+**Version 0.4.4** · [What's new](WHATS_NEW.md)
 
 ## Before long recordings: prepare the acquisition PC
 

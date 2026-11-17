@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.4.3"
+    assert __version__ == "0.4.4"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -1692,13 +1692,46 @@ def test_gui_locks_roi_circles_and_applies_one_diameter_to_all(qtbot, tmp_path: 
     assert not any(h.isVisible() for c in window._roi_items for h in c.getHandles())
     assert not window._roi_metadata_editors[1].diameter_spins[1].isEnabled()
     assert not window._roi_metadata_editors[1].apply_diameter_button.isEnabled()
-    window.fiber_count_spin.setValue(4)  # rebuilt circles stay locked
+    assert not window.fiber_count_spin.isEnabled()  # the ROI count is locked too
+    window.fiber_count_spin.setValue(4)  # loaded settings still rebuild locked circles
     assert len(window._roi_items) == 4
     assert not any(circle.translatable for circle in window._roi_items)
 
     window.roi_lock_check.setChecked(False)
     assert all(circle.translatable for circle in window._roi_items)
     assert window._roi_metadata_editors[3].diameter_spins[1].isEnabled()
+    assert window.fiber_count_spin.isEnabled()
+
+
+def test_gui_roi_count_stays_locked_through_a_preview(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.roi_lock_check.setChecked(True)
+    window._set_busy_controls(True)
+    window._set_busy_controls(False)
+    assert not window.fiber_count_spin.isEnabled()
+
+
+def test_gui_camera_and_fiber_tab_is_not_scrollable(qtbot, tmp_path: Path) -> None:
+    from PySide6.QtWidgets import QScrollArea
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    index = next(i for i in range(window.tabs.count()) if "fiber ROIs" in window.tabs.tabText(i))
+    page = window.tabs.widget(index)
+    assert not isinstance(page, QScrollArea)
+    assert window.fiber_count_spin.window() is window
+    assert not any(
+        isinstance(parent, QScrollArea)
+        for parent in _ancestors(window.camera_calibration_group, page)
+    )
+
+
+def _ancestors(widget, stop):
+    parent = widget.parentWidget()
+    while parent is not None and parent is not stop:
+        yield parent
+        parent = parent.parentWidget()
 
 
 def test_gui_bleach_runs_the_leds_for_a_set_time_then_logs_it(qtbot, tmp_path: Path) -> None:
@@ -2191,3 +2224,56 @@ def test_thinned_trace_history_still_draws_and_keeps_real_gaps(qtbot, tmp_path: 
     assert np.count_nonzero(np.isnan(y)) == 1  # the restart, and nothing else
     gap = x[np.isnan(y)][0]
     assert restart_s - 1 < gap < restart_s + pause_s + 1
+
+
+def test_gui_caps_the_frame_rate_for_410_470_alone_and_restores_it(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    window.fps_spin.setValue(120)
+    window.exposure_max_button.click()
+    exposure_at_120 = window.exposure_spin.value()
+    checks = window._channel_controls["rwd"][0]
+
+    checks[Wavelength.RED_560].setChecked(False)  # 410 + 470 nm alone
+    assert (window.fps_spin.value(), window.fps_spin.maximum()) == (60, 60)
+    assert "held at 60 Hz" in window.camera_settings_hint.text()
+    assert window._build_config().camera.requested_fps == 60.0
+
+    checks[Wavelength.RED_560].setChecked(True)
+    assert (window.fps_spin.value(), window.fps_spin.maximum()) == (120, 250)
+    assert window.exposure_spin.value() == pytest.approx(exposure_at_120)
+    assert "held at" not in window.camera_settings_hint.text()
+
+    # A rate chosen while capped is kept when the cap lifts.
+    checks[Wavelength.RED_560].setChecked(False)
+    window.fps_spin.setValue(40)
+    checks[Wavelength.RED_560].setChecked(True)
+    assert window.fps_spin.value() == 40
+
+    # Other selections keep the full range.
+    for wavelength, check in checks.items():
+        check.setChecked(wavelength is not Wavelength.CONTROL_410)
+    window.fps_spin.setValue(120)
+    assert window.fps_spin.value() == 120
+
+
+def test_gui_caps_a_loaded_410_470_configuration(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    window.fps_spin.setValue(120)
+    window.exposure_max_button.click()
+    full = window._build_config()
+    checks = window._channel_controls["rwd"][0]
+
+    checks[Wavelength.RED_560].setChecked(False)
+    window.fps_spin.setMaximum(250)  # simulate an older settings file saved at 120 Hz
+    window.fps_spin.setValue(120)
+    two_led = window._build_config()
+    assert two_led.camera.requested_fps == 120.0
+
+    window._apply_configuration(two_led)
+    assert window.fps_spin.value() == 60
+    window._apply_configuration(full)
+    assert (window.fps_spin.value(), window.fps_spin.maximum()) == (120, 250)
