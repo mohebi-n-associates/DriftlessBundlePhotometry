@@ -43,11 +43,12 @@ All of these run from a terminal in the `dbf` environment.
   - `--report PATH` writes the result to PATH as JSON.
 
   Ctrl+C stops the recording and saves it. Windows is kept awake while it runs. The
-  audit is also saved as `rig-audit.json` in the session folder, with the recording
-  and finalization times, the peak memory, and the DBF version.
-- `dbf --audit-recording PATH` audits an existing NWB file or a whole session folder,
-  read-only. It exits with code 1 if any check fails. It also checks that the ROI files
-  of a session hold identical exposure records.
+  audit is also saved as `rig-audit_<YYYY-MM-DD>_<HHMMSS>.json` in the output root,
+  with the recording and finalization times, the peak memory, and the DBF version.
+- `dbf --audit-recording PATH` audits an existing NWB file or every NWB file under a
+  folder (an animal's day, or the whole output root), read-only. It exits with code 1
+  if any check fails. It also checks that the ROI files of each session hold identical
+  exposure records.
 
 Save the settings from the GUI (**Save JSON…**) after setting up the fibers, so
 bench runs use the real ROI layout.

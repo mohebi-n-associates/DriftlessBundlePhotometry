@@ -8,10 +8,34 @@ version, move its completed entries into a dated version section.
 
 _No unreleased changes._
 
-## 0.4.4 - 2026-11-17
+## 0.4.4 - 2026-11-20
 
 ### Changed
 
+- **Recordings are saved by animal and date.** Files now go to
+  `<Output root>/<Animal ID>/<YYYY-MM-DD>/Photometry/` instead of one folder per
+  session. Each `Photometry` folder holds that animal's NWB files and the session's
+  log, settings, and ROI maps. DBF writes only inside `Photometry`, so the day's other
+  data can sit beside it in the date folder. A recording with several animals writes the log, settings, and ROI maps
+  into every animal's folder. ROIs that share an animal share its folder. The date
+  and time are the recording's start in this computer's local time.
+- **Files are named by animal, brain region, ROI label, and date.** An NWB file is
+  `<Animal ID>_<Brain region>_<ROI label>_<YYYY-MM-DD>_<HHMMSS>.nwb`, for example
+  `M12_NAc_Left_2026-11-20_143005.nwb`. The start time keeps a second recording of the
+  same animal on the same day from colliding with the first. The log, settings, and
+  ROI maps are `<Animal ID>_<YYYY-MM-DD>_<HHMMSS>_session_log.txt`, `..._settings.json`,
+  and `..._roi_map_{nm}nm.png`. If two ROIs in one recording have the same animal,
+  region, and label, their fiber IDs are added to the names so each keeps its own
+  file. The session ID is no longer in the file name; it is still stored in each file.
+- **A blank Animal ID is saved as `NA`.** The ROI's files go in an `NA` folder and its
+  NWB subject is `NA`. Before, a blank animal ID stopped the recording from starting.
+- **Recovery and auditing follow the new layout.** An interrupted recording's spool now
+  sits directly in the output root. Recovering a spool left by an earlier version
+  writes its files into the animal and date folders. `dbf --audit-recording` accepts an
+  animal's folder or the whole output root and compares ROI files only within their
+  own recording. `dbf --bench-record` saves its audit in the output root as
+  `rig-audit_<YYYY-MM-DD>_<HHMMSS>.json`. Recordings saved by earlier versions stay
+  where they are and still open.
 - ***Lock ROI circles* also locks the number of ROIs.** While it is ticked, the
   *Circular ROIs* count cannot be changed, so a stray click or scroll cannot add or
   remove fibers. Untick it to change the count. Loading saved settings still sets the
@@ -20,8 +44,21 @@ _No unreleased changes._
   controls always fill the window together. The window now needs about 1130 pixels
   of height (logical pixels, after Windows display scaling) to show the tab in full.
 
+- **LED power and voltage can be typed.** Each LED in *Excitation schedule* now has a
+  box beside its slider showing the value. Type a number and press Enter (or click
+  elsewhere) to set it; the slider follows, and dragging the slider updates the box.
+  The value applies only when you finish typing, so typing "50" never passes through 5.
+  During an RWD preview or live view a typed power is sent to the LED like a slider
+  move.
+
 ### Fixed
 
+- **Scrolling a page could change settings under the pointer.** Turning the mouse wheel
+  over a slider, number box, or dropdown changed its value, so scrolling the *Acquire*
+  tab could alter an LED power, the frame rate, or the acquisition system without
+  notice. The wheel now never changes these controls anywhere in DBF, even when one is
+  selected; it scrolls the page instead. Use the mouse, the keyboard, or type a value.
+  Zooming plots with the wheel is unchanged.
 - **RWD previews and recordings with only 410 and 470 nm failed at high frame rates.**
   With 560 nm off, camera 1 alternates 410 and 470 nm at an even spacing, so only the
   first frame's arrival time proves which LED lit it. At 120 Hz that leaves under 3 ms

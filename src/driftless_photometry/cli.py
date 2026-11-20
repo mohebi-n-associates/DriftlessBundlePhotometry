@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--audit-recording",
         type=Path,
         metavar="PATH",
-        help="check RWD NWB files (one file or a session folder) against the rig's "
+        help="check RWD NWB files (one file, or every file under a folder) against the rig's "
         "acceptance thresholds, read-only; exit 1 if any check fails",
     )
     mode.add_argument(
@@ -174,7 +174,7 @@ def _write_result(result: object, report_path: Path | None) -> None:
         print(text)
 
 
-def _audit(path: Path, flash_line: int | None) -> dict:
+def _audit(path: Path | Sequence[Path], flash_line: int | None) -> dict:
     from driftless_photometry.rig_validation import (
         audit_session,
         measure_ttl_flash_offsets,
@@ -232,6 +232,7 @@ def _bench_record(args: argparse.Namespace, rig_factory=None, clock=time.monoton
 
     from driftless_photometry.config import RWD_PROFILE, profile_for
     from driftless_photometry.settings import import_settings
+    from driftless_photometry.storage.session_folder import session_stamp
 
     config = import_settings(args.bench_record)
     if profile_for(config.source) is not RWD_PROFILE:
@@ -290,15 +291,20 @@ def _bench_record(args: argparse.Namespace, rig_factory=None, clock=time.monoton
     result = outcome["result"]
     finalize_start = finalizing[0] if finalizing else finished
     files = [report.path for report in result.reports]
-    folder = files[0].parent
-    audit = _audit(folder, args.flash_line)
+    audit = _audit(files, args.flash_line)
     audit["stopped_by_request"] = result.stopped_by_request
     audit["recording_wall_s"] = round(finalize_start - started, 1)
     audit["finalization_s"] = round(finished - finalize_start, 1)
     audit["peak_memory_mb"] = _peak_memory_mb()
     audit["dbf_version"] = __version__
     audit["nwb_paths"] = [str(path) for path in files]
-    (folder / "rig-audit.json").write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
+    # The recording's files are spread over its animals' folders; the audit covers them
+    # all, so it goes in the output root.
+    audit_path = config.output_directory.expanduser().resolve() / (
+        f"rig-audit_{session_stamp(config)}.json"
+    )
+    audit["audit_path"] = str(audit_path)
+    audit_path.write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
     return audit
 
 

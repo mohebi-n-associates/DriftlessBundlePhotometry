@@ -170,7 +170,7 @@ def test_rwd_spool_round_trips_camera_and_provenance_columns(tmp_path: Path) -> 
         engine.run(config, bench.rig, duration_s=2.0, on_progress=stop_early)
     bench.assert_all_off()
 
-    (spool_path,) = tmp_path.glob("*/*.photometry-spool")
+    (spool_path,) = tmp_path.glob("*.photometry-spool")
     loaded = load_session_spool(spool_path)
     data = loaded.data
     assert loaded.schema_version == 5

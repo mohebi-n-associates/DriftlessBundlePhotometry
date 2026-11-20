@@ -1,7 +1,15 @@
-"""One folder per recording: its NWB files, a detailed session log, and ROI maps.
+"""Where a recording's files go: ``<output root>/<animal ID>/<YYYY-MM-DD>/Photometry/``.
 
-Everything here is also inside every ROI's NWB file: the log as scratch text and the ROI
-maps as images. The folder copies are for people browsing the output directory.
+The date folder is the animal's day; DBF writes only inside its ``Photometry`` folder,
+so other data from that day can sit beside it. That folder holds the animal's ROI NWB
+files plus the session's log, settings, and ROI maps. One recording with several animals
+writes those three into every animal's folder. Every name carries the recording's start
+date and time, so a second recording on the same day adds files instead of replacing
+them.
+
+The log, settings, and ROI maps are also inside every ROI's NWB file: the log and settings
+as scratch text and the maps as images. The folder copies are for people browsing the
+output directory.
 """
 
 from __future__ import annotations
@@ -17,7 +25,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from driftless_photometry import __version__
-from driftless_photometry.config import SessionConfig, Wavelength, profile_for
+from driftless_photometry.config import ROIConfig, SessionConfig, Wavelength, profile_for
 from driftless_photometry.domain import AcquisitionData
 from driftless_photometry.roi import (
     auto_contrast_levels,
@@ -30,27 +38,66 @@ SETTINGS_NAME = "settings.json"
 NWB_SESSION_LOG_SCRATCH_NAME = "driftless_session_log"
 
 
+PHOTOMETRY_FOLDER_NAME = "Photometry"
+"""DBF's folder inside an animal's day, leaving room beside it for other data."""
+
+MISSING_ANIMAL_ID = "NA"
+"""The animal ID, and so the folder, of an ROI whose animal was left blank."""
+
+
+def _filename_safe(value: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in value).strip("._")
+
+
 def _safe(value: str) -> str:
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in value).strip("._")
+    safe = _filename_safe(value)
     if not safe:
         raise ValueError("session_id does not contain filename-safe characters")
     return safe
 
 
-def with_session_folder(config: SessionConfig) -> SessionConfig:
-    """The configuration with its output directory moved into the recording's own folder."""
+def animal_folder(config: SessionConfig, roi: ROIConfig) -> Path:
+    """``<output root>/<animal ID>/<YYYY-MM-DD>/Photometry``: where this ROI's files go.
 
-    root = config.output_directory
-    folder_name = _safe(config.session_id)
-    if Path(root).name == folder_name:
-        return config
-    return config.model_copy(update={"output_directory": Path(root) / folder_name})
+    The date is the recording's start in local time, as in the session log.
+    """
+
+    return (
+        config.output_directory.expanduser().resolve()
+        / animal_name(roi)
+        / f"{config.session_start_time.astimezone():%Y-%m-%d}"
+        / PHOTOMETRY_FOLDER_NAME
+    )
+
+
+def animal_name(roi: ROIConfig) -> str:
+    """The ROI's animal ID as used in folder and file names."""
+
+    return _filename_safe(roi.animal_id) or MISSING_ANIMAL_ID
+
+
+def session_stamp(config: SessionConfig) -> str:
+    """``YYYY-MM-DD_HHMMSS``: the recording's local start, which ends every file name.
+
+    The time keeps a second recording of the same animal on the same day from taking
+    the first one's names.
+    """
+
+    return f"{config.session_start_time.astimezone():%Y-%m-%d_%H%M%S}"
+
+
+def session_file_name(config: SessionConfig, roi: ROIConfig, name: str) -> str:
+    """The log, settings, or ROI-map name in ``roi``'s animal folder."""
+
+    return f"{animal_name(roi)}_{session_stamp(config)}_{name}"
 
 
 def without_session_folder(config: SessionConfig) -> SessionConfig:
-    """The configuration with the operator's output root, as saved in settings snapshots.
+    """The configuration with the operator's output root.
 
-    Reloading settings from an NWB must not nest the next recording inside this one.
+    Before 0.4.4 a recording was written to ``<root>/<session ID>/`` and its spool kept
+    that folder as its output directory. Recovering such a spool, or reloading settings
+    from its NWB, must use the root rather than nest inside the old folder.
     """
 
     root = Path(config.output_directory)
@@ -237,31 +284,41 @@ def write_session_artifacts(
     *,
     nwb_paths: tuple[Path, ...] = (),
     wavelength_images: dict[Wavelength, NDArray[np.uint16]] | None = None,
-) -> Path:
-    """Write the log, settings, and ROI maps into the recording's folder; return it."""
+) -> tuple[Path, ...]:
+    """Write the log, settings, and ROI maps into every animal's folder; return the folders."""
 
     from driftless_photometry.settings import settings_document
 
-    folder = config.output_directory.expanduser().resolve()
-    folder.mkdir(parents=True, exist_ok=True)
+    root = config.output_directory.expanduser().resolve()
     log = data.session_log or session_log_text(config, data)
     if nwb_paths:
-        log += "\nNWB files\n" + "".join(
-            f"  {path.name} ({path.stat().st_size / 1e6:.1f} MB)\n"
+        log += "\nNWB files (under the output folder)\n" + "".join(
+            f"  {path.relative_to(root).as_posix() if path.is_relative_to(root) else path}"
+            f" ({path.stat().st_size / 1e6:.1f} MB)\n"
             for path in nwb_paths
             if path.exists()
         )
-    (folder / SESSION_LOG_NAME).write_text(log, encoding="utf-8")
-    (folder / SETTINGS_NAME).write_text(
+    settings = (
         json.dumps(
             settings_document(without_session_folder(config)),
             indent=2,
             sort_keys=True,
             ensure_ascii=False,
         )
-        + "\n",
-        encoding="utf-8",
+        + "\n"
     )
-    for wavelength, rgb in roi_maps(config, data, wavelength_images, auto_contrast=True).items():
-        write_png(folder / f"roi_map_{int(wavelength)}nm.png", rgb)
-    return folder
+    maps = roi_maps(config, data, wavelength_images, auto_contrast=True)
+    # One ROI per animal folder; ROIs sharing an animal share the folder and these files.
+    folders = {animal_folder(config, roi): roi for roi in reversed(config.enabled_rois)}
+    for folder, roi in folders.items():
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / session_file_name(config, roi, SESSION_LOG_NAME)).write_text(
+            log, encoding="utf-8"
+        )
+        (folder / session_file_name(config, roi, SETTINGS_NAME)).write_text(
+            settings, encoding="utf-8"
+        )
+        for wavelength, rgb in maps.items():
+            name = session_file_name(config, roi, f"roi_map_{int(wavelength)}nm.png")
+            write_png(folder / name, rgb)
+    return tuple(reversed(folders))

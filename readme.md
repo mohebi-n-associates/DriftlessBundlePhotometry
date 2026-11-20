@@ -25,7 +25,7 @@ two of the three wavelengths at 80 frames/s. They traced to these jobs:
 
 Also keep heavy work off the PC during a recording, and connect the cameras to a USB 3
 port on the back of the PC rather than the front panel. After a recording, run
-`dbf --audit-recording <recording folder>`. Its `restarts` line lists each restart and
+`dbf --audit-recording <animal folder>`. Its `restarts` line lists each restart and
 its cause, and the session log gives each one's clock time.
 
 A Python-based, trace-first multichannel fiber-photometry acquisition system.
@@ -283,8 +283,10 @@ simulator, replay, NWB, analysis, and GUI-demo paths; RWD hardware is Windows-on
 ### Where DBF keeps its files
 
 - **Recordings:** the **Output root** on the Acquire tab (choose it with **Browse…** and
-  keep it with **Set as default**). Each recording gets its own folder there with its
-  NWB files, `session_log.txt`, `settings.json`, and ROI maps.
+  keep it with **Set as default**). Files go to `<Animal ID>/<YYYY-MM-DD>/Photometry/` inside it:
+  that animal's NWB files, named `<Animal ID>_<Brain region>_<ROI label>_<date>_<time>.nwb`,
+  with the session's log, settings, and ROI maps beside them. A blank animal ID is
+  saved as `NA`. Dates and times are the recording's local start.
 - **Settings:** `Documents\Driftless Bundle Photometry` holds `default_settings.json`
   (**Set as default**), `ui_preferences.json` (theme), and `logs\dbf-errors.log`.
 

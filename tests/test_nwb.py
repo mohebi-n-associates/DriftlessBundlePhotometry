@@ -25,6 +25,7 @@ from driftless_photometry.settings import (
     configuration_from_nwb,
 )
 from driftless_photometry.storage import write_session_nwbs
+from driftless_photometry.storage.session_folder import session_stamp
 
 
 def _golden_data(tmp_path: Path, *, raw_capture: bool) -> tuple:
@@ -112,9 +113,14 @@ def test_golden_nwb_round_trip_with_embedded_frames(tmp_path: Path) -> None:
     )
     assert len(reports) == 2
     assert {report.path.name for report in reports} == {
-        f"{config.session_id}__animal-01__not_specified__fiber_01.nwb",
-        f"{config.session_id}__animal-02__not_specified__fiber_02.nwb",
+        f"animal-01_not_specified_Fiber_1_{session_stamp(config)}.nwb",
+        f"animal-02_not_specified_Fiber_2_{session_stamp(config)}.nwb",
     }
+    date = session_stamp(config).split("_")[0]
+    assert [report.path.parent for report in reports] == [
+        tmp_path / "animal-01" / date / "Photometry",
+        tmp_path / "animal-02" / date / "Photometry",
+    ]
 
     for roi_index, report in enumerate(reports):
         assert report.path.exists()
@@ -230,11 +236,15 @@ def test_legacy_per_roi_nwbs_restore_available_sibling_settings(
     for report in reports:
         with h5py.File(report.path, mode="r+") as handle:
             del handle[f"scratch/{NWB_SETTINGS_SCRATCH_NAME}"]
-    paths = [report.path for report in reports]
-    if names_without_region:  # <session>__<animal>__<fiber>, as files were once named
-        paths = [
-            path.rename(path.with_name(path.name.replace("__not_specified", ""))) for path in paths
-        ]
+    # Legacy files sat together, named <session>__<animal>__<region>__<fiber> or, earlier
+    # still, <session>__<animal>__<fiber>.
+    region = "" if names_without_region else "__not_specified"
+    paths = [
+        report.path.rename(
+            tmp_path / f"{config.session_id}__{roi.animal_id}{region}__{roi.fiber_id}.nwb"
+        )
+        for report, roi in zip(reports, config.enabled_rois, strict=True)
+    ]
 
     restored, warnings = configuration_from_nwb(paths[-1])
 
@@ -279,25 +289,83 @@ def test_rejects_raw_frame_count_mismatch_before_writing(tmp_path: Path) -> None
         assert "raw frame count" in str(error)
     else:  # pragma: no cover - assertion produces a clearer error than pytest.raises here
         raise AssertionError("expected raw frame count mismatch")
-    assert not list(tmp_path.glob("*.nwb*"))
+    assert not list(tmp_path.rglob("*.nwb*"))
 
 
-def test_nwb_filenames_name_session_animal_brain_region_and_fiber(tmp_path: Path) -> None:
+def test_nwb_paths_are_animal_date_folders_and_animal_region_label_date_names(
+    tmp_path: Path,
+) -> None:
+    from datetime import datetime
+
     from driftless_photometry.storage.nwb import _roi_output_paths
 
     config = demo_config(tmp_path, fiber_count=1)
+    started = datetime(2026, 3, 9, 14, 5, 7).astimezone()  # local time
     roi = config.rois[0].model_copy(
-        update={"animal_id": "IM-1140", "brain_region": "NAc core / lateral  shell"}
+        update={
+            "animal_id": "IM-1140",
+            "brain_region": "NAc core / lateral  shell",
+            "label": "Left fiber",
+        }
     )
+    config = config.model_copy(update={"session_start_time": started, "rois": (roi,)})
 
     final, partial = _roi_output_paths(config, roi)
 
-    assert final.name == (
-        f"{config.session_id}__IM-1140__NAc_core_lateral_shell__{roi.fiber_id}.nwb"
+    assert final == (
+        tmp_path.resolve()
+        / "IM-1140"
+        / "2026-03-09"
+        / "Photometry"
+        / "IM-1140_NAc_core_lateral_shell_Left_fiber_2026-03-09_140507.nwb"
     )
-    assert partial.name == final.name.replace(".nwb", ".partial.nwb")
-    long_region = roi.model_copy(update={"brain_region": "x" * 256})
-    assert len(_roi_output_paths(config, long_region)[0].name) < 150
+    assert partial == final.with_name(final.name.replace(".nwb", ".partial.nwb"))
+    long_text = roi.model_copy(update={"brain_region": "x" * 256, "label": "y" * 128})
+    long_config = config.model_copy(update={"rois": (long_text,)})
+    assert len(_roi_output_paths(long_config, long_text)[0].name) < 150
+
+
+def test_rois_sharing_animal_region_and_label_keep_separate_files(tmp_path: Path) -> None:
+    from driftless_photometry.storage.nwb import _roi_output_paths
+
+    config = demo_config(tmp_path, fiber_count=3)
+    same = {"animal_id": "M1", "brain_region": "DLS", "label": "Fiber"}
+    rois = (
+        config.rois[0].model_copy(update=same),
+        config.rois[1].model_copy(update=same),
+        config.rois[2],
+    )
+    config = config.model_copy(update={"rois": rois})
+    stamp = session_stamp(config)
+
+    assert [_roi_output_paths(config, roi)[0].name for roi in rois] == [
+        f"M1_DLS_Fiber_fiber_01_{stamp}.nwb",
+        f"M1_DLS_Fiber_fiber_02_{stamp}.nwb",
+        f"animal-03_not_specified_Fiber_3_{stamp}.nwb",
+    ]
+
+
+def test_a_second_recording_the_same_day_adds_files_beside_the_first(tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    config, data, frames = _golden_data(tmp_path, raw_capture=False)
+    later = config.model_copy(
+        update={
+            "session_id": "later-session",
+            "session_start_time": config.session_start_time + timedelta(seconds=1),
+        }
+    )
+    if session_stamp(later)[:10] != session_stamp(config)[:10]:  # ran across local midnight
+        later = later.model_copy(
+            update={"session_start_time": config.session_start_time - timedelta(seconds=1)}
+        )
+
+    first = write_session_nwbs(config, data, calibration_image=frames[0])
+    second = write_session_nwbs(later, data, calibration_image=frames[0])
+
+    assert [a.path.parent for a in first] == [b.path.parent for b in second]
+    assert all(report.path.exists() for report in (*first, *second))
+    assert len({report.path for report in (*first, *second)}) == 4
 
 
 def test_per_exposure_records_are_numeric_and_compressed(tmp_path: Path) -> None:

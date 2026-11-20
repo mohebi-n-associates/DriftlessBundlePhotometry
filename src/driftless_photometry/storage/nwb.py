@@ -69,7 +69,7 @@ from driftless_photometry.roi import (
 from driftless_photometry.settings import NWB_SETTINGS_SCRATCH_NAME, settings_json
 
 from .frames import FrameStream
-from .session_folder import without_session_folder
+from .session_folder import animal_folder, animal_name, session_stamp, without_session_folder
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -451,7 +451,7 @@ def _create_nwbfile(config: SessionConfig, roi: ROIConfig, data: AcquisitionData
             description=(
                 "Human-readable session log: settings, ROIs, TTL inputs, and a timeline of "
                 "system events, markers, notes, TTL events, stimulation, invalid spans, and "
-                "dropped frames. The same text is session_log.txt in the recording's folder."
+                "dropped frames. The same text is the session_log.txt beside this file."
             ),
         )
     provenance = data.runtime_provenance or capture_runtime_provenance(
@@ -807,8 +807,8 @@ def _add_rois_and_calibration(
                                 "mean reference (display stretch between its 0.5th and "
                                 "99.9th percentile) with every ROI on this camera outlined "
                                 "and named; "
-                                f"the same image as roi_map_{int(wavelength)}nm.png in the "
-                                "recording's folder."
+                                f"the same image as the roi_map_{int(wavelength)}nm.png "
+                                "beside this file."
                             ),
                         ),
                         _grayscale_image(
@@ -1450,25 +1450,36 @@ REGION_FILENAME_MAX_CHARS = 48
 well within Windows' 260-character limit. The full region is in the file."""
 
 
-def _region_filename(region: str) -> str:
-    """The filename part for a brain region: filename-safe, single underscores, capped."""
+def _region_filename(region: str, fallback: str = "region") -> str:
+    """The filename part for free text: filename-safe, single underscores, capped."""
 
     safe = "".join(
         character if character.isalnum() or character in "-." else "_" for character in region
     )
     safe = "_".join(part for part in safe.split("_") if part)[:REGION_FILENAME_MAX_CHARS]
-    return safe.strip("._-") or "region"
+    return safe.strip("._-") or fallback
+
+
+def _roi_name_parts(roi: ROIConfig) -> tuple[str, str, str]:
+    return (
+        animal_name(roi),
+        _region_filename(roi.brain_region),
+        _region_filename(roi.label, "ROI"),
+    )
 
 
 def _roi_output_paths(config: SessionConfig, roi: ROIConfig) -> tuple[Path, Path]:
-    output_directory = config.output_directory.expanduser().resolve()
-    stem = "__".join(
-        (
-            _safe_filename(config.session_id),
-            _safe_filename(roi.animal_id),
-            _region_filename(roi.brain_region),
-            _safe_filename(roi.fiber_id),
-        )
+    """``<animal folder>/<animal>_<region>_<label>_<date>_<time>.nwb`` and its partial.
+
+    ROIs of one recording that share animal, region, and label also carry their fiber ID,
+    so every ROI keeps its own file.
+    """
+
+    output_directory = animal_folder(config, roi)
+    parts = _roi_name_parts(roi)
+    shared = sum(_roi_name_parts(other) == parts for other in config.enabled_rois) > 1
+    stem = "_".join(
+        (*parts, *((_safe_filename(roi.fiber_id),) if shared else ()), session_stamp(config))
     )
     return (
         output_directory / f"{stem}.nwb",
@@ -1491,9 +1502,8 @@ def _write_roi_partial_nwb(
     """Write and validate one ROI's partial NWB without promoting it."""
 
     roi = config.enabled_rois[roi_index]
-    output_directory = config.output_directory.expanduser().resolve()
-    output_directory.mkdir(parents=True, exist_ok=True)
     final_path, partial_path = _roi_output_paths(config, roi)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
     if on_progress is not None:
         on_progress(
             FinalizationProgress(

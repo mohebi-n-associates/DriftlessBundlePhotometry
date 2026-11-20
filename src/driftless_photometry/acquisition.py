@@ -41,7 +41,6 @@ from driftless_photometry.storage import (
 )
 from driftless_photometry.storage.session_folder import (
     session_log_text,
-    with_session_folder,
     write_session_artifacts,
 )
 
@@ -458,8 +457,6 @@ class AcquisitionEngine:
             raise ValueError("duration_s must be positive")
         if not self._run_lock.acquire(blocking=False):
             raise RuntimeError("an acquisition is already running")
-        # Each recording gets its own folder for its NWB files, log, and ROI maps.
-        config = with_session_folder(config)
         spool: SessionSpool | None = None
         packets = None
         frame_count = 0

@@ -107,8 +107,9 @@ writer, existed in 0.2.0–0.2.1 and was removed in favor of direct control.
   A writer failure remains a surfaced error even when the failed writer cannot commit
   its own fault record.
 - Interrupted spools are discoverable and recoverable. Discovery examines only direct
-  `*.photometry-spool` children. Inspection checksum-validates records before showing
-  counts or completeness.
+  `*.photometry-spool` children of the output root, plus the per-session folders that
+  versions before 0.4.4 kept their spools in. Inspection checksum-validates records
+  before showing counts or completeness.
 
 ### Gate 2 — desktop demo
 

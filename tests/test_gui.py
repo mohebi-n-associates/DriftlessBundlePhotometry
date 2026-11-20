@@ -598,7 +598,7 @@ def test_gui_uses_voltage_sliders_and_per_roi_subject_metadata(qtbot, tmp_path: 
     assert slider.minimum() == 0
     assert slider.maximum() == 500
     slider.setValue(175)
-    assert next(iter(window.channel_voltage_labels.values())).text() == "1.75 V"
+    assert next(iter(window.channel_intensity_entries.values())).text() == "1.75 V"
 
     assert window.roi_metadata_tabs.count() == 2
     first = window._roi_metadata_editors[0]
@@ -680,9 +680,9 @@ def test_gui_shows_the_rwd_profile_when_rwd_is_selected(qtbot, tmp_path: Path) -
     assert list(window.channel_checks) == list(RWD_PROFILE.wavelengths)
     slider = window.channel_voltages[Wavelength.GREEN_470]
     assert slider.maximum() == 1000
-    assert window.channel_voltage_labels[Wavelength.GREEN_470].text() == "5.0 %"
+    assert window.channel_intensity_entries[Wavelength.GREEN_470].text() == "5.0 %"
     slider.setValue(125)
-    assert window.channel_voltage_labels[Wavelength.GREEN_470].text() == "12.5 %"
+    assert window.channel_intensity_entries[Wavelength.GREEN_470].text() == "12.5 %"
     camera = window._session_template.camera
     assert (camera.width_px, camera.height_px) == (728, 544)
     for wavelength, group in window.wavelength_image_groups.items():
@@ -723,7 +723,7 @@ def test_gui_round_trips_rwd_settings_with_camera2_circles(qtbot, tmp_path: Path
     window._apply_configuration(original)
 
     assert window.source_combo.currentData() == "rwd"
-    assert window.channel_voltage_labels[Wavelength.CONTROL_410].text() == "7.5 %"
+    assert window.channel_intensity_entries[Wavelength.CONTROL_410].text() == "7.5 %"
     rebuilt = window._build_config()
     assert [channel.enabled for channel in rebuilt.channels] == [True, True, False]
     assert rebuilt.channels[0].power_percent == 7.5
@@ -2277,3 +2277,114 @@ def test_gui_caps_a_loaded_410_470_configuration(qtbot, tmp_path: Path) -> None:
     assert window.fps_spin.value() == 60
     window._apply_configuration(full)
     assert (window.fps_spin.value(), window.fps_spin.maximum()) == (120, 250)
+
+
+def test_a_blank_animal_id_is_recorded_as_na(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.storage.session_folder import animal_folder
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._roi_metadata_editors[0].animal_id_edit.setText("  ")
+
+    config = window._build_config()
+
+    assert [roi.animal_id for roi in config.rois] == ["NA", "animal-02"]
+    assert animal_folder(config, config.rois[0]).parents[1] == tmp_path.resolve() / "NA"
+
+
+def test_the_wheel_never_changes_a_slider_spin_box_or_dropdown(qtbot, tmp_path: Path) -> None:
+    """Regression: scrolling the Acquire tab changed LED powers under the pointer."""
+
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+    slider = window.channel_voltages[Wavelength.GREEN_470]
+    entry = window.channel_intensity_entries[Wavelength.GREEN_470]
+    controls = (slider, entry, window.fps_spin, window.source_combo, window.duration_spin)
+    before = [c.currentIndex() if hasattr(c, "currentIndex") else c.value() for c in controls]
+
+    for control in controls:
+        control.setFocus()  # even a focused control must not take the wheel
+        center = QPointF(control.rect().center())
+        for delta in (120, -120, -120):
+            event = QWheelEvent(
+                center,
+                control.mapToGlobal(center),
+                QPoint(0, 0),
+                QPoint(0, delta),
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+                Qt.ScrollPhase.NoScrollPhase,
+                False,
+            )
+            QApplication.sendEvent(control, event)
+
+    assert [
+        c.currentIndex() if hasattr(c, "currentIndex") else c.value() for c in controls
+    ] == before
+
+
+def test_led_intensity_can_be_typed_and_follows_the_slider(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    slider = window.channel_voltages[Wavelength.GREEN_470]
+    entry = window.channel_intensity_entries[Wavelength.GREEN_470]
+
+    entry.setValue(2.35)
+    assert slider.value() == 235
+    slider.setValue(120)
+    assert entry.value() == 1.2 and entry.text() == "1.20 V"
+    entry.setValue(99.0)  # clamped to the system's maximum
+    assert entry.value() == CUSTOM_PROFILE.intensity_maximum
+    channel = next(
+        c for c in window._build_config().channels if c.wavelength_nm == Wavelength.GREEN_470
+    )
+    assert channel.voltage_v == CUSTOM_PROFILE.intensity_maximum
+    assert not entry.keyboardTracking()  # typing "50" must not pass through 5
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    rwd_entry = window.channel_intensity_entries[Wavelength.GREEN_470]
+    rwd_entry.setValue(12.5)
+    assert window.channel_voltages[Wavelength.GREEN_470].value() == 125
+    assert rwd_entry.text() == "12.5 %"
+
+
+def test_the_wheel_over_a_slider_still_scrolls_the_acquire_tab(qtbot, tmp_path: Path) -> None:
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication, QScrollArea
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.resize(window.minimumWidth(), 500)
+    window.show()
+    qtbot.waitExposed(window)
+    slider = window.channel_voltages[Wavelength.GREEN_470]
+    area = slider.parentWidget()
+    while not isinstance(area, QScrollArea):
+        area = area.parentWidget()
+    bar = area.verticalScrollBar()
+    assert bar.maximum() > 0 and bar.value() == 0
+    area.ensureWidgetVisible(slider)
+    start = bar.value()
+    power = slider.value()
+
+    center = QPointF(slider.rect().center())
+    event = QWheelEvent(
+        center,
+        slider.mapToGlobal(center),
+        QPoint(0, 0),
+        QPoint(0, 120 if start else -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(slider, event)
+
+    assert bar.value() != start and slider.value() == power

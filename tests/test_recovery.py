@@ -191,10 +191,10 @@ def test_recovery_resumes_interrupted_multi_roi_promotion(
         recover_session_spool(spool.path, keep_spool=True)
 
     final_paths = [
-        path for path in tmp_path.glob("*.nwb") if not path.name.endswith(".partial.nwb")
+        path for path in tmp_path.rglob("*.nwb") if not path.name.endswith(".partial.nwb")
     ]
     assert len(final_paths) == 1
-    assert len(list(tmp_path.glob("*.partial.nwb"))) == 1
+    assert len(list(tmp_path.rglob("*.partial.nwb"))) == 1
     monkeypatch.setattr("driftless_photometry.storage.nwb.os.replace", real_replace)
 
     resumed = recover_session_spool(spool.path, keep_spool=True)
@@ -202,7 +202,7 @@ def test_recovery_resumes_interrupted_multi_roi_promotion(
     assert resumed.reused_existing_outputs is True
     assert len(resumed.nwbs) == 2
     assert all(report.path.exists() for report in resumed.nwbs)
-    assert not list(tmp_path.glob("*.partial.nwb"))
+    assert not list(tmp_path.rglob("*.partial.nwb"))
 
 
 def test_spool_discovery_is_direct_safe_and_reports_completeness(tmp_path: Path) -> None:
@@ -238,3 +238,22 @@ def test_spool_discovery_is_direct_safe_and_reports_completeness(tmp_path: Path)
     assert [item.session_id for item in incomplete_inspections] == ["incomplete-session"]
     assert inspect_session_spool(complete.path).acquisition_complete is True
     assert all(item.path.parent == tmp_path for item in inspections)
+
+
+def test_a_spool_from_a_session_folder_recovers_into_animal_date_folders(tmp_path: Path) -> None:
+    """Before 0.4.4 a spool sat in <root>/<session ID>/ with that as its output directory."""
+
+    old_folder = tmp_path / "old-session"
+    config = demo_config(old_folder, fiber_count=2, width_px=32, height_px=24).model_copy(
+        update={"session_id": "old-session"}
+    )
+    spool = SessionSpool(config, chunk_size=2)
+    _submit_frames(spool, 3)
+    spool.close()
+
+    recovered = recover_session_spool(spool.path)
+
+    date = f"{config.session_start_time.astimezone():%Y-%m-%d}"
+    assert recovered.nwb.path.parent == tmp_path / "animal-01" / date / "Photometry"
+    assert len(list(recovered.nwb.path.parent.glob("*_session_log.txt"))) == 1
+    assert not list(old_folder.rglob("*.nwb"))
