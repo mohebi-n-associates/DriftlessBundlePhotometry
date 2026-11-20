@@ -32,6 +32,7 @@ from driftless_photometry.provenance import NWB_RUNTIME_PROVENANCE_SCRATCH_NAME
 from driftless_photometry.settings import configuration_from_nwb
 from driftless_photometry.state import AcquisitionState
 from driftless_photometry.storage import InsufficientStorageError, load_session_spool
+from driftless_photometry.storage.session_folder import session_stamp
 
 
 def test_preview_validates_all_channels_without_creating_output(tmp_path: Path) -> None:
@@ -119,7 +120,7 @@ def test_headless_engine_finalizes_valid_session_and_removes_spool(tmp_path: Pat
         AcquisitionState.DRAINING,
         AcquisitionState.READY,
     ]
-    assert not list(tmp_path.glob("*/*.photometry-spool"))
+    assert not list(tmp_path.glob("*.photometry-spool"))
     for roi_index, report in enumerate(result.reports):
         with NWBHDF5IO(report.path, mode="r", load_namespaces=True) as io:
             nwbfile = io.read()
@@ -245,7 +246,7 @@ def test_non_increasing_sequence_enters_error_and_preserves_spool(tmp_path: Path
     with pytest.raises(RuntimeError, match="not strictly increasing"):
         engine.run(config, _DuplicateSequenceRig(config), duration_s=0.2)
     assert engine.state is AcquisitionState.ERROR
-    assert len(list(tmp_path.glob("*/*.photometry-spool"))) == 1
+    assert len(list(tmp_path.glob("*.photometry-spool"))) == 1
     engine.reset_error()
     assert engine.state is AcquisitionState.READY
 
@@ -299,7 +300,7 @@ def test_non_increasing_controller_tick_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="controller ticks are not strictly increasing"):
         engine.run(config, _BadTickRig(config), duration_s=0.2)
     assert engine.state is AcquisitionState.ERROR
-    loaded = load_session_spool(next(tmp_path.glob("*/*.photometry-spool")))
+    loaded = load_session_spool(next(tmp_path.glob("*.photometry-spool")))
     assert loaded.data.system_events[-1].event == "acquisition_fault:clock_discontinuity"
     assert loaded.data.invalid_times[-1].source_event == "clock_discontinuity"
 
@@ -338,7 +339,7 @@ def test_source_fault_is_committed_before_incomplete_spool_is_closed(
     with pytest.raises(AcquisitionFault, match="simulated"):
         engine.run(config, source, duration_s=0.2)
 
-    loaded = load_session_spool(next(tmp_path.glob("*/*.photometry-spool")))
+    loaded = load_session_spool(next(tmp_path.glob("*.photometry-spool")))
     assert loaded.complete is False
     assert loaded.data.frame_ids == [1]
     assert loaded.data.system_events[-1].event == f"acquisition_fault:{fault_code.value}"
@@ -365,7 +366,7 @@ def test_insufficient_storage_fails_before_arming_or_creating_a_spool(
 
     assert source.stop_called is True
     assert engine.state is AcquisitionState.ERROR
-    assert not list(tmp_path.glob("*/*.photometry-spool"))
+    assert not list(tmp_path.glob("*.photometry-spool"))
 
 
 def test_finalizer_failure_preserves_complete_spool(
@@ -389,7 +390,7 @@ def test_finalizer_failure_preserves_complete_spool(
     with pytest.raises(OSError, match="simulated finalizer disk failure"):
         engine.run(config, SimulatedRig(config), duration_s=0.1)
 
-    spools = list(tmp_path.glob("*/*.photometry-spool"))
+    spools = list(tmp_path.glob("*.photometry-spool"))
     assert len(spools) == 1
     from driftless_photometry.storage import load_session_spool
 
@@ -548,7 +549,7 @@ def test_stopping_while_waiting_for_the_start_records_nothing(tmp_path: Path) ->
     timer.join()
     assert AcquisitionState.RECORDING not in states
     assert engine.state is AcquisitionState.READY
-    assert not list(tmp_path.glob("*/*.photometry-spool"))
+    assert not list(tmp_path.glob("*.photometry-spool"))
     assert not list(tmp_path.rglob("*.nwb"))
 
 
@@ -712,8 +713,15 @@ def test_each_roi_file_keeps_only_its_assigned_ttl_inputs(tmp_path: Path) -> Non
         SessionConfig.model_validate(payload)
 
 
-def test_each_recording_gets_a_folder_with_its_nwbs_log_and_roi_maps(tmp_path: Path) -> None:
-    config = demo_config(tmp_path, fiber_count=2, width_px=48, height_px=24)
+def test_each_animal_gets_a_dated_folder_with_its_nwbs_log_settings_and_roi_maps(
+    tmp_path: Path,
+) -> None:
+    config = demo_config(tmp_path, fiber_count=3, width_px=48, height_px=24)
+    # ROIs 1 and 3 are the same animal; they share its folder.
+    shared = config.rois[2].model_copy(update={"animal_id": "animal-01"})
+    config = config.model_copy(update={"rois": (config.rois[0], config.rois[1], shared)})
+    stamp = session_stamp(config)
+    date = stamp.split("_")[0]
     engine = AcquisitionEngine()
 
     def note_once(progress) -> None:
@@ -722,15 +730,25 @@ def test_each_recording_gets_a_folder_with_its_nwbs_log_and_roi_maps(tmp_path: P
 
     result = engine.run(config, SimulatedRig(config), duration_s=1.0, on_progress=note_once)
 
-    folder = tmp_path / config.session_id
-    assert {report.path.parent for report in result.reports} == {folder}
-    names = sorted(path.name for path in folder.iterdir())
-    assert "session_log.txt" in names and "settings.json" in names
-    assert {"roi_map_405nm.png", "roi_map_470nm.png", "roi_map_565nm.png"} <= set(names)
-    assert (folder / "roi_map_470nm.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-    assert not list(folder.glob("*.photometry-spool"))
-    log = (folder / "session_log.txt").read_text(encoding="utf-8")
-    assert "saline injection [fiber_02]" in log and "NWB files" in log
+    assert f"{config.session_start_time.astimezone():%Y-%m-%d}" == date  # local date
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["animal-01", "animal-02"]
+    for animal, labels in (("animal-01", ("Fiber_1", "Fiber_3")), ("animal-02", ("Fiber_2",))):
+        folder = tmp_path / animal / date / "Photometry"
+        assert [path.name for path in (tmp_path / animal).iterdir()] == [date]
+        assert [path.name for path in folder.parent.iterdir()] == ["Photometry"]
+        assert {path.name for path in folder.iterdir()} == {
+            *(f"{animal}_not_specified_{label}_{stamp}.nwb" for label in labels),
+            f"{animal}_{stamp}_session_log.txt",
+            f"{animal}_{stamp}_settings.json",
+            *(f"{animal}_{stamp}_roi_map_{nm}nm.png" for nm in (405, 470, 565)),
+        }
+        png = (folder / f"{animal}_{stamp}_roi_map_470nm.png").read_bytes()
+        assert png.startswith(b"\x89PNG\r\n\x1a\n")
+        log = (folder / f"{animal}_{stamp}_session_log.txt").read_text(encoding="utf-8")
+        assert "saline injection [fiber_02]" in log
+        assert f"animal-02/{date}/Photometry/animal-02_not_specified_Fiber_2_{stamp}.nwb" in log
+    assert {report.path.parents[3] for report in result.reports} == {tmp_path}
+    assert not list(tmp_path.rglob("*.photometry-spool"))
     with NWBHDF5IO(result.reports[0].path, mode="r", load_namespaces=True) as io:
         nwb = io.read()
         embedded = nwb.get_scratch("driftless_session_log")
@@ -766,7 +784,8 @@ def test_saved_roi_maps_use_auto_contrast_and_nwb_keeps_fixed_scale(tmp_path: Pa
             labeled=True,
         ),
     )
-    png = (tmp_path / config.session_id / "roi_map_470nm.png").read_bytes()
+    (png_path,) = tmp_path.rglob("*_roi_map_470nm.png")
+    png = png_path.read_bytes()
     idat = png[png.index(b"IDAT") + 4 : png.index(b"IEND") - 8]
     rows = zlib.decompress(idat)
     width = 48 * 3 + 1
@@ -785,7 +804,7 @@ def test_preparation_events_are_logged_at_session_start(tmp_path: Path) -> None:
     with NWBHDF5IO(result.report.path, mode="r", load_namespaces=True) as io:
         nwbfile = io.read()
         assert "patch_cord_bleach" in str(nwbfile.scratch["driftless_session_log"].data)
-    log = (tmp_path / config.session_id / "session_log.txt").read_text(encoding="utf-8")
+    log = next(tmp_path.rglob("*_session_log.txt")).read_text(encoding="utf-8")
     assert "patch_cord_bleach: 10 of 10 min at 80 % LED power" in log
 
 
@@ -798,7 +817,7 @@ def test_signal_warnings_are_logged_as_system_events(tmp_path: Path) -> None:
             engine.log_signal_warning(0.2, "fiber_01", "dark at 470 nm (12 counts)")
 
     engine.run(config, SimulatedRig(config), duration_s=0.5, on_progress=on_progress)
-    log = (tmp_path / config.session_id / "session_log.txt").read_text(encoding="utf-8")
+    log = next(tmp_path.rglob("*_session_log.txt")).read_text(encoding="utf-8")
     assert "roi_signal_warning: fiber_01: dark at 470 nm (12 counts)" in log
 
 
@@ -811,5 +830,5 @@ def test_display_diagnostics_are_logged_as_system_events(tmp_path: Path) -> None
             engine.log_system_event(0.2, "roi_snr", "fiber_01: 470 nm 25.10 over the last 120 s")
 
     engine.run(config, SimulatedRig(config), duration_s=0.5, on_progress=on_progress)
-    log = (tmp_path / config.session_id / "session_log.txt").read_text(encoding="utf-8")
+    log = next(tmp_path.rglob("*_session_log.txt")).read_text(encoding="utf-8")
     assert "roi_snr: fiber_01: 470 nm 25.10 over the last 120 s" in log

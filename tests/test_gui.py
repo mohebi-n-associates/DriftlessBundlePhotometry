@@ -176,7 +176,7 @@ def test_gui_uses_driftless_workflow_structure_and_state_styling(qtbot, tmp_path
     assert window.backend_badge.text() == "Simulator"
     assert window.backend_badge.property("hardware") is False
     assert window.version_badge.text() == f"v{__version__}"
-    assert __version__ == "0.4.3"
+    assert __version__ == "0.4.4"
     assert not window.windowIcon().isNull()
     assert not window._logo_pixmap.isNull()
     assert window.start_button.objectName() == "record"
@@ -598,7 +598,7 @@ def test_gui_uses_voltage_sliders_and_per_roi_subject_metadata(qtbot, tmp_path: 
     assert slider.minimum() == 0
     assert slider.maximum() == 500
     slider.setValue(175)
-    assert next(iter(window.channel_voltage_labels.values())).text() == "1.75 V"
+    assert next(iter(window.channel_intensity_entries.values())).text() == "1.75 V"
 
     assert window.roi_metadata_tabs.count() == 2
     first = window._roi_metadata_editors[0]
@@ -680,9 +680,9 @@ def test_gui_shows_the_rwd_profile_when_rwd_is_selected(qtbot, tmp_path: Path) -
     assert list(window.channel_checks) == list(RWD_PROFILE.wavelengths)
     slider = window.channel_voltages[Wavelength.GREEN_470]
     assert slider.maximum() == 1000
-    assert window.channel_voltage_labels[Wavelength.GREEN_470].text() == "5.0 %"
+    assert window.channel_intensity_entries[Wavelength.GREEN_470].text() == "5.0 %"
     slider.setValue(125)
-    assert window.channel_voltage_labels[Wavelength.GREEN_470].text() == "12.5 %"
+    assert window.channel_intensity_entries[Wavelength.GREEN_470].text() == "12.5 %"
     camera = window._session_template.camera
     assert (camera.width_px, camera.height_px) == (728, 544)
     for wavelength, group in window.wavelength_image_groups.items():
@@ -723,7 +723,7 @@ def test_gui_round_trips_rwd_settings_with_camera2_circles(qtbot, tmp_path: Path
     window._apply_configuration(original)
 
     assert window.source_combo.currentData() == "rwd"
-    assert window.channel_voltage_labels[Wavelength.CONTROL_410].text() == "7.5 %"
+    assert window.channel_intensity_entries[Wavelength.CONTROL_410].text() == "7.5 %"
     rebuilt = window._build_config()
     assert [channel.enabled for channel in rebuilt.channels] == [True, True, False]
     assert rebuilt.channels[0].power_percent == 7.5
@@ -1692,13 +1692,46 @@ def test_gui_locks_roi_circles_and_applies_one_diameter_to_all(qtbot, tmp_path: 
     assert not any(h.isVisible() for c in window._roi_items for h in c.getHandles())
     assert not window._roi_metadata_editors[1].diameter_spins[1].isEnabled()
     assert not window._roi_metadata_editors[1].apply_diameter_button.isEnabled()
-    window.fiber_count_spin.setValue(4)  # rebuilt circles stay locked
+    assert not window.fiber_count_spin.isEnabled()  # the ROI count is locked too
+    window.fiber_count_spin.setValue(4)  # loaded settings still rebuild locked circles
     assert len(window._roi_items) == 4
     assert not any(circle.translatable for circle in window._roi_items)
 
     window.roi_lock_check.setChecked(False)
     assert all(circle.translatable for circle in window._roi_items)
     assert window._roi_metadata_editors[3].diameter_spins[1].isEnabled()
+    assert window.fiber_count_spin.isEnabled()
+
+
+def test_gui_roi_count_stays_locked_through_a_preview(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.roi_lock_check.setChecked(True)
+    window._set_busy_controls(True)
+    window._set_busy_controls(False)
+    assert not window.fiber_count_spin.isEnabled()
+
+
+def test_gui_camera_and_fiber_tab_is_not_scrollable(qtbot, tmp_path: Path) -> None:
+    from PySide6.QtWidgets import QScrollArea
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    index = next(i for i in range(window.tabs.count()) if "fiber ROIs" in window.tabs.tabText(i))
+    page = window.tabs.widget(index)
+    assert not isinstance(page, QScrollArea)
+    assert window.fiber_count_spin.window() is window
+    assert not any(
+        isinstance(parent, QScrollArea)
+        for parent in _ancestors(window.camera_calibration_group, page)
+    )
+
+
+def _ancestors(widget, stop):
+    parent = widget.parentWidget()
+    while parent is not None and parent is not stop:
+        yield parent
+        parent = parent.parentWidget()
 
 
 def test_gui_bleach_runs_the_leds_for_a_set_time_then_logs_it(qtbot, tmp_path: Path) -> None:
@@ -2191,3 +2224,167 @@ def test_thinned_trace_history_still_draws_and_keeps_real_gaps(qtbot, tmp_path: 
     assert np.count_nonzero(np.isnan(y)) == 1  # the restart, and nothing else
     gap = x[np.isnan(y)][0]
     assert restart_s - 1 < gap < restart_s + pause_s + 1
+
+
+def test_gui_caps_the_frame_rate_for_410_470_alone_and_restores_it(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    window.fps_spin.setValue(120)
+    window.exposure_max_button.click()
+    exposure_at_120 = window.exposure_spin.value()
+    checks = window._channel_controls["rwd"][0]
+
+    checks[Wavelength.RED_560].setChecked(False)  # 410 + 470 nm alone
+    assert (window.fps_spin.value(), window.fps_spin.maximum()) == (60, 60)
+    assert "held at 60 Hz" in window.camera_settings_hint.text()
+    assert window._build_config().camera.requested_fps == 60.0
+
+    checks[Wavelength.RED_560].setChecked(True)
+    assert (window.fps_spin.value(), window.fps_spin.maximum()) == (120, 250)
+    assert window.exposure_spin.value() == pytest.approx(exposure_at_120)
+    assert "held at" not in window.camera_settings_hint.text()
+
+    # A rate chosen while capped is kept when the cap lifts.
+    checks[Wavelength.RED_560].setChecked(False)
+    window.fps_spin.setValue(40)
+    checks[Wavelength.RED_560].setChecked(True)
+    assert window.fps_spin.value() == 40
+
+    # Other selections keep the full range.
+    for wavelength, check in checks.items():
+        check.setChecked(wavelength is not Wavelength.CONTROL_410)
+    window.fps_spin.setValue(120)
+    assert window.fps_spin.value() == 120
+
+
+def test_gui_caps_a_loaded_410_470_configuration(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    window.fps_spin.setValue(120)
+    window.exposure_max_button.click()
+    full = window._build_config()
+    checks = window._channel_controls["rwd"][0]
+
+    checks[Wavelength.RED_560].setChecked(False)
+    window.fps_spin.setMaximum(250)  # simulate an older settings file saved at 120 Hz
+    window.fps_spin.setValue(120)
+    two_led = window._build_config()
+    assert two_led.camera.requested_fps == 120.0
+
+    window._apply_configuration(two_led)
+    assert window.fps_spin.value() == 60
+    window._apply_configuration(full)
+    assert (window.fps_spin.value(), window.fps_spin.maximum()) == (120, 250)
+
+
+def test_a_blank_animal_id_is_recorded_as_na(qtbot, tmp_path: Path) -> None:
+    from driftless_photometry.storage.session_folder import animal_folder
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window._roi_metadata_editors[0].animal_id_edit.setText("  ")
+
+    config = window._build_config()
+
+    assert [roi.animal_id for roi in config.rois] == ["NA", "animal-02"]
+    assert animal_folder(config, config.rois[0]).parents[1] == tmp_path.resolve() / "NA"
+
+
+def test_the_wheel_never_changes_a_slider_spin_box_or_dropdown(qtbot, tmp_path: Path) -> None:
+    """Regression: scrolling the Acquire tab changed LED powers under the pointer."""
+
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+    slider = window.channel_voltages[Wavelength.GREEN_470]
+    entry = window.channel_intensity_entries[Wavelength.GREEN_470]
+    controls = (slider, entry, window.fps_spin, window.source_combo, window.duration_spin)
+    before = [c.currentIndex() if hasattr(c, "currentIndex") else c.value() for c in controls]
+
+    for control in controls:
+        control.setFocus()  # even a focused control must not take the wheel
+        center = QPointF(control.rect().center())
+        for delta in (120, -120, -120):
+            event = QWheelEvent(
+                center,
+                control.mapToGlobal(center),
+                QPoint(0, 0),
+                QPoint(0, delta),
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+                Qt.ScrollPhase.NoScrollPhase,
+                False,
+            )
+            QApplication.sendEvent(control, event)
+
+    assert [
+        c.currentIndex() if hasattr(c, "currentIndex") else c.value() for c in controls
+    ] == before
+
+
+def test_led_intensity_can_be_typed_and_follows_the_slider(qtbot, tmp_path: Path) -> None:
+    window = MainWindow(output_directory=tmp_path, default_fibers=1)
+    qtbot.addWidget(window)
+    slider = window.channel_voltages[Wavelength.GREEN_470]
+    entry = window.channel_intensity_entries[Wavelength.GREEN_470]
+
+    entry.setValue(2.35)
+    assert slider.value() == 235
+    slider.setValue(120)
+    assert entry.value() == 1.2 and entry.text() == "1.20 V"
+    entry.setValue(99.0)  # clamped to the system's maximum
+    assert entry.value() == CUSTOM_PROFILE.intensity_maximum
+    channel = next(
+        c for c in window._build_config().channels if c.wavelength_nm == Wavelength.GREEN_470
+    )
+    assert channel.voltage_v == CUSTOM_PROFILE.intensity_maximum
+    assert not entry.keyboardTracking()  # typing "50" must not pass through 5
+
+    window.source_combo.setCurrentIndex(window.source_combo.findData("rwd"))
+    rwd_entry = window.channel_intensity_entries[Wavelength.GREEN_470]
+    rwd_entry.setValue(12.5)
+    assert window.channel_voltages[Wavelength.GREEN_470].value() == 125
+    assert rwd_entry.text() == "12.5 %"
+
+
+def test_the_wheel_over_a_slider_still_scrolls_the_acquire_tab(qtbot, tmp_path: Path) -> None:
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication, QScrollArea
+
+    window = MainWindow(output_directory=tmp_path, default_fibers=2)
+    qtbot.addWidget(window)
+    window.resize(window.minimumWidth(), 500)
+    window.show()
+    qtbot.waitExposed(window)
+    slider = window.channel_voltages[Wavelength.GREEN_470]
+    area = slider.parentWidget()
+    while not isinstance(area, QScrollArea):
+        area = area.parentWidget()
+    bar = area.verticalScrollBar()
+    assert bar.maximum() > 0 and bar.value() == 0
+    area.ensureWidgetVisible(slider)
+    start = bar.value()
+    power = slider.value()
+
+    center = QPointF(slider.rect().center())
+    event = QWheelEvent(
+        center,
+        slider.mapToGlobal(center),
+        QPoint(0, 0),
+        QPoint(0, 120 if start else -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(slider, event)
+
+    assert bar.value() != start and slider.value() == power

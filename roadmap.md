@@ -9,9 +9,9 @@ only when its exit criteria are supported by automated tests and, where required
 physical measurements. Simulator results never count as physical hardware
 validation.
 
-**Current baseline:** 0.4.3
+**Current baseline:** 0.4.4
 
-**Last updated:** 2026-11-15
+**Last updated:** 2026-11-17
 
 ## Current line: 0.4.x — RWD rig validated for animal recordings
 
@@ -33,6 +33,9 @@ rig is validated.
   of a long recording stays visible (found on a 2.5-hour rig recording, 2026-11-15).
 - **Software — done in 0.4.3:** smoothing of thinned live history uses each bucket's
   sample-weighted average, so older stretches are not shown noisier than recent ones.
+- **Software — done in 0.4.4:** 410 + 470 nm alone capped at 60 Hz so the first frame's
+  wavelength can be proven (the cap still needs bench confirmation); the ROI count
+  locks with the circles; the Camera & fiber ROIs tab no longer scrolls.
 - **Software — open:** the streaming finalizer in the storage-scale gate below, only if
   V7 shows saving the longest planned session still exceeds the agreed time or memory
   budget.

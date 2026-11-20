@@ -65,7 +65,9 @@ before starting DBF, because only one program can use the controller's port.
 3. **Camera settings** (on *Camera & fiber ROIs*):
    - **Frame rate:** the total rate shared by the enabled LEDs. It must be a whole
      number between 10 and 250 Hz. With three LEDs at 30 Hz, each LED gets 10 frames
-     per second.
+     per second. With 410 + 470 nm alone, DBF holds the rate at 60 Hz or below,
+     because only the first frame's arrival time can prove its wavelength; selecting
+     560 nm again restores the earlier rate.
    - **Exposure:** at most (1000 ÷ frame rate, rounded down) ms minus 2.63 ms, and at
      least 0.5 ms. **Max** sets the longest exposure, which RWD recommends.
    - **Gain, camera 1 / camera 2:** each camera's gain in dB (0–48). Camera 2 images
@@ -150,9 +152,11 @@ camera.
    its own NWB file.
 6. Press **Run preview**. It runs the full acquisition path, live traces included,
    until you press **Stop** (10 minutes at most). Nothing is saved. While it
-   runs, move the LED power sliders to set each LED; the traces follow as you drag,
-   with no gap, because the board takes a new power without restarting its LED
-   cycle. Which LEDs are on cannot change
+   runs, move the LED power sliders to set each LED, or type a power in the box beside
+   a slider and press Enter; the traces follow with no gap, because the board takes a
+   new power without restarting its LED cycle. The mouse wheel never changes a
+   slider or number box, so scrolling the page cannot alter a power. Which LEDs are on
+   cannot change
    during a preview. When you stop it, the preview counts for recording only if it
    ended on the current powers and nothing else changed. Any later change to the
    settings or circles needs a new preview before **Record** is enabled.
@@ -265,11 +269,23 @@ every recorded wavelength correct.
 
 ## Where a recording is saved
 
-Each recording gets its own folder inside the output root, named after the session:
-its ROI NWB files, `session_log.txt` (a readable account of the session, with every
-event, marker, note, and stimulation in time order), `settings.json`, and one
-`roi_map_{nm}nm.png` per wavelength with every ROI outlined and named in its colour. The NWB files contain the
-same log and maps.
+Files are saved by animal and date: `<Output root>/<Animal ID>/<YYYY-MM-DD>/Photometry/`.
+DBF writes only inside `Photometry`, so that day's other data (behavior, video) can sit
+beside it in the date folder. The
+animal ID is the one set on the ROI, or `NA` if it was left blank. The date and time
+are the recording's start in local time. Each `Photometry` folder holds:
+
+- its ROI NWB files, named `<Animal ID>_<Brain region>_<ROI label>_<date>_<time>.nwb`,
+  for example `M12_NAc_Left_2026-11-20_143005.nwb`;
+- `<Animal ID>_<date>_<time>_session_log.txt`, a readable account of the session with
+  every event, marker, note, and stimulation in time order;
+- `<Animal ID>_<date>_<time>_settings.json`;
+- one `<Animal ID>_<date>_<time>_roi_map_{nm}nm.png` per wavelength, with every ROI
+  outlined and named in its colour.
+
+A recording with several animals writes the log, settings, and ROI maps into every
+animal's folder. A second recording on the same day adds files beside the first. The
+NWB files contain the same log, settings, and maps.
 
 ## What each NWB file records
 
@@ -297,7 +313,7 @@ Every file embeds the complete settings, so *Load NWB…* restores the whole set
 | --- | --- | --- |
 | LEDs still on after DBF stopped | DBF could not send the off sequence | Switch the unit off with its power switch |
 | "shutdown unconfirmed" | One or more off commands could not be confirmed | Use the unit's power switch; do not assume a closed window means LEDs or outputs are off |
-| "first frame arrived too late to establish wavelength phase" | Initial wavelength identity is ambiguous | Reduce the frame rate or camera/USB latency; DBF refuses to guess |
+| "first frame arrived too late to establish wavelength phase" | Initial wavelength identity is ambiguous | Reduce the frame rate or camera/USB latency; DBF refuses to guess. With 410 + 470 nm alone DBF caps the rate at 60 Hz |
 | "no FTDI serial port for an RWD controller was found" | The controller's USB cable or power is missing | Connect it, switch the unit on, press *Refresh* |
 | "several FTDI serial ports were found" | Another FTDI device is attached | Choose the controller's port in the RWD panel |
 | "did not acknowledge" or "sent nothing for more than 5 s" | The controller link was lost | The LEDs may still be on: use the power switch, reconnect, and try again |
@@ -335,4 +351,5 @@ NWB validation finishes.
 
 These limits are being closed by the bench checks in
 [RWD rig validation](rwd-rig-validation.md). To audit any recording against the rig's
-acceptance thresholds, run `dbf --audit-recording` on its session folder.
+acceptance thresholds, run `dbf --audit-recording` on the animal's `Photometry` folder for that day, or on
+one NWB file.

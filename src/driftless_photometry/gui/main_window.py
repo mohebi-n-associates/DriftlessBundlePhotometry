@@ -102,6 +102,7 @@ from driftless_photometry.snr import MIN_WINDOW_S as SNR_MIN_WINDOW_S
 from driftless_photometry.snr import UPDATE_S as SNR_UPDATE_S
 from driftless_photometry.snr import WINDOW_S as SNR_WINDOW_S
 from driftless_photometry.snr import live_snr
+from driftless_photometry.storage.session_folder import MISSING_ANIMAL_ID
 
 from .bleach import BleachDialog, BleachPlan, BleachRecord, led_duty_fraction
 from .branding import logo_path
@@ -136,6 +137,7 @@ from .trace_display import (
 )
 from .trace_markers import ShadedSpansItem, VerticalLinesItem
 from .warmup import WARMUP_COOLDOWN_S, LEDWarmup, format_minutes
+from .wheel_guard import install_wheel_guard
 from .worker import (
     AcquisitionWorker,
     BoardTaskWorker,
@@ -310,28 +312,30 @@ _INVALID_SPAN_RGBA = (224, 68, 80, 45)
 _MAX_INVALID_GRAPHICS = 500
 
 
-class _GainLink(QObject):
-    """Keeps a gain slider (0.1 dB steps) and its spin box in step.
+class _SliderEntryLink(QObject):
+    """Keeps an integer slider and the spin box showing its value in step.
 
-    Signals connect to QObject methods, never to lambdas or partials, which macOS with
-    Python 3.13.16 and PySide6 6.8.3 dropped; see ``slots``.
+    ``steps_per_unit`` slider steps make one unit of the spin box (10 for 0.1 dB or 0.1 %,
+    100 for 0.01 V). Signals connect to QObject methods, never to lambdas or partials,
+    which macOS with Python 3.13.16 and PySide6 6.8.3 dropped; see ``slots``.
     """
 
-    def __init__(self, slider: QSlider, spin: QDoubleSpinBox) -> None:
+    def __init__(self, slider: QSlider, spin: QDoubleSpinBox, steps_per_unit: int = 10) -> None:
         super().__init__(spin)
         # Weak: a strong reference to its own parent would form a collectable cycle.
         self._slider = weakref.ref(slider)
         self._spin = weakref.ref(spin)
+        self._steps_per_unit = steps_per_unit
 
-    def slider_moved(self, tenths: int) -> None:
+    def slider_moved(self, steps: int) -> None:
         spin = self._spin()
         if spin is not None:
-            spin.setValue(tenths / 10)
+            spin.setValue(steps / self._steps_per_unit)
 
-    def spin_changed(self, db: float) -> None:
+    def spin_changed(self, value: float) -> None:
         slider = self._slider()
         if slider is not None:
-            slider.setValue(round(db * 10))
+            slider.setValue(round(value * self._steps_per_unit))
 
 
 class _StayOpenMenu(QMenu):
@@ -532,15 +536,14 @@ class MainWindow(QMainWindow):
             ),
             "Acquire",
         )
-        self.tabs.addTab(
-            self._scrollable(self._build_calibration_tab(default_fibers)),
-            "Camera & fiber ROIs",
-        )
+        # Not scrollable: the images and fiber controls fit the window together.
+        self.tabs.addTab(self._build_calibration_tab(default_fibers), "Camera & fiber ROIs")
         self.tabs.addTab(self._build_wavelength_images_tab(), "Live wavelength images")
         root_layout.addWidget(self.tabs)
         self.setCentralWidget(root)
         self._apply_theme()
         self._remove_spin_box_buttons()
+        install_wheel_guard()
         self.statusBar().showMessage(
             "Ready — simulator mode; no physical camera or controller connected"
         )
@@ -736,7 +739,10 @@ class MainWindow(QMainWindow):
         self._channel_controls: dict[
             str, tuple[dict[Wavelength, QCheckBox], dict[Wavelength, QSlider], QGroupBox]
         ] = {}
-        self._channel_readouts: dict[str, dict[Wavelength, QLabel]] = {}
+        self._channel_entries: dict[str, dict[Wavelength, QDoubleSpinBox]] = {}
+        # Frame rate and exposure from before an LED selection's cap lowered them.
+        self._frame_rate_cap_hz: int | None = None
+        self._timing_before_cap: tuple[int, float] | None = None
         for profile in (CUSTOM_PROFILE, RWD_PROFILE):
             controls_layout.addWidget(self._build_channel_group(profile))
         self.events_group = self._build_events_group()
@@ -1446,7 +1452,7 @@ class MainWindow(QMainWindow):
         default = round((5.0 if percent else 1.0) * scale)
         checks: dict[Wavelength, QCheckBox] = {}
         sliders: dict[Wavelength, QSlider] = {}
-        readouts: dict[Wavelength, QLabel] = {}
+        entries: dict[Wavelength, QDoubleSpinBox] = {}
         for wavelength in profile.wavelengths:
             check = QCheckBox(_WAVELENGTH_TITLES[wavelength])
             check.setChecked(True)
@@ -1458,27 +1464,43 @@ class MainWindow(QMainWindow):
             slider.setValue(default)
             noun = "power" if percent else "voltage"
             slider.setAccessibleName(f"{int(wavelength)} nanometer excitation {noun}")
-            readout = QLabel(self._format_intensity(default, profile))
-            readout.setObjectName("voltageReadout")
-            readout.setMinimumWidth(54)
-            slider.valueChanged.connect(slot(slider, self._show_intensity, readout, profile))
+            # The same value, typed. It takes effect on Enter or on leaving the box, so
+            # typing "50" never passes through 5.
+            entry = QDoubleSpinBox()
+            entry.setObjectName("intensityEntry")
+            entry.setRange(0.0, profile.intensity_maximum)
+            entry.setDecimals(1 if percent else 2)
+            entry.setSingleStep(1.0 if percent else 0.05)
+            entry.setSuffix(" %" if percent else " V")
+            entry.setKeyboardTracking(False)
+            entry.setAlignment(Qt.AlignmentFlag.AlignRight)
+            entry.setMaximumWidth(90)
+            entry.setValue(default / scale)
+            entry.setAccessibleName(f"{int(wavelength)} nanometer excitation {noun}, typed")
+            entry.setToolTip(
+                f"Type the {int(wavelength)} nm LED {noun} and press Enter, or drag the slider."
+            )
+            link = _SliderEntryLink(slider, entry, scale)
+            slider.valueChanged.connect(link.slider_moved)
+            entry.valueChanged.connect(link.spin_changed)
             row = QWidget()
             row_layout = QVBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(3)
             heading = QHBoxLayout()
             heading.addWidget(check, stretch=1)
-            heading.addWidget(readout)
+            heading.addWidget(entry)
             row_layout.addLayout(heading)
             row_layout.addWidget(slider)
             layout.addWidget(row)
             check.toggled.connect(self._update_timing_preview)
+            check.toggled.connect(self._apply_frame_rate_cap)
             checks[wavelength] = check
             sliders[wavelength] = slider
-            readouts[wavelength] = readout
+            entries[wavelength] = entry
         group.setVisible(profile is CUSTOM_PROFILE)
         self._channel_controls[profile.kind] = (checks, sliders, group)
-        self._channel_readouts[profile.kind] = readouts
+        self._channel_entries[profile.kind] = entries
         return group
 
     @staticmethod
@@ -1486,12 +1508,6 @@ class MainWindow(QMainWindow):
         """Slider steps per unit: 0.1 % for RWD power, 0.01 V for Custom voltage."""
 
         return 10 if profile.intensity_unit == "%" else 100
-
-    @classmethod
-    def _format_intensity(cls, value: int, profile: SystemProfile) -> str:
-        if profile.intensity_unit == "%":
-            return f"{value / cls._intensity_scale(profile):.1f} %"
-        return f"{value / cls._intensity_scale(profile):.2f} V"
 
     @property
     def _active_profile(self) -> SystemProfile:
@@ -1508,8 +1524,10 @@ class MainWindow(QMainWindow):
         return self._channel_controls[self._active_profile.kind][1]
 
     @property
-    def channel_voltage_labels(self) -> dict[Wavelength, QLabel]:
-        return self._channel_readouts[self._active_profile.kind]
+    def channel_intensity_entries(self) -> dict[Wavelength, QDoubleSpinBox]:
+        """The typed-value boxes beside the active system's intensity sliders."""
+
+        return self._channel_entries[self._active_profile.kind]
 
     def _use_profile_camera(self, profile: SystemProfile) -> None:
         # Keep the edited values before the new system's ranges can clamp them.
@@ -1597,14 +1615,21 @@ class MainWindow(QMainWindow):
         self.fps_spin.setRange(int(low), int(high))
         minimum_us = profile.minimum_exposure_us or 10.0
         self.exposure_spin.setMinimum(minimum_us / 1000)
+        self._frame_rate_cap_hz = None
+        self._timing_before_cap = None
         del blockers
-        self._update_exposure_limits()
+        self._apply_frame_rate_cap()
 
     def _load_camera_controls(self, camera: CameraConfig) -> None:
         if not hasattr(self, "fps_spin"):
             return
         widgets = (self.fps_spin, self.exposure_spin, self.gain_spin, self.gain2_spin)
         blockers = [QSignalBlocker(w) for w in widgets]
+        # Load the saved rate in full; the LED selection's cap is applied afterwards.
+        _low, high = self._active_profile.frame_rate_range_hz or (1.0, 500.0)
+        self.fps_spin.setMaximum(int(high))
+        self._frame_rate_cap_hz = None
+        self._timing_before_cap = None
         self.fps_spin.setValue(round(camera.requested_fps))
         self._update_exposure_limits()
         self.exposure_spin.setValue(camera.exposure_us / 1000)
@@ -1618,6 +1643,40 @@ class MainWindow(QMainWindow):
             slider.setValue(round(spin.value() * 10))
             del slider_blocker
         del blockers
+        self._apply_frame_rate_cap()
+
+    def _apply_frame_rate_cap(self, *_args: object) -> None:
+        """Hold the frame rate under the cap of the selected LEDs, restoring it after.
+
+        RWD 410 + 470 nm alone start reliably only up to 60 Hz. Selecting them lowers a
+        faster rate to the cap and remembers the rate and exposure; deselecting them
+        restores both unless the operator changed the rate in between.
+        """
+
+        profile = self._active_profile
+        if not hasattr(self, "fps_spin") or profile.kind not in self._channel_controls:
+            return
+        checks = self._channel_controls[profile.kind][0]
+        selected = [wavelength for wavelength, check in checks.items() if check.isChecked()]
+        cap = profile.maximum_frame_rate_hz(selected)
+        _low, high = profile.frame_rate_range_hz or (1.0, 500.0)
+        if cap is not None:
+            cap_hz = int(cap)
+            if self.fps_spin.value() > cap_hz and self._timing_before_cap is None:
+                self._timing_before_cap = (self.fps_spin.value(), self.exposure_spin.value())
+            self._frame_rate_cap_hz = cap_hz
+            self.fps_spin.setMaximum(cap_hz)  # lowers a faster rate through valueChanged
+        else:
+            saved = self._timing_before_cap
+            restore = saved is not None and self.fps_spin.value() == self._frame_rate_cap_hz
+            self._frame_rate_cap_hz = None
+            self._timing_before_cap = None
+            self.fps_spin.setMaximum(int(high))
+            if restore and saved is not None:
+                fps, exposure_ms = saved
+                self.fps_spin.setValue(fps)
+                self._update_exposure_limits()
+                self.exposure_spin.setValue(exposure_ms)
         self._update_exposure_limits()
 
     def _update_exposure_limits(self) -> None:
@@ -1632,6 +1691,12 @@ class MainWindow(QMainWindow):
             text = (
                 f"At {fps} Hz the exposure can be {self.exposure_spin.minimum():g} to "
                 f"{maximum_ms:.2f} ms; the RWD manual recommends the maximum."
+            )
+        if self._frame_rate_cap_hz is not None:
+            text += (
+                f" With 410 + 470 nm alone the frame rate is held at {self._frame_rate_cap_hz} "
+                "Hz or below so each recording can prove which LED lit its first frame; "
+                "the earlier rate returns when 560 nm is selected again."
             )
         self.camera_settings_hint.setText(
             text + " Raise the gain to find and focus the fiber face, then record at 0 dB."
@@ -1961,7 +2026,8 @@ class MainWindow(QMainWindow):
         fibers_form.addRow("Circular ROIs", self.fiber_count_spin)
         self.roi_lock_check = QCheckBox("Lock ROI circles")
         self.roi_lock_check.setToolTip(
-            "Stop circles from being moved or resized by accident; untick to edit them"
+            "Stop circles from being moved or resized, and the number of ROIs from being "
+            "changed, by accident; untick to edit them"
         )
         self.roi_lock_check.toggled.connect(self._apply_roi_lock)
         fibers_form.addRow("", self.roi_lock_check)
@@ -2081,9 +2147,6 @@ class MainWindow(QMainWindow):
         self._settings_widgets.append(fibers_group)
         self._rebuild_roi_metadata(fiber_count)
         return page
-
-    def _show_intensity(self, label: QLabel, profile: SystemProfile, value: int) -> None:
-        label.setText(self._format_intensity(value, profile))
 
     def _set_maximum_exposure(self, *_args: object) -> None:
         self.exposure_spin.setValue(self.exposure_spin.maximum())
@@ -3131,7 +3194,7 @@ class MainWindow(QMainWindow):
         self._apply_roi_lock()
 
     def _apply_roi_lock(self, *_args: object) -> None:
-        """Locked circles ignore drags and hide their resize handles.
+        """Locked circles ignore drags, hide their resize handles, and keep their count.
 
         They are locked when the operator ticks Lock ROI circles, and always while a
         recording runs: its ROIs are fixed when it starts.
@@ -3140,6 +3203,8 @@ class MainWindow(QMainWindow):
         locked = getattr(self, "_recording_roi_lock", False) or (
             hasattr(self, "roi_lock_check") and self.roi_lock_check.isChecked()
         )
+        if hasattr(self, "fiber_count_spin"):
+            self.fiber_count_spin.setEnabled(not locked)
         for circle in (*self._roi_items, *self._roi_items_cam2):
             circle.translatable = not locked
             for handle in circle.getHandles():
@@ -3485,7 +3550,7 @@ class MainWindow(QMainWindow):
                     fiber_id=fiber_id,
                     enabled=metadata.enabled_check.isChecked(),
                     label=metadata.label_edit.text().strip(),
-                    animal_id=metadata.animal_id_edit.text().strip(),
+                    animal_id=metadata.animal_id_edit.text().strip() or MISSING_ANIMAL_ID,
                     brain_region=metadata.brain_region_edit.text().strip(),
                     sensor_type=metadata.sensor_type_edit.text().strip(),
                     center_x_px=center_x,
@@ -4983,7 +5048,8 @@ class MainWindow(QMainWindow):
         self._set_preview_status("Preview required before the next recording", "required")
         self._set_system_status("COMPLETE", "complete")
         self.statusBar().showMessage(
-            f"Saved {file_count} validated ROI NWB files in {result.report.path.parent}"
+            # Files are in <root>/<animal ID>/<date>/Photometry/; name the root they share.
+            f"Saved {file_count} validated ROI NWB files under {result.report.path.parents[3]}"
         )
 
     def _on_cancelled(self, message: str) -> None:
@@ -5182,8 +5248,8 @@ def _gain_control() -> tuple[QWidget, QSlider, QDoubleSpinBox]:
     slider.setSingleStep(1)
     slider.setPageStep(10)
     slider.setToolTip(tip)
-    # Bound methods of a QObject, not lambdas: see _GainLink.
-    link = _GainLink(slider, spin)
+    # Bound methods of a QObject, not lambdas: see _SliderEntryLink.
+    link = _SliderEntryLink(slider, spin)
     slider.valueChanged.connect(link.slider_moved)
     spin.valueChanged.connect(link.spin_changed)
     row = QWidget()

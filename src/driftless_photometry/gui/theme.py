@@ -94,7 +94,7 @@ QWidget#summaryCard {
 }
 QLabel#summaryValue { color: #f4fcfd; font-size: 15pt; font-weight: 800; }
 QLabel#summaryCaption { color: #6f91a6; font-size: 7pt; font-weight: 700; }
-QLabel#voltageReadout { color: #43d6df; font-weight: 800; }
+QDoubleSpinBox#intensityEntry { color: #43d6df; font-weight: 800; }
 QSlider::groove:horizontal {
     height: 6px; background: #17384d; border: 1px solid #31566d;
     border-radius: 3px;
@@ -193,7 +193,7 @@ _LIGHT_COLORS = {
 _LIGHT_OVERRIDES = """
 QLabel#previewStatus[state="passed"] { color: #1d7a47; }
 QLabel#deviceStatus[state="ok"] { color: #1d7a47; }
-QLabel#voltageReadout { color: #007780; }
+QDoubleSpinBox#intensityEntry { color: #007780; }
 QSlider::handle:horizontal { background: #ffffff; }
 QTabBar::tab:selected { color: #04151e; }
 QGroupBox QLabel { background: transparent; }

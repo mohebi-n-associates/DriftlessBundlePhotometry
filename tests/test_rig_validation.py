@@ -75,7 +75,8 @@ def test_a_clean_simulated_rwd_recording_passes_the_audit(tmp_path: Path) -> Non
     edges = [(1, True, 0.4), (1, False, 0.6), (1, True, 1.4), (1, False, 1.5)]
     _config, result = _record(tmp_path, edges=edges)
 
-    session = audit_session(result.reports[0].path.parent)
+    assert len({report.path.parent for report in result.reports}) == 2  # one per animal
+    session = audit_session(tmp_path)
 
     assert session["files"] == 2 and session["roi_files_agree"]
     assert session["passed"], json.dumps(session, indent=2)
@@ -235,14 +236,11 @@ def test_flash_offsets_recover_the_ttl_to_exposure_error(true_offset_ms: float) 
             assert low - 0.5 <= true_offset_ms <= high + 0.5
 
 
-def test_cli_audits_a_session_folder_and_writes_a_report(tmp_path: Path, capsys) -> None:
-    _config, result = _record(tmp_path / "rec")
+def test_cli_audits_an_output_folder_and_writes_a_report(tmp_path: Path, capsys) -> None:
+    _config, _result = _record(tmp_path / "rec")
     report = tmp_path / "audit.json"
 
-    assert (
-        main(["--audit-recording", str(result.reports[0].path.parent), "--report", str(report)])
-        == 0
-    )
+    assert main(["--audit-recording", str(tmp_path / "rec"), "--report", str(report)]) == 0
 
     printed = json.loads(capsys.readouterr().out)
     assert printed == json.loads(report.read_text(encoding="utf-8"))
@@ -273,8 +271,9 @@ def test_cli_bench_record_restarts_on_schedule_and_audits(tmp_path: Path) -> Non
     assert audit["summary"]["restarts"]["requested"] >= 1
     statuses = {check["name"]: check["status"] for check in audit["checks"]}
     assert statuses["gaps_explained"] == "pass" and statuses["wavelength_cycle"] == "pass"
-    folder = Path(result["nwb_paths"][0]).parent
-    assert json.loads((folder / "rig-audit.json").read_text(encoding="utf-8")) == result
+    (audit_path,) = (tmp_path / "out").glob("rig-audit_*.json")
+    assert Path(result["audit_path"]) == audit_path
+    assert json.loads(audit_path.read_text(encoding="utf-8")) == result
     assert result["finalization_s"] >= 0 and result["recording_wall_s"] >= 0
     assert result["peak_memory_mb"] > 0
     bench.assert_all_off()
@@ -292,3 +291,26 @@ def test_cli_bench_record_restarts_on_schedule_and_audits(tmp_path: Path) -> Non
 def test_cli_validation_options_need_their_mode(argv) -> None:
     with pytest.raises(SystemExit):
         main(argv)
+
+
+def test_an_output_folder_with_two_recordings_compares_files_within_each_session(
+    tmp_path: Path,
+) -> None:
+    from datetime import timedelta
+
+    first, _result = _record(tmp_path, duration_s=1.0)
+    second = first.model_copy(
+        update={
+            "session_id": "second-session",
+            "session_start_time": first.session_start_time + timedelta(minutes=1),
+        }
+    )
+    AcquisitionEngine().run(second, Bench(second).rig, duration_s=1.5)
+
+    session = audit_session(tmp_path)
+
+    assert session["files"] == 4 and session["roi_files_agree"]
+    assert {r["summary"]["session_id"] for r in session["recordings"]} == {
+        first.session_id,
+        "second-session",
+    }

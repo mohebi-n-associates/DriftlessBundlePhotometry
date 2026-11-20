@@ -535,11 +535,15 @@ def frame_digest(frames: FrameRecords) -> str:
     return digest.hexdigest()
 
 
-def _plan_for(path: Path) -> RWDExcitationPlan:
+def _plan_and_session(path: Path) -> tuple[RWDExcitationPlan, str]:
     config, _warnings = configuration_from_nwb(path)
     if profile_for(config.source) is not RWD_PROFILE:
         raise ValueError(f"{path.name} is not an RWD recording; the audit covers RWD only")
-    return RWDExcitationPlan.from_config(config)
+    return RWDExcitationPlan.from_config(config), config.session_id
+
+
+def _plan_for(path: Path) -> RWDExcitationPlan:
+    return _plan_and_session(path)[0]
 
 
 def audit_recording(
@@ -549,7 +553,7 @@ def audit_recording(
 
     path = Path(path)
     thresholds = thresholds or AcceptanceThresholds()
-    plan = _plan_for(path)
+    plan, session_id = _plan_and_session(path)
     with NWBHDF5IO(path, mode="r", load_namespaces=True) as io:
         frames, edges, events, invalid, dropped = _read_records(io.read())
     pauses = [e.timestamp_s for e in events if e.event == "excitation_paused"]
@@ -565,12 +569,15 @@ def audit_recording(
     summary.update(edge_summary)
     summary.update(event_summary)
     summary["frame_digest"] = frame_digest(frames)
+    summary["session_id"] = session_id
     return RecordingAudit(path, tuple(checks + edge_checks + event_checks), summary)
 
 
-def recording_files(path: str | Path) -> tuple[Path, ...]:
-    """The finished NWB files at ``path``: the file itself, or every one in a folder."""
+def recording_files(path: str | Path | Sequence[Path]) -> tuple[Path, ...]:
+    """The finished NWB files at ``path``: the file(s) given, or every one in a folder."""
 
+    if not isinstance(path, str | Path):
+        return tuple(Path(file) for file in path)
     path = Path(path)
     if path.is_file():
         return (path,)
@@ -578,16 +585,22 @@ def recording_files(path: str | Path) -> tuple[Path, ...]:
 
 
 def audit_session(
-    path: str | Path, thresholds: AcceptanceThresholds | None = None
+    path: str | Path | Sequence[Path], thresholds: AcceptanceThresholds | None = None
 ) -> dict[str, Any]:
-    """Audit every NWB at ``path`` and check that a session's ROI files agree."""
+    """Audit every NWB at ``path`` and check that each session's ROI files agree.
+
+    A folder may hold several recordings (an animal's day, or a whole output root);
+    files are compared only with the others of their own session.
+    """
 
     files = recording_files(path)
     if not files:
         raise FileNotFoundError(f"no finished .nwb files at {path}")
     audits = [audit_recording(file, thresholds) for file in files]
-    digests = {a.summary["frame_digest"] for a in audits}
-    consistent = len(digests) == 1
+    digests: dict[str, set[str]] = {}
+    for audit in audits:
+        digests.setdefault(audit.summary["session_id"], set()).add(audit.summary["frame_digest"])
+    consistent = all(len(found) == 1 for found in digests.values())
     passed = all(a.passed for a in audits) and consistent
     return {
         "passed": passed,

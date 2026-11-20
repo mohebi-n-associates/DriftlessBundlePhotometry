@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .nwb import NWBWriteReport, recover_or_resume_session_nwbs
-from .session_folder import session_log_text, write_session_artifacts
+from .session_folder import session_log_text, without_session_folder, write_session_artifacts
 from .spool import load_session_spool, remove_session_spool
 
 
@@ -67,7 +67,7 @@ def discover_session_spools(
     *,
     incomplete_only: bool = False,
 ) -> tuple[SpoolInspection, ...]:
-    """Inspect explicitly suffixed spools under ``root`` and its recording folders."""
+    """Inspect explicitly suffixed spools under ``root`` and its older recording folders."""
 
     resolved = root.expanduser().resolve()
     if not resolved.is_dir():
@@ -91,6 +91,8 @@ def recover_session_spool(path: Path, *, keep_spool: bool = False) -> RecoveryRe
     """
 
     loaded = load_session_spool(path)
+    # A spool from before 0.4.4 sits in <root>/<session ID>/; recover it under the root.
+    loaded = replace(loaded, config=without_session_folder(loaded.config))
     inspection = SpoolInspection(
         path=loaded.path,
         session_id=loaded.config.session_id,
@@ -135,11 +137,11 @@ def recover_session_spool(path: Path, *, keep_spool: bool = False) -> RecoveryRe
 
 
 def session_spool_candidates(root: Path) -> list[Path]:
-    """Spools directly under ``root`` (older recordings) or in its recording folders."""
+    """Spools directly under ``root``, or in a pre-0.4.4 recording folder."""
 
     found = set(root.glob("*.photometry-spool"))
-    # Only a recording folder's own spool (<id>/<id>.photometry-spool), never arbitrary
-    # nested directories.
+    # Only an old recording folder's own spool (<id>/<id>.photometry-spool), never
+    # arbitrary nested directories.
     found |= {
         spool
         for spool in root.glob("*/*.photometry-spool")

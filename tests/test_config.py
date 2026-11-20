@@ -360,3 +360,13 @@ def test_start_delays_run_from_a_tenth_of_a_second_to_a_day(tmp_path: Path) -> N
         _recording(tmp_path, start="delayed", start_delay_s=0)
     with pytest.raises(ValidationError):
         _recording(tmp_path, start="delayed", start_delay_s=86_401)
+
+
+def test_rwd_profile_caps_the_frame_rate_only_for_410_470_alone() -> None:
+    from driftless_photometry.config import RWD_PROFILE, Wavelength
+
+    pair = (Wavelength.CONTROL_410, Wavelength.GREEN_470)
+    assert RWD_PROFILE.maximum_frame_rate_hz(pair) == 60.0
+    assert RWD_PROFILE.maximum_frame_rate_hz(RWD_PROFILE.wavelengths) is None
+    assert RWD_PROFILE.maximum_frame_rate_hz((Wavelength.GREEN_470, Wavelength.RED_560)) is None
+    assert RWD_PROFILE.maximum_frame_rate_hz((Wavelength.CONTROL_410,)) is None
